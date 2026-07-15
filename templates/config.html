@@ -1,0 +1,4097 @@
+{% extends "base.html" %}
+{% block title %}Configuration — MediaReducer{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 gap-3 page-title-bar">
+  <span class="page-title">Configuration</span>
+  <div class="d-flex gap-2 flex-shrink-0">
+    <button class="btn btn-sm btn-outline-secondary" onclick="revertForm()" id="btn-revert" disabled>Revert</button>
+    <button class="btn btn-sm btn-outline-secondary btn-morph" onclick="saveConfig()" id="btn-save" disabled><span class="btn-morph-label">Save</span></button>
+  </div>
+</div>
+
+<style>
+  /* ── Shared Configuration UI primitives ────────────────────────────────── */
+  .config-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .config-card-danger {
+    background: var(--bg-danger);
+    border-color: var(--border-danger);
+  }
+  .config-card-danger .input-label,
+  .config-card-danger .form-text {
+    color: var(--text-danger);
+  }
+  .config-card-danger .form-control,
+  .config-card-danger .input-group-text {
+    border-color: var(--text-danger);
+  }
+  .config-card-danger .form-control:focus {
+    border-color: var(--text-danger);
+    box-shadow: 0 0 0 2px var(--bg-danger);
+  }
+  .config-divider {
+    border-color: var(--border-strong);
+    opacity: 1;
+  }
+  .config-section-title {
+    font-weight: 600;
+  }
+  .config-small-muted {
+    font-size: .82rem;
+    color: var(--text-muted);
+  }
+  .config-code-muted {
+    font-size: .76rem;
+    color: var(--text-muted);
+  }
+  .config-details-summary {
+    cursor: pointer;
+    font-size: .85rem;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+  /* No-server-selected highlight: connection-highlight only styles
+     form-control/input-label, so the checkboxes need their own rules. */
+  .server-software-row.connection-highlight .form-check-label,
+  .server-software-row.connection-highlight .server-req {
+    color: var(--text-danger) !important;
+  }
+  .server-software-row.connection-highlight .form-check-input {
+    border-color: var(--text-danger);
+    box-shadow: 0 0 0 2px var(--bg-danger);
+  }
+  /* Deselected-server connection fields stay visible but ghosted: values are
+     kept, they just don't participate until the server is re-enabled. */
+  .conn-field-ghost {
+    opacity: .45;
+    filter: grayscale(.25);
+    pointer-events: none;
+    transition: opacity .15s ease, filter .15s ease;
+  }
+  /* Slide-open for the URLs and API Keys <details>. JS drives the height;
+     overflow hidden clips content mid-animation. */
+  #manual-overrides .details-anim {
+    overflow: hidden;
+    transition: height .32s ease;
+  }
+  .config-status-list {
+    font-size: .82rem;
+    color: var(--text-secondary);
+  }
+  .config-form-width-xs { max-width: 120px; }
+  .config-form-width-sm { max-width: 160px; }
+  .config-form-width-xl { max-width: 420px; }
+
+  .section-reset-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .section-reset-row .section-desc {
+    flex: 1 1 auto;
+    max-width: calc(100% - 180px);
+  }
+  .section-reset-row .section-reset-btn {
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  @media (max-width: 575.98px) {
+    .section-reset-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .section-reset-row .section-desc {
+      max-width: 100%;
+    }
+    .section-reset-row .section-reset-btn {
+      align-self: flex-start;
+      margin-left: 0;
+    }
+  }
+
+  .run-mode-card {
+    padding: 1rem;
+    margin-left: 0;
+    margin-bottom: 1rem;
+    transition: opacity .15s, filter .15s, border-color .15s;
+  }
+  .run-mode-card:not(.run-mode-disabled),
+  .run-mode-card:not(.run-mode-disabled) label,
+  .run-mode-card:not(.run-mode-disabled) input { cursor: pointer; }
+  /* Disabled Live card: dim only the radio and title/pills so the reason stays
+     legible. Opacity is per-part (a parent's can't be undone on a child), and
+     the label is lifted back from Bootstrap's disabled-radio .5. A
+     safety-percentage block shows its reason in danger red. */
+  .run-mode-card.run-mode-disabled label.form-check-label { opacity: 1; }
+  .run-mode-card.run-mode-disabled > .form-check-input,
+  .run-mode-card.run-mode-disabled .run-mode-title { opacity: .45; filter: grayscale(.35); }
+  .run-mode-card.run-mode-disabled--alert .run-mode-desc { color: var(--text-danger); }
+  .run-mode-card.run-mode-disabled,
+  .run-mode-card.run-mode-disabled label,
+  .run-mode-card.run-mode-disabled input { cursor: not-allowed; }
+  .run-mode-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .run-mode-name {
+    font-weight: 600;
+  }
+  .run-mode-desc {
+    font-size: .78rem;
+    color: var(--text-muted);
+    display: block;
+    margin-top: 2px;
+  }
+  /* The run-mode + library-size pills use the shared .pr-pill family. */
+  /* On narrow screens, drop the pills onto their own line under the mode name
+     so Live and the threshold pills don't crowd or wrap. */
+  @media (max-width: 560px) {
+    .run-mode-title { row-gap: 6px; column-gap: 6px; }
+    .run-mode-title .run-mode-name { flex-basis: 100%; }
+  }
+
+  .gb-input-group {
+    max-width: 360px;
+  }
+  /* .field-invalid / .field-error styling is shared with Filtering &
+     Scoring — defined in base.html. */
+  .server-software-row { display: flex; gap: 2rem; flex-wrap: wrap; align-items: center; }
+  .server-software-row .form-check-label { font-weight: 600; }
+  .server-req { color: var(--text-muted); font-weight: 400; font-size: .85em; }
+  .collections-list { display: flex; flex-direction: column; gap: 1px; max-height: 220px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--surface-2); }
+  .collection-item { display: flex; align-items: center; gap: 9px; padding: 4px 2px; margin: 0; cursor: pointer; font-size: .9rem; }
+  .collection-item .form-check-input { margin: 0; flex-shrink: 0; }
+  .collection-name { color: var(--text-primary); }
+  .collection-missing { color: var(--text-muted); font-size: .76rem; font-style: italic; margin-left: auto; white-space: nowrap; }
+  .collections-empty { margin: 0; }
+  .library-browser-row {
+    background: var(--surface-2);
+    color: var(--text-primary);
+    border-color: var(--border);
+  }
+  .library-browser-row:hover, .library-browser-row:focus {
+    background: var(--surface-3);
+    color: var(--text-primary);
+  }
+  .monitor-remove-btn:hover, .monitor-remove-btn:focus {
+    background: var(--bg-danger);
+    border-color: var(--text-danger);
+    color: var(--text-danger);
+  }
+  .config-status-box {
+    padding: 14px;
+  }
+  .config-status-box.status-ok { border-color: var(--border-accent); }
+  .config-status-box.status-warning { border-color: var(--border); background: var(--surface-2); }
+  .config-status-box.status-error { border-color: var(--text-danger); background: var(--bg-danger); }
+  .connection-highlight .form-control,
+  .connection-highlight .input-label {
+    border-color: var(--text-danger) !important;
+    color: var(--text-danger) !important;
+  }
+  .connection-highlight .form-control {
+    box-shadow: 0 0 0 2px var(--bg-danger);
+  }
+  .secret-toggle {
+    min-width: 4.25rem;
+    font-size: .78rem;
+  }
+  /* Secret fields render as type=text (so password managers don't offer to save
+     them) but masked via -webkit-text-security; .secret-shown reveals. Browsers
+     without it (Firefox) fall back to a real type=password field in JS. */
+  .form-control.secret-field {
+    -webkit-text-security: disc;
+  }
+  .form-control.secret-field.secret-shown {
+    -webkit-text-security: none;
+  }
+  .connection-highlight .secret-toggle {
+    border-color: var(--text-danger) !important;
+    color: var(--text-danger) !important;
+  }
+  .connection-disabled {
+    opacity: .55;
+  }
+  /* Locked-section ghosting, shared by Connections, Movie Library Paths and
+     Space Thresholds: dim the section's content but keep the inline lock
+     notice ("A run is active…") fully readable. */
+  .section-run-ghost .accordion-body > :not(.config-inline-warning) {
+    opacity: .55;
+  }
+  /* Invalid config.json lockout: the whole accordion goes inert — the only
+     ways out are the banner's two reset actions. */
+  .config-invalid-lock { pointer-events: none; }
+  .config-invalid-lock .accordion-item { opacity: .5; }
+  #invalid-config-banner ul { padding-left: 1.1rem; margin: .45rem 0 .15rem; }
+  #invalid-config-banner code { color: inherit; font-weight: 600; }
+  /* When .section-run-ghost is applied directly to a single card (e.g. the
+     headroom safety cap during a run), dim the card's own contents. */
+  .config-card.section-run-ghost > * {
+    opacity: .55;
+  }
+  /* The not-allowed cursor on ghosted controls comes from base.html. */
+  .connection-disabled .form-control,
+  .connection-disabled .secret-toggle {
+    cursor: not-allowed;
+  }
+  .connection-disabled .secret-toggle {
+    opacity: .72;
+  }
+  .mount-card {
+    display: flex;
+    align-items: center;
+    padding: 1rem;
+    margin-bottom: .5rem;
+  }
+  .mount-card-problem {
+    border-color: var(--text-danger) !important;
+    background: var(--bg-danger) !important;
+  }
+  .mount-card-optional {
+    font-size: .7rem;
+    color: var(--text-muted);
+    margin-left: 6px;
+  }
+  .optional-cleanup-box {
+    outline: 1px solid transparent;
+    border-radius: 10px;
+    padding: 0;
+    margin: 0;
+  }
+  /* .config-inline-warning is shared with Filtering & Scoring — base.html. */
+  .space-thresholds-locked .gb-input-group {
+    opacity: .72;
+  }
+  .space-thresholds-locked .input-label,
+  .space-thresholds-locked .form-text {
+    color: var(--text-muted);
+  }
+  .redline-only-note {
+    color: var(--text-accent);
+    font-weight: 500;
+  }
+  /* Soft amber advisory (not an error) — shown when a deletion delay is set with
+     no Redline floor to catch a fast-filling library during the delay window. */
+  .delay-redline-advisory {
+    color: var(--text-warning);
+    font-weight: 500;
+  }
+  .delay-redline-advisory[hidden] { display: none; }
+  #library-browser-current {
+    font-size: .78rem;
+    color: var(--text-muted);
+    font-family: monospace;
+  }
+  #library-browser-list {
+    --bs-list-group-bg: var(--surface-2);
+    --bs-list-group-border-color: var(--border);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  #cfg-accordion .accordion-button .cfg-section-issue-indicator {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 1.15rem;
+    height: 1.15rem;
+    margin-left: auto;
+    margin-right: .55rem;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--text-danger) 78%, transparent);
+    background: var(--bg-danger);
+    color: var(--text-danger);
+    font-size: .72rem;
+    line-height: 1;
+    font-weight: 800;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg-danger) 65%, transparent);
+  }
+  #cfg-accordion .accordion-button.section-has-issue .cfg-section-issue-indicator {
+    display: inline-flex;
+  }
+  #cfg-accordion .accordion-button.section-has-issue::after {
+    margin-left: 0;
+  }
+  #cfg-accordion .accordion-button.section-has-issue {
+    box-shadow: inset 3px 0 0 var(--text-danger);
+  }
+  /* Scroll targets must clear both sticky layers: the site header and the
+     page-title bar (heights kept in sync by the shared bar JS). */
+  #automatic-run-mode,
+  #connections-section,
+  #space-thresholds-section {
+    scroll-margin-top: calc(var(--pr-header-h, 58px) + var(--pr-titlebar-h, 54px) + 10px);
+  }
+</style>
+
+{% set connection_errors = connection_health.errors or [] %}
+{% set connection_warnings = connection_health.warnings or [] %}
+{% set connection_highlights = connection_health.highlights or [] %}
+{% set connection_mount_highlights = connection_health.mount_highlights or [] %}
+{% set connection_disabled_fields = connection_health.disabled_fields or [] %}
+{% set override_highlight_names = ['TAUTULLI_URL', 'TAUTULLI_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY', 'RADARR_URL', 'RADARR_API_KEY'] %}
+{% set optional_override_names = ['PLEX_URL', 'PLEX_TOKEN', 'RADARR_URL', 'RADARR_API_KEY'] %}
+{% set optional_cleanup_enabled = config.RADARR_OVERSEERR_SECTION_ID is not none %}
+{% set use_plex = config.USE_PLEX %}
+{% set use_jellyfin = config.USE_JELLYFIN %}
+{% set radarr_connected = connection_health.radarr_connected %}
+{% set plex_connected = connection_health.plex_connected %}
+{% set tautulli_connected = connection_health.tautulli_connected %}
+{% set jellyfin_connected = connection_health.jellyfin_connected %}
+{% set media_path_compatible = not (connection_health.media_path_blocker | default(false)) %}
+{% set filesystem_ready = not (connection_health.filesystem_blocker | default(false)) %}
+{% set selected_media_apis_ready = (use_plex or use_jellyfin) and ((not use_plex) or tautulli_connected) and ((not use_jellyfin) or jellyfin_connected) and media_path_compatible and filesystem_ready %}
+{% set media_api_connected = selected_media_apis_ready %}
+{% set space_thresholds_locked = config.RUN_MODE == 'headroom' %}
+{% set manual_override_open = ((connection_highlights + connection_disabled_fields) | select('in', override_highlight_names) | list | length) > 0 %}
+{% set connection_section_open = connection_health.has_visible_issues if connection_health.has_visible_issues is defined else ((connection_errors|length > 0) or (connection_warnings|length > 0)) %}
+
+<div id="invalid-config-banner" class="config-card config-card-danger p-3 mb-4" hidden>
+  <div class="input-label">⚠ Invalid config file</div>
+  <div class="form-text">config.json was edited outside MediaReducer and some values break the rules
+    the GUI enforces. Everything below is locked — including API connections — until the invalid
+    values are reset to their defaults, or MediaReducer is reset.</div>
+  <ul id="invalid-config-list" class="form-text"></ul>
+  <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+    <button type="button" class="btn btn-sm btn-danger-action" id="btn-reset-invalid" onclick="onResetInvalidClick()">Reset invalid values to defaults</button>
+    <button type="button" class="btn btn-sm btn-danger-action" id="btn-reset-all-banner" onclick="onBannerFullResetClick()">Reset MediaReducer…</button>
+    <span id="invalid-config-status" class="form-text"></span>
+  </div>
+</div>
+
+<form id="cfg-form" class="app-form" onsubmit="return false;">
+<div class="accordion" id="cfg-accordion">
+
+  <!-- ── Run mode ── -->
+  <div class="accordion-item" id="automatic-run-mode">
+    <h2 class="accordion-header">
+      <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#s-mode">
+        Automatic Run Mode
+      </button>
+    </h2>
+    <div id="s-mode" class="accordion-collapse collapse show">
+      <div class="accordion-body">
+        <div id="run-mode-lock-note" class="config-inline-warning mb-3" hidden></div>
+        <p class="section-desc">Choose whether scheduled cleanup can run automatically. Dashboard run buttons are manual only.</p>
+        {% set library_cap_configured = space_thresholds.has_library_cap %}
+        {% set redline_configured = config.REDLINE_GB is not none %}
+        {% set connection_required_ok = connection_health.critical_ok %}
+        {% set connection_disabled_text = connection_health.required_tooltip or 'Connect the selected media server first.' %}
+        {% set simulate_required = space_thresholds.simulate_required and config.RUN_MODE != 'headroom' %}
+        {% set live_mode_ok = space_thresholds.ok_for_live and connection_required_ok and not simulate_required %}
+        {% set saved_mode_disabled = config.RUN_MODE == 'headroom' and not live_mode_ok %}
+        {% set live_disabled_text = connection_disabled_text if not connection_required_ok else (space_thresholds.live_tooltip or ('Over space limits — run Simulate to review the deletion plan, then enable Live.' if simulate_required else 'Fix Space Thresholds to enable Live.')) %}
+        {% set live_desc = 'Scheduled live cleanup. Enforces the free-space rules, plus the Library Size Cap when enabled. Run Simulate first to preview what it would delete.' %}
+
+        {% if config.get('_RUN_MODE_AUTOPAUSE_REASON') and config.RUN_MODE == 'paused' %}
+        <div class="config-inline-warning mb-3">Live was paused automatically: {{ config.get('_RUN_MODE_AUTOPAUSE_REASON') }}</div>
+        {% endif %}
+        <div class="form-check config-card run-mode-card" id="mode-card-paused" aria-disabled="false">
+          <input class="form-check-input" type="radio" name="RUN_MODE" id="mode-paused"
+                 value="paused" {{ 'checked' if (config.RUN_MODE == 'paused' or saved_mode_disabled) else '' }}>
+          <label class="form-check-label" for="mode-paused">
+            <div class="run-mode-title">
+              <span class="run-mode-name">Paused</span>
+            </div>
+            <span class="run-mode-desc">Automatic cleanup is off. You can still run Simulate or a manual one-time Live Run from the Dashboard.</span>
+          </label>
+        </div>
+
+        <div class="form-check config-card run-mode-card {{ 'run-mode-disabled' if not live_mode_ok else '' }}" id="mode-card-headroom" aria-disabled="{{ 'true' if not live_mode_ok else 'false' }}">
+          <input class="form-check-input" type="radio" name="RUN_MODE" id="mode-headroom"
+                 value="headroom" {{ 'checked' if (config.RUN_MODE == 'headroom' and not saved_mode_disabled) else '' }} {{ 'disabled' if not live_mode_ok else '' }}>
+          <label class="form-check-label" for="mode-headroom">
+            <div class="run-mode-title">
+              <span class="run-mode-name">Live</span>
+              <span id="pill-headroom" class="pr-pill pr-pill--neutral">Headroom: {{ config.HEADROOM_GB|commafy }} GB</span>
+              <span id="pill-redline" class="pr-pill pr-pill--neutral" {{ '' if redline_configured else 'hidden' }}>{{ ('Redline: ' ~ (config.REDLINE_GB|commafy) ~ ' GB') if redline_configured else 'Redline: —' }}</span>
+              <span id="pill-live-cap" class="pr-pill pr-pill--neutral" {{ '' if library_cap_configured else 'hidden' }}>{{ ('Library size cap: ' ~ (config.MAX_LIBRARY_GB|commafy) ~ ' GB') if library_cap_configured else 'Library size cap: —' }}</span>
+            </div>
+            <span id="desc-headroom" class="run-mode-desc" data-enabled-text="{{ live_desc }}" data-disabled-text="{{ live_disabled_text }}">{{ live_desc if live_mode_ok else live_disabled_text }}</span>
+          </label>
+        </div>
+
+        <hr class="config-divider my-3">
+        <h6 class="mb-2">Time</h6>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="input-label" for="DAILY_RUN_TIME">Daily run time</label>
+            <select class="app-select" id="DAILY_RUN_TIME" name="DAILY_RUN_TIME">
+              {% set saved_drt = config.DAILY_RUN_TIME or '00:00' %}
+              {% set fmt24 = (config.DISPLAY_TIME_FORMAT or '12h') == '24h' %}
+              {% if saved_drt[3:] not in ('00', '30') %}
+                <option value="{{ saved_drt }}" selected>{{ saved_drt }}</option>
+              {% endif %}
+              {% for h in range(24) %}{% for m in ('00', '30') %}
+                {% set val = '%02d:%s' % (h, m) %}
+                {% set label = val if fmt24 else ('%d:%s %s' % (h % 12 if h % 12 else 12, m, 'AM' if h < 12 else 'PM')) %}
+                <option value="{{ val }}" {{ 'selected' if saved_drt == val else '' }}>{{ label }}</option>
+              {% endfor %}{% endfor %}
+            </select>
+            <div class="form-text">Automatic cleanup fires at this time (or the next 15-minute check
+            after it) on a day it's needed. Redline emergencies and manual runs ignore it.</div>
+          </div>
+          <div class="col-md-4">
+            <label class="input-label" for="TIME_ZONE">Time zone</label>
+            <select class="app-select" id="TIME_ZONE" name="TIME_ZONE">
+              {% set selected_tz = config.TIME_ZONE or 'auto' %}
+              <option value="auto" {{ 'selected' if selected_tz == 'auto' else '' }}>Auto — server clock ({{ host_time_zone }})</option>
+              {% if selected_tz != 'auto' and selected_tz not in time_zone_options %}
+                <option value="{{ selected_tz }}" selected>{{ selected_tz }}</option>
+              {% endif %}
+              {% for zone in time_zone_options %}
+                <option value="{{ zone }}" {{ 'selected' if selected_tz == zone else '' }}>{{ zone }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-text">The app's clock: the daily run time, deletion-delay calendar days,
+            and all timestamps live in this zone.</div>
+            <div class="form-text" id="server-clock-line"></div>
+          </div>
+          <div class="col-md-4">
+            <label class="input-label" for="DISPLAY_TIME_FORMAT">Time format</label>
+            <select class="app-select" id="DISPLAY_TIME_FORMAT" name="DISPLAY_TIME_FORMAT">
+              <option value="12h" {{ 'selected' if (config.DISPLAY_TIME_FORMAT or '12h') == '12h' else '' }}>12-hour</option>
+              <option value="24h" {{ 'selected' if config.DISPLAY_TIME_FORMAT == '24h' else '' }}>24-hour</option>
+            </select>
+            <div class="form-text">AM/PM or 24-hour time.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Connections ── -->
+  <div class="accordion-item" id="connections-section">
+    <h2 class="accordion-header">
+      <button class="accordion-button {{ '' if connection_section_open else 'collapsed' }}" type="button" data-bs-toggle="collapse" data-bs-target="#s-conn">
+        Connections
+      </button>
+    </h2>
+    <div id="s-conn" class="accordion-collapse collapse {{ 'show' if connection_section_open else '' }}">
+      <div class="accordion-body">
+        <p class="section-desc">
+          Connect the media services MediaReducer should use. Auto Detect fills API keys from your local Docker appdata; each URL defaults to your server's detected address, so you only need to change one that isn't standard.
+        </p>
+        <div id="connections-lock-note" class="config-inline-warning mb-3" hidden></div>
+
+        <div id="config-health-box" class="config-card config-status-box mb-4 status-{{ connection_health.severity or 'ok' }}">
+          <div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+            <div>
+              <div class="config-section-title">Connection status</div>
+              <div id="config-health-summary" class="form-text mt-1">
+                {% if connection_errors or connection_warnings %}
+                  {{ connection_health.summary }}
+                {% elif connection_health.probed %}
+                  Connections checked successfully.
+                {% else %}
+                  Checking connections. Use <strong>Check for Errors</strong> to recheck.
+                {% endif %}
+              </div>
+              <ul id="config-health-list" class="config-status-list mt-2 mb-0{{ '' if connection_errors or connection_warnings else ' d-none' }}">
+                {% for msg in connection_errors + connection_warnings %}<li>{{ msg }}</li>{% endfor %}
+              </ul>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary flex-shrink-0" id="btn-config-check" onclick="checkConfigErrors()">Check for Errors</button>
+          </div>
+        </div>
+
+        <h6 class="mb-2">Server software</h6>
+        <div class="server-software-row mb-4 {{ 'connection-highlight' if 'SERVER_SOFTWARE' in connection_highlights else '' }}" id="server-software-row">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="USE_PLEX" name="USE_PLEX"
+                   {{ 'checked' if use_plex else '' }} onchange="onServerSoftwareChange()">
+            <label class="form-check-label" for="USE_PLEX">Plex <span class="server-req">(via Tautulli)</span></label>
+          </div>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="USE_JELLYFIN" name="USE_JELLYFIN"
+                   {{ 'checked' if use_jellyfin else '' }} onchange="onServerSoftwareChange()">
+            <label class="form-check-label" for="USE_JELLYFIN">Jellyfin</label>
+          </div>
+        </div>
+        <div id="server-software-note" class="form-text mb-3" {{ '' if not (use_plex or use_jellyfin) else 'hidden' }}>
+          No server selected — MediaReducer stays idle until Plex or Jellyfin is enabled and its API connects.
+        </div>
+
+        <h6 class="mb-2">Appdata mounts</h6>
+        <!-- Mount verification cards (always shown; annotated when a server is off) -->
+        {% for svc, path, optional in [
+          ('Tautulli',  config.TAUTULLI_APPDATA,  false),
+          ('Jellyfin',  config.JELLYFIN_APPDATA,  false),
+          ('Radarr',    config.RADARR_APPDATA,    true),
+        ] %}
+        <div id="mount-card-{{ svc | lower }}" class="config-card mount-card {{ 'mount-card-problem' if ((svc | lower) in connection_mount_highlights and ((svc | lower) != 'radarr' or optional_cleanup_enabled)) else '' }}">
+          <div class="flex-grow-1">
+            <div class="config-section-title config-small-muted">
+              {{ svc }}
+              {% if optional %}<span class="mount-card-optional">optional</span>{% endif %}
+            </div>
+            <code class="config-code-muted">{{ path }}</code>
+          </div>
+          <span id="verify-{{ svc | lower }}" class="config-small-muted">○ checking…</span>
+        </div>
+        {% endfor %}
+
+        <div class="mt-4">
+        <details id="manual-overrides" {{ 'open' if manual_override_open else '' }}>
+          <summary class="config-details-summary">
+            URLs and API Keys
+          </summary>
+          <div class="details-anim">
+          <div class="config-inline-warning mb-3">
+            Each URL defaults to your server's address on the service's standard port — only fill one in if yours differs.
+          </div>
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-auto-detect-connections" onclick="autoDetectConnections()">Auto Detect API Keys</button>
+            <span id="auto-detect-status" class="form-text">Fills API keys from your appdata. Leave a URL blank to use its default.</span>
+          </div>
+          {% set field_labels = {
+            'TAUTULLI_URL': 'Tautulli URL', 'TAUTULLI_API_KEY': 'Tautulli API key',
+            'PLEX_URL': 'Plex URL', 'PLEX_TOKEN': 'Plex token',
+            'RADARR_URL': 'Radarr URL', 'RADARR_API_KEY': 'Radarr API key',
+            'JELLYFIN_URL': 'Jellyfin URL', 'JELLYFIN_API_KEY': 'Jellyfin API key',
+          } %}
+          <div class="row g-3 mt-1">
+            {% for name, server in [
+              ('TAUTULLI_URL', 'plex'),
+              ('TAUTULLI_API_KEY', 'plex'),
+              ('JELLYFIN_URL', 'jellyfin'),
+              ('JELLYFIN_API_KEY', 'jellyfin'),
+              ('PLEX_URL', 'plex'),
+              ('PLEX_TOKEN', 'plex'),
+              ('RADARR_URL', 'plex'),
+              ('RADARR_API_KEY', 'plex'),
+            ] %}
+            {% set secret_field = ('API_KEY' in name or 'TOKEN' in name) %}
+            {% set is_url_field = name.endswith('_URL') %}
+            {% set field_disabled = (name in connection_disabled_fields and name not in optional_override_names) %}
+            {% set server_off = (server == 'plex' and not use_plex) or (server == 'jellyfin' and not use_jellyfin) %}
+            <div class="col-md-6 conn-field-{{ server }} {{ 'connection-highlight' if name in connection_highlights else '' }} {{ 'connection-disabled' if field_disabled else '' }}{{ ' conn-field-ghost' if server_off else '' }}" id="override-field-{{ name }}">
+              <label class="input-label" for="{{ name }}">{{ field_labels.get(name, name) }}</label>
+              {% if secret_field %}
+              <div class="input-group secret-input-group">
+                <input type="password" class="form-control" id="{{ name }}" name="{{ name }}"
+                       value="{{ config[name] }}" autocomplete="off" spellcheck="false"
+                       data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"
+                       {{ 'disabled' if field_disabled else '' }}>
+                <button type="button" class="btn btn-outline-secondary secret-toggle"
+                        data-target="{{ name }}" aria-label="Show {{ field_labels.get(name, name) }}" aria-pressed="false"
+                        title="Show value" {{ 'disabled' if field_disabled else '' }}>
+                  <span class="secret-toggle-label">Show</span>
+                </button>
+              </div>
+              {% else %}
+              <input type="text" class="form-control" id="{{ name }}" name="{{ name }}"
+                     value="{{ config[name] }}" {{ 'disabled' if field_disabled else '' }}{% if is_url_field %} placeholder="{{ connection_url_placeholders[name] }}"{% endif %}>
+              {% endif %}
+              {% if is_url_field %}<div class="form-text">
+                {%- if connection_url_defaults[name] %}Detected default <code>{{ connection_url_defaults[name] }}</code>{% else %}Default <code>{{ connection_url_placeholders[name] }}</code>{% endif %} — used automatically while blank. <code>http://</code> is assumed when omitted.
+              </div>{% endif %}
+              {% if name == 'JELLYFIN_API_KEY' %}<div class="form-text">Create this in Jellyfin under Dashboard &gt; API Keys.</div>{% endif %}
+            </div>
+            {% endfor %}
+          </div>
+          </div>
+        </details>
+        </div>
+
+        <div class="mt-3 debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}">
+          <h6 class="mb-2">API debug</h6>
+          <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+            <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-tautulli-movies"
+                    onclick="prRunDebug('/api/debug/tautulli/movies', 'Tautulli movie data', this)"
+                    title="Debug: movie sections, rows, and metadata from Tautulli">Debug Tautulli</button>
+            <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-jellyfin-movies"
+                    onclick="prRunDebug('/api/debug/jellyfin/movies', 'Jellyfin movie data', this)"
+                    title="Debug: movies, users, and play data from Jellyfin">Debug Jellyfin</button>
+            <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-radarr"
+                    onclick="prRunDebug('/api/debug/radarr', 'Radarr API', this)"
+                    title="Debug: status, movies, and lookups from Radarr">Debug Radarr</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Movie library paths ── -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#s-paths">
+        Movie Library Paths
+      </button>
+    </h2>
+    <div id="s-paths" class="accordion-collapse collapse">
+      <div class="accordion-body">
+        <p class="section-desc">
+          Choose which <code>{{ library_root }}</code> folders MediaReducer may scan and delete from.
+        </p>
+
+        <div id="movie-paths-api-note" class="config-inline-warning mb-3" {{ 'hidden' if media_api_connected else '' }}>{{ 'Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.' }}</div>
+        <div>
+        <label class="input-label mb-2">Monitored directories</label>
+        <div id="monitor-dirs" class="mb-1">
+          {% for d in config.MONITOR_DIRS %}
+          {% set raw_dir = (d|string).replace('\\', '/') %}
+          {% set suffix = '/' if raw_dir in ['/', library_root] else raw_dir[(library_root ~ '/')|length:] if raw_dir.startswith(library_root ~ '/') else raw_dir.lstrip('/') %}
+          <div class="monitor-dir-wrapper mb-2">
+            <div class="input-group monitor-dir-row">
+              <input type="text" class="form-control monitor-dir" value="{{ suffix }}" placeholder="Movies" aria-label="Monitored library subfolder" {{ 'disabled' if not media_api_connected else '' }}>
+              <button type="button" class="btn btn-outline-secondary" onclick="openLibraryBrowser(this)">Browse…</button>
+              <button type="button" class="btn btn-outline-secondary monitor-remove-btn" onclick="removeMonitorDir(this)" aria-label="Remove this monitored folder" title="Remove"><span aria-hidden="true">✕</span></button>
+            </div>
+            <div class="field-error monitor-dir-error"></div>
+          </div>
+          {% endfor %}
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-secondary mb-2" id="btn-add-monitor-dir" onclick="addMonitorDir()" {{ 'disabled' if not media_api_connected else '' }}>+ Add directory</button>
+        <div class="form-text"><code>Movies</code> means <code>{{ library_root }}/Movies</code>. Use <code>/</code> for all of <code>{{ library_root }}</code>.</div>
+        <div class="mt-2 debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}">
+          <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-media-paths"
+                  onclick="prRunDebug('/api/debug/media-paths', 'Media path mapping', this)"
+                  title="Debug: how server-reported paths resolve under {{ library_root }}">Debug paths</button>
+        </div>
+        </div>
+
+        <hr class="config-divider my-4">
+        <!-- Always protect — scanned collection/box-set pickers, side by side
+             on wide screens. Groups never hide: a disconnected server's group
+             is ghosted until its API connects. -->
+        <div class="row g-4">
+          <div class="col-lg-6">
+            <div id="plex-protect-group" class="saved-server-plex{{ ' connection-ghost' if not plex_connected else '' }}">
+              <h6 class="mb-2">Always protect — Plex collections</h6>
+              <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-scan-plex" onclick="scanCollections('plex')" {{ 'disabled' if not plex_connected else '' }}>Scan Plex collections</button>
+                <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}" id="btn-debug-plex" onclick="debugPlexCollections()" title="Debug: what Plex reports inside the selected collections" {{ 'disabled' if not plex_connected else '' }}>Debug collections</button>
+                <span id="plex-collections-status" class="form-text"></span>
+              </div>
+              <div id="plex-collections-list" class="collections-list"></div>
+              <div class="form-text">Selected collections are never deleted.</div>
+              <div class="form-text connection-unlock-note" {{ 'hidden' if plex_connected else '' }}>Connect Plex to unlock this.</div>
+            </div>
+          </div>
+          <div class="col-lg-6">
+            <div id="jellyfin-protect-group" class="saved-server-jellyfin{{ ' connection-ghost' if not jellyfin_connected else '' }}">
+              <h6 class="mb-2">Always protect — Jellyfin collections</h6>
+              <div class="d-flex align-items-center gap-2 flex-wrap mb-2">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-scan-jellyfin" onclick="scanCollections('jellyfin')" {{ 'disabled' if not jellyfin_connected else '' }}>Scan Jellyfin collections</button>
+                <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}" id="btn-debug-jellyfin" onclick="debugJellyfinCollections()" title="Debug: what Jellyfin reports inside the selected collections" {{ 'disabled' if not jellyfin_connected else '' }}>Debug collections</button>
+                <span id="jellyfin-collections-status" class="form-text"></span>
+              </div>
+              <div id="jellyfin-collections-list" class="collections-list"></div>
+              <div class="form-text">Selected collections are never deleted.</div>
+              <div class="form-text connection-unlock-note" {{ 'hidden' if jellyfin_connected else '' }}>Connect Jellyfin to unlock this.</div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+        <hr class="config-divider my-4">
+        {% set cached_radarr_section_id = config.get('_RADARR_DETECTED_SECTION_ID') %}
+        {% set cached_radarr_section_name = config.get('_RADARR_DETECTED_SECTION_NAME') %}
+        {% set cached_radarr_section_method = config.get('_RADARR_DETECTED_SECTION_METHOD') %}
+        {% set cached_radarr_section_method_label = config.get('_RADARR_DETECTED_SECTION_METHOD_LABEL') %}
+        <div id="optional-cleanup-box" class="optional-cleanup-box {{ 'connection-ghost' if not radarr_connected else '' }}">
+          <h6 class="mb-2">Optional Radarr cleanup</h6>
+          <div class="config-form-width-xl">
+            <label class="filter-score-toggle-row" for="section-enabled">
+              <input class="form-check-input" type="checkbox" id="section-enabled"
+                     {{ '' if config.RADARR_OVERSEERR_SECTION_ID is none else 'checked' }}
+                     {{ 'disabled' if not radarr_connected else '' }}>
+              <span class="form-check-label">Remove deleted movies from Radarr</span>
+            </label>
+            <div id="section-detected" class="form-text"{% if cached_radarr_section_id %} data-section-id="{{ cached_radarr_section_id }}"{% endif %}{% if cached_radarr_section_name %} data-section-name="{{ cached_radarr_section_name }}"{% endif %}{% if cached_radarr_section_method %} data-section-method="{{ cached_radarr_section_method }}"{% endif %}{% if cached_radarr_section_method_label %} data-section-method-label="{{ cached_radarr_section_method_label }}"{% endif %}>{% if cached_radarr_section_id %}Detected section: {{ cached_radarr_section_id }}{% if cached_radarr_section_name %} ({{ cached_radarr_section_name }}){% endif %}{% if cached_radarr_section_method_label or cached_radarr_section_method %} via {{ cached_radarr_section_method_label or cached_radarr_section_method }}{% endif %}{% else %}The Plex section ID is detected automatically after Radarr and Plex connect.{% endif %}</div>
+          </div>
+          <div id="section-requires-radarr" class="form-text connection-unlock-note"{{ '' if not radarr_connected else ' hidden' }}>Connect Radarr to unlock this.</div>
+          <div class="form-text">After deletion, remove the movie from Radarr once the last copy is gone.</div>
+        </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Space thresholds ── -->
+  {% set has_monitor_dirs = (config.MONITOR_DIRS or [])|length > 0 %}
+  {% set thresholds_have_library = has_monitor_dirs and selected_media_apis_ready %}
+  <div class="accordion-item {{ 'space-thresholds-locked' if space_thresholds_locked else '' }}" id="space-thresholds-section">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#s-space">
+        Space Thresholds
+      </button>
+    </h2>
+    <div id="s-space" class="accordion-collapse collapse">
+      <div class="accordion-body">
+        <div class="section-reset-row">
+          <p class="section-desc mb-0">The disk and library limits that trigger cleanup — when one is crossed,
+          the lowest-scoring movies are removed until you're back under it.</p>
+          <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-space" onclick="resetSectionToDefault('space')" {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>Reset to Default</button>
+        </div>
+
+        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if space_thresholds_locked else 'hidden' }}>Pause Live mode before changing thresholds.</div>
+        <div id="space-threshold-api-note" class="config-inline-warning mb-3" {{ 'hidden' if selected_media_apis_ready else '' }}>{{ 'Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.') }}</div>
+        <div id="space-threshold-paths-note" class="config-inline-warning mb-3" {{ 'hidden' if thresholds_have_library or not selected_media_apis_ready else '' }}>Save a monitored directory first.</div>
+
+        <h6 class="mb-2">Free-space cleanup</h6>
+        <p class="section-desc mb-3">Keep a buffer of free disk space. When free space drops below the target, the daily cleanup frees space back above it.</p>
+        <div class="row g-4">
+          <div class="col-md-6" id="headroom-field">
+            <label class="input-label" for="HEADROOM_GB">Headroom target</label>
+            <div class="input-group gb-input-group">
+              <input type="number" class="form-control" id="HEADROOM_GB" name="HEADROOM_GB"
+                     value="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}" min="0" step="100" aria-describedby="headroom-error"
+                     {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+              <span class="input-group-text">GB</span>
+            </div>
+            <div id="headroom-error" class="field-error">Headroom must be 0 GB or more.</div>
+            <div class="form-text">Free space to keep available. The daily cleanup runs when free space falls below it. Blank = 0.</div>
+          </div>
+          <div class="col-md-6" id="redline-field">
+            <label class="input-label" for="REDLINE_GB">Redline emergency floor</label>
+            <div class="input-group gb-input-group">
+              <div class="input-group-text">
+                <input class="form-check-input" type="checkbox" id="redline-enabled"
+                       {{ 'checked' if (has_monitor_dirs and config.REDLINE_GB is not none) else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+              </div>
+              <input type="number" class="form-control" id="REDLINE_GB" name="REDLINE_GB"
+                     value="{{ config.REDLINE_GB if (has_monitor_dirs and config.REDLINE_GB is not none) else (config.get('_REDLINE_GB_LAST') or '') }}" min="1" max="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}" aria-describedby="redline-error"
+                     {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or config.REDLINE_GB is none else '' }}>
+              <span class="input-group-text">GB</span>
+            </div>
+            <div id="redline-error" class="field-error">Enter a Redline value before saving, or uncheck this option.</div>
+            <div class="form-text">Optional. Deletes immediately whenever free space is this low (checked every ~15 min), bypassing the once-a-day schedule and the deletion delay.</div>
+            <div id="redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and config.REDLINE_GB is not none and config.REDLINE_GB|float == config.HEADROOM_GB|float) else 'hidden' }}>Redline-only mode: Headroom is enforced immediately on every check instead of once per day.</div>
+          </div>
+        </div>
+
+        <hr class="config-divider my-4">
+
+        <div>
+          {% set library_cap_enabled = has_monitor_dirs and (config.MAX_LIBRARY_GB or 0)|float > 0 %}
+          <h6 class="mb-2 d-flex align-items-center gap-2 flex-wrap">
+            Library Size Cap
+            <span id="current-library-size-badge" class="pr-pill pr-pill--neutral{{ ' pending-ellipsis' if summary_active else '' }}">{{ 'Scanning' if summary_active else 'Current: not measured yet' }}</span>
+          </h6>
+          <p class="section-desc mb-3">Optional. Cap the total size of your monitored movie files; when the library grows past the cap, the daily cleanup trims it back under.</p>
+          <div class="input-group gb-input-group mb-2" id="cap-input-group">
+            <div class="input-group-text">
+              <input class="form-check-input" type="checkbox" id="cap-enabled"
+                     {{ 'checked' if library_cap_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+            </div>
+            <input type="number" class="form-control" id="MAX_LIBRARY_GB" name="MAX_LIBRARY_GB"
+                   value="{{ config.MAX_LIBRARY_GB if library_cap_enabled else (config.get('_MAX_LIBRARY_GB_LAST') or '') }}" placeholder="e.g. 15000" min="1" step="100"
+                   aria-describedby="cap-error"
+                   {{ 'disabled' if space_thresholds_locked or not library_cap_enabled else '' }}>
+            <span class="input-group-text">GB</span>
+          </div>
+          <div id="cap-error" class="field-error">Enter a Library Size Cap value before saving, or uncheck this option.</div>
+          <div id="cap-paths-note" class="form-text" {{ 'hidden' if thresholds_have_library else '' }}>{{ 'Save a monitored directory first.' if selected_media_apis_ready else ('Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.')) }}</div>
+          <div class="form-text">Measure your library first with &#8635; on the Dashboard's Storage card, then set a cap below it.</div>
+        </div>
+
+        <hr class="config-divider my-4">
+
+        <div>
+          <h6 class="mb-2">Deletion delay</h6>
+          <p class="section-desc mb-3">A grace period before a marked movie is actually deleted — time to protect it or change the rules first.</p>
+          <div class="input-group gb-input-group mb-2" id="delete-delay-field">
+            <input type="number" class="form-control" id="DELETE_DELAY_DAYS" name="DELETE_DELAY_DAYS"
+                   value="{{ config.DELETE_DELAY_DAYS or 1 }}" min="1" max="365" step="1" inputmode="numeric"
+                   onkeydown="if(['.',',','e','E','-'].includes(event.key))event.preventDefault()"
+                   aria-describedby="delete-delay-error"
+                   {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+            <span class="input-group-text">days</span>
+          </div>
+          <div id="delete-delay-error" class="field-error">Must be a whole number of days, 1–365.</div>
+          <div class="form-text">Days a marked movie waits before deletion. Minimum 1 — never the same day; the earliest is the next day's run. Redline and manual Live Runs skip the delay.</div>
+          <div id="delay-redline-advisory" class="form-text delay-redline-advisory" hidden></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <!-- ── Advanced ── -->
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#s-adv">
+        Advanced
+      </button>
+    </h2>
+    <div id="s-adv" class="accordion-collapse collapse">
+      <div class="accordion-body">
+        <div class="section-reset-row mb-3">
+          <p class="section-desc mb-0">Rating data, display, logs, cache, and safety limits.</p>
+          <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-advanced" onclick="resetSectionToDefault('advanced')">Reset to Default</button>
+        </div>
+        <div id="advanced-run-lock-note" class="config-inline-warning mb-3" hidden></div>
+        <div class="row g-4 align-items-stretch">
+          <div class="col-lg-8">
+            <div class="row g-3">
+              <div class="col-12">
+                <h6 class="mb-2">IMDb Ratings Data</h6>
+                <label class="input-label" for="IMDB_RATINGS_URL">IMDb dataset URL</label>
+                <input type="url" class="form-control" id="IMDB_RATINGS_URL"
+                       name="IMDB_RATINGS_URL" value="{{ config.IMDB_RATINGS_URL }}"
+                       placeholder="https://datasets.imdbws.com/title.ratings.tsv.gz">
+                <div class="form-text">Required for Simulate and Live scoring. Downloaded automatically when needed.</div>
+              </div>
+              <div class="col-sm-5 col-md-4">
+                <label class="input-label" for="IMDB_RATINGS_MAX_AGE_DAYS">IMDb refresh interval</label>
+                <div class="input-group gb-input-group">
+                  <input type="number" class="form-control" id="IMDB_RATINGS_MAX_AGE_DAYS"
+                         name="IMDB_RATINGS_MAX_AGE_DAYS" value="{{ config.IMDB_RATINGS_MAX_AGE_DAYS }}" min="1">
+                  <span class="input-group-text">days</span>
+                </div>
+                <div class="form-text">Runs refresh the file after this many days.</div>
+              </div>
+              <div class="col-sm-7 col-md-8">
+                <div class="input-label">Local ratings file</div>
+                <div class="form-text mb-2" id="imdb-download-status">Checking whether a local IMDb ratings file exists…</div>
+                <button type="button" class="btn btn-outline-secondary" id="btn-imdb-download" onclick="forceDownloadImdbRatings()" disabled>
+                  Download Latest IMDb Ratings
+                </button>
+              </div>
+              <div class="col-12">
+                <hr class="config-divider my-2">
+                <h6 class="mb-0">Logging</h6>
+              </div>
+              <div class="col-sm-5 col-md-4">
+                <label class="input-label" for="LOG_RETENTION_DAYS">Keep run logs for</label>
+                <div class="input-group gb-input-group">
+                  <input type="number" class="form-control" id="LOG_RETENTION_DAYS"
+                         name="LOG_RETENTION_DAYS" value="{{ config.LOG_RETENTION_DAYS }}" min="0" step="1">
+                  <span class="input-group-text">days</span>
+                </div>
+                <div class="form-text">0 (or blank) keeps logs forever.</div>
+              </div>
+              <div class="col-sm-7 col-md-8">
+                <div class="input-label">Interrupted runs</div>
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="KEEP_INTERRUPTED_LOGS"
+                         name="KEEP_INTERRUPTED_LOGS" {{ 'checked' if config.KEEP_INTERRUPTED_LOGS else '' }}>
+                  <label class="form-check-label" for="KEEP_INTERRUPTED_LOGS">Keep logs for stopped runs</label>
+                </div>
+                <div class="form-text">Completed and failed runs are always saved, as is any stopped run that deleted files.</div>
+              </div>
+              <div class="col-12">
+                <div class="input-label">Archived run logs</div>
+                <div class="form-text">Deletes archived run logs. Current log and deletion history stay.</div>
+                <div class="form-text mt-2" id="archived-logs-status">Checking archived logs…</div>
+                <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-clear-logs" onclick="onClearLogsClick()">Clear logs</button>
+                  <span id="clear-logs-status" class="form-text"></span>
+                </div>
+              </div>
+              <div class="col-12">
+                <hr class="config-divider my-2">
+              </div>
+              <div class="col-12">
+                <div class="d-flex align-items-center gap-3 flex-wrap">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="DEBUG_MODE"
+                           name="DEBUG_MODE" {{ 'checked' if config.DEBUG_MODE else '' }}>
+                    <label class="form-check-label" for="DEBUG_MODE">Debug mode</label>
+                  </div>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-create-report"
+                          onclick="createDebugReport()">Download report</button>
+                </div>
+                <div class="form-text mt-1">Debug mode reveals troubleshooting buttons across the app after saving.
+                  Download report builds a sanitized diagnostic snapshot (identifying details hashed) and saves it through your browser.</div>
+                <div id="debug-report-status" class="form-text"></div>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-4">
+            <div class="d-flex flex-column gap-3">
+              <div class="config-card p-3">
+                <div class="d-flex flex-column gap-3">
+                <div>
+                  <div class="input-label">Cache</div>
+                  <div class="form-text">Deletes cached movie data, storage stats, and the Filtering &amp; Scoring sample, then refreshes storage.</div>
+                  <div class="form-text mt-2" id="cache-clear-status">Checking cache file…</div>
+                </div>
+                <div>
+                  <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-clear-cache" onclick="clearCache()" disabled>Clear cache</button>
+                </div>
+              </div>
+            </div>
+              <div class="config-card config-card-danger p-3">
+              <label class="input-label" for="MAX_HEADROOM_PCT">
+                ⚠ Headroom safety cap (%)
+              </label>
+              <div id="max-headroom-pct-field">
+                <input type="number" class="form-control config-form-width-xs mt-1" id="MAX_HEADROOM_PCT"
+                       name="MAX_HEADROOM_PCT" value="{{ config.MAX_HEADROOM_PCT }}"
+                       min="1" max="50" aria-describedby="max-headroom-pct-error">
+                <div class="field-error" id="max-headroom-pct-error">Enter a safety percentage greater than zero.</div>
+              </div>
+              <div class="form-text">
+                Blocks Live when Headroom is above this percent of total disk size. Simulate only warns.
+              </div>
+              </div>
+              <div class="config-card config-card-danger p-3">
+              <div class="input-label">⚠ Reset MediaReducer</div>
+              <div class="form-text">Wipes settings, cache, and the library sample. Logs and deletion history are kept. This can't be undone.</div>
+              <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-danger-action btn-morph" id="btn-reset-all" onclick="onResetClick()"><span class="btn-morph-label">Reset to first-time setup</span></button>
+                <span id="reset-status" class="form-text"></span>
+              </div>
+            </div>
+          </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- accordion -->
+
+</form>
+
+<div class="modal fade pr-popup pr-popup--fill" id="library-browser-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title">Browse Library</h5>
+          <div id="library-browser-current">{{ library_root }}</div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex gap-2 mb-3" style="flex:0 0 auto;">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="library-browser-up" onclick="browseLibraryPath(_libraryBrowserParentPath)">Up</button>
+          <button type="button" class="btn btn-sm btn-outline-primary" id="library-browser-choose" onclick="chooseLibraryBrowserPath()">Use this folder</button>
+        </div>
+        <div id="library-browser-list" class="list-group"></div>
+        <div id="library-browser-empty" class="form-text mt-2 d-none" style="flex:0 0 auto;">No subfolders found here.</div>
+        <div id="library-browser-error" class="field-error show d-none" style="flex:0 0 auto;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _savedConfig   = {{ config | tojson }};
+const _defaultConfig = {{ defaults | tojson }};
+const _diskStats     = {{ disk | tojson }};
+// Deployment roots (default to the Docker mounts; set by env for bare-metal).
+const LIBRARY_ROOT = {{ library_root | tojson }};
+const LIBRARY_ROOT_NAME = LIBRARY_ROOT.split('/').filter(Boolean).pop() || 'library';
+const TAUTULLI_APPDATA_DIR = {{ config.TAUTULLI_APPDATA | tojson }};
+const RADARR_APPDATA_DIR = {{ config.RADARR_APPDATA | tojson }};
+
+// ── Dirty state ───────────────────────────────────────────────────────────────
+
+let _dirty = false;
+let _collectionSelections = { plex: new Set(), jellyfin: new Set() };
+let _collectionOptions    = { plex: [], jellyfin: [] };
+let _confirmSave = false;
+let _dismissPruneToast = null;   // sticky cap-warning toast, up while "Are you sure?" is armed
+let _savePending = false;
+let _imdbDownloadStatus = null;
+let _cacheClearStatus = null;
+let _lastConfigHealth = {{ connection_health | tojson }};
+let _savedConfigHealth = {{ connection_health | tojson }};
+let _configRunActive = {{ 'true' if run_active | default(false) else 'false' }};
+// Over space limits without a deletion plan computed under the CURRENT
+// thresholds: Live stays ghosted until a Simulate refreshes the plan.
+let _simulateRequired = {{ 'true' if space_thresholds.simulate_required | default(false) else 'false' }};
+let _configSummaryActive = {{ 'true' if summary_active | default(false) else 'false' }};
+const _connectionOnboardingActive = {{ 'true' if connection_onboarding_active | default(false) else 'false' }};
+const _connectionErrorOnLoad = {{ 'true' if api_connection_error | default(false) else 'false' }};
+let _requiredConnectionOk = {{ 'true' if connection_health.critical_ok else 'false' }};
+let _requiredConnectionMessage = {{ (connection_health.required_tooltip or 'Connect the selected media server first.')|tojson }};
+const CONNECTION_OVERRIDE_FIELDS = new Set(['TAUTULLI_URL', 'TAUTULLI_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY', 'RADARR_URL', 'RADARR_API_KEY']);
+const SECRET_OVERRIDE_FIELDS = new Set(['TAUTULLI_API_KEY', 'PLEX_TOKEN', 'JELLYFIN_API_KEY', 'RADARR_API_KEY']);
+const OPTIONAL_CLEANUP_FIELDS = new Set(['RADARR_URL', 'RADARR_API_KEY']);
+const OPTIONAL_CLEANUP_MOUNTS = new Set(['radarr']);
+const PLEX_PROTECTED_FIELDS = new Set(['PLEX_URL', 'PLEX_TOKEN', 'PROTECTED_COLLECTIONS']);
+const ALWAYS_EDITABLE_OPTIONAL_CONNECTION_FIELDS = new Set(['PLEX_URL', 'PLEX_TOKEN', 'RADARR_URL', 'RADARR_API_KEY']);
+function _optionalCleanupEnabled() { return !!document.getElementById('section-enabled')?.checked; }
+
+// Ghost the Plex and Jellyfin connection fields when their server software is
+// deselected — values stay visible and saved, they just don't participate.
+// Neither server selected is a valid (idle) state; the note explains it.
+function onServerSoftwareChange() {
+  const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+  const useJf   = !!document.getElementById('USE_JELLYFIN')?.checked;
+  // Ghosting is pointer-events:none, which stops the mouse but not the Tab
+  // key — keyboard users could still land in (and edit) fields that look
+  // inert. Take ghosted fields out of the tab order too.
+  const _ghostFields = (sel, off) => document.querySelectorAll(sel).forEach(el => {
+    el.classList.toggle('conn-field-ghost', off);
+    el.querySelectorAll('input, select, button').forEach(c => {
+      if (off) c.setAttribute('tabindex', '-1'); else c.removeAttribute('tabindex');
+    });
+  });
+  _ghostFields('.conn-field-plex', !usePlex);
+  _ghostFields('.conn-field-jellyfin', !useJf);
+  const note = document.getElementById('server-software-note');
+  if (note) note.hidden = usePlex || useJf;
+  if (typeof renderMountBadges === 'function') renderMountBadges();
+  if (typeof _applyConfigRuntimeLocks === 'function') _applyConfigRuntimeLocks();
+  else if (typeof _applySpaceThresholdLock === 'function') _applySpaceThresholdLock();
+  if (typeof _updateRunModeAvailability === 'function') _updateRunModeAvailability();
+}
+
+function _savedPlexApiConnected() {
+  return !!_savedConfig?.USE_PLEX && !!_savedConfigHealth?.plex_connected;
+}
+function _savedJellyfinApiConnected() {
+  return !!_savedConfig?.USE_JELLYFIN && !!_savedConfigHealth?.jellyfin_connected;
+}
+function _savedMediaApiConnected() {
+  return _selectedMediaApisReady();
+}
+function _mediaPathsCompatible() {
+  return !_savedConfigHealth?.media_path_blocker;
+}
+function _filesystemReady() {
+  return !_savedConfigHealth?.filesystem_blocker;
+}
+function _filesystemBlockingText() {
+  return 'Fix the /config read/write problem first.';
+}
+function _selectedMediaApisReady() {
+  const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+  const useJf = !!document.getElementById('USE_JELLYFIN')?.checked;
+  if (!usePlex && !useJf) return false;
+  return (!usePlex || !!_savedConfigHealth?.tautulli_connected)
+    && (!useJf || !!_savedConfigHealth?.jellyfin_connected)
+    && _mediaPathsCompatible()
+    && _filesystemReady();
+}
+function _spaceThresholdsHaveUsableLibrary() {
+  return _hasSavedMonitorDirs() && _selectedMediaApisReady();
+}
+function _configActivityLocked() {
+  return !!_configRunActive;
+}
+function _savedLiveModeLocked() {
+  return _isLiveRunMode(_savedConfig?.RUN_MODE);
+}
+function _setNotice(id, message) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = message || '';
+  el.hidden = !message;
+}
+function _mediaServerBlockText() {
+  // First-contact wording: with NO server selected yet, "connect or uncheck
+  // the selected media server" names two actions that don't exist.
+  const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+  const useJf = !!document.getElementById('USE_JELLYFIN')?.checked;
+  return (!usePlex && !useJf)
+    ? 'Select Plex or Jellyfin under Server software first.'
+    : 'Connect or uncheck the selected media server first.';
+}
+
+function _sectionLockReason(section) {
+  if (_configActivityLocked()) return 'A run is active. Try again when it finishes.';
+  // Connections and Movie Library Paths stay editable while Live is armed:
+  // saving a change to either auto-pauses Live server-side (the library gets
+  // re-measured before the user re-enables it), so there is nothing to
+  // protect here. Space Thresholds stay locked — a live scheduler is actively
+  // relying on them.
+  if (section === 'space' && _savedLiveModeLocked()) {
+    return 'Pause Live mode before changing this section.';
+  }
+  if ((section === 'paths' || section === 'space') && !_filesystemReady()) {
+    return _filesystemBlockingText();
+  }
+  if (section === 'paths' && !_savedMediaApiConnected()) {
+    if (!_mediaPathsCompatible()) return `Media paths do not line up with ${LIBRARY_ROOT}. Check the mounts, then recheck.`;
+    return _mediaServerBlockText();
+  }
+  if (section === 'space') {
+    if (!_selectedMediaApisReady()) {
+      if (!_mediaPathsCompatible()) return `Media paths do not line up with ${LIBRARY_ROOT}. Check the mounts first.`;
+      return _mediaServerBlockText();
+    }
+    if (!_hasSavedMonitorDirs()) return 'Save a monitored directory first.';
+  }
+  return '';
+}
+
+function _applyConnectionAvailability() {
+  const reason = _sectionLockReason('connections');
+  const locked = !!reason;
+  _setNotice('connections-lock-note', reason);
+  document.getElementById('s-conn')?.classList.toggle('section-run-ghost', locked);
+  ['USE_PLEX', 'USE_JELLYFIN', 'btn-auto-detect-connections', 'btn-config-check'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = locked;
+    el.setAttribute('aria-disabled', locked ? 'true' : 'false');
+  });
+  CONNECTION_OVERRIDE_FIELDS.forEach(name => {
+    const input = document.getElementById(name);
+    const wrapper = document.getElementById(`override-field-${name}`);
+    const toggle = document.querySelector(`.secret-toggle[data-target="${name}"]`);
+    if (input) input.disabled = locked || wrapper?.classList.contains('connection-disabled');
+    if (toggle) toggle.disabled = locked || input?.disabled;
+  });
+}
+
+function _applyMoviePathAvailability() {
+  const reason = _sectionLockReason('paths');
+  const enabled = !reason;
+  _setNotice('movie-paths-api-note', reason);
+  document.getElementById('s-paths')?.classList.toggle('section-run-ghost', !enabled);
+  document.querySelectorAll('#monitor-dirs .monitor-dir, #monitor-dirs button').forEach(el => {
+    el.disabled = !enabled;
+    el.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  });
+  const addBtn = document.getElementById('btn-add-monitor-dir');
+  if (addBtn) {
+    addBtn.disabled = !enabled;
+    addBtn.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  }
+  const plexOk = enabled && _savedPlexApiConnected();
+  const jellyfinOk = enabled && _savedJellyfinApiConnected();
+  document.querySelectorAll('#plex-protect-group input, #plex-protect-group button').forEach(el => {
+    el.disabled = !plexOk;
+    el.setAttribute('aria-disabled', plexOk ? 'false' : 'true');
+  });
+  document.querySelectorAll('#jellyfin-protect-group input, #jellyfin-protect-group button').forEach(el => {
+    el.disabled = !jellyfinOk;
+    el.setAttribute('aria-disabled', jellyfinOk ? 'false' : 'true');
+  });
+  const radarrReady = !!_savedConfigHealth?.radarr_connected;
+  const sectionToggle = document.getElementById('section-enabled');
+  if (sectionToggle) sectionToggle.disabled = !enabled || !radarrReady;
+}
+
+function _applyAdvancedActionAvailability() {
+  const locked = _configActivityLocked() || !_filesystemReady();
+  _setNotice('advanced-run-lock-note',
+    _configActivityLocked()
+      ? 'A run is active. Advanced actions are locked.'
+      : (!_filesystemReady() ? _filesystemBlockingText() : '')
+  );
+  ['btn-clear-cache', 'btn-clear-logs', 'btn-imdb-download'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.dataset.runtimeLocked = locked ? '1' : '0';
+    if (locked) {
+      el.disabled = true;
+      el.classList.add('disabled');
+      el.setAttribute('aria-disabled', 'true');
+    }
+  });
+  _applyClearCacheButtonState();
+  _applyImdbDownloadButtonState();
+
+  // The headroom safety cap is the guardrail that blocks Live when Headroom is
+  // set too high; ghost and lock it during a run so it can't be changed while
+  // that run is relying on it.
+  const runActive = _configActivityLocked();
+  const safetyCard = document.getElementById('MAX_HEADROOM_PCT')?.closest('.config-card');
+  if (safetyCard) safetyCard.classList.toggle('section-run-ghost', runActive);
+  const safetyInput = document.getElementById('MAX_HEADROOM_PCT');
+  if (safetyInput) {
+    safetyInput.disabled = runActive;
+    safetyInput.setAttribute('aria-disabled', runActive ? 'true' : 'false');
+  }
+}
+
+function _applyConfigRuntimeLocks() {
+  _applyConnectionAvailability();
+  _applyMoviePathAvailability();
+  _applySpaceThresholdLock();
+  _applyAdvancedActionAvailability();
+}
+
+// Dependent blocks stay in the layout whatever the connection state — a
+// disconnected server's block is ghosted (dimmed, controls disabled, unlock
+// note shown) rather than hidden.
+function _setConnectionGhost(id, connected) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.toggle('connection-ghost', !connected);
+  const note = el.querySelector('.connection-unlock-note');
+  if (note) note.hidden = !!connected;
+}
+function syncSavedVisibilitySections() {
+  _setConnectionGhost('plex-protect-group', _savedPlexApiConnected());
+  _setConnectionGhost('jellyfin-protect-group', _savedJellyfinApiConnected());
+  _setConnectionGhost('optional-cleanup-box', !!_savedConfigHealth?.radarr_connected);
+  _applyConfigRuntimeLocks();
+}
+function _protectedCollectionsEnabled() {
+  return (_collectionSelections && _collectionSelections.plex && _collectionSelections.plex.size > 0);
+}
+function _savedConnectionHasValues(names) {
+  return names.every(name => String(_savedConfig?.[name] || '').trim() !== '');
+}
+function _savedConnectionReady(names, connected) {
+  // Use the last saved/probed connection state for dependent-field gating.
+  // Do not lock Optional Radarr cleanup or Protected collections while the user
+  // is merely editing URL/API fields; wait until those edits are saved and the
+  // backend probe says the saved connection no longer works.
+  return !!connected && _savedConnectionHasValues(names);
+}
+
+// Where -webkit-text-security is available (Chromium/WebKit) we mask secret
+// fields as type=text so password managers never offer to "save" the API key.
+// Browsers without it (Firefox) keep a real type=password field for masking.
+const _SECRET_CSS_MASK = !!(window.CSS && CSS.supports && CSS.supports('-webkit-text-security', 'disc'));
+
+function _initSecretFields() {
+  if (!_SECRET_CSS_MASK) return;
+  SECRET_OVERRIDE_FIELDS.forEach(name => {
+    const input = document.getElementById(name);
+    if (!input) return;
+    input.classList.add('secret-field');
+    input.classList.remove('secret-shown');
+    input.type = 'text';
+  });
+}
+
+function _isSecretRevealed(input) {
+  return _SECRET_CSS_MASK ? input.classList.contains('secret-shown') : input.type === 'text';
+}
+
+function _setSecretVisibility(name, visible) {
+  const input = document.getElementById(name);
+  const btn = document.querySelector(`.secret-toggle[data-target="${name}"]`);
+  if (!input || !btn) return;
+  if (_SECRET_CSS_MASK) {
+    input.classList.add('secret-field');
+    input.type = 'text';
+    input.classList.toggle('secret-shown', visible);
+  } else {
+    input.type = visible ? 'text' : 'password';
+  }
+  btn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+  btn.setAttribute('aria-label', `${visible ? 'Hide' : 'Show'} ${name}`);
+  btn.title = visible ? 'Hide value' : 'Show value';
+  const label = btn.querySelector('.secret-toggle-label');
+  if (label) label.textContent = visible ? 'Hide' : 'Show';
+}
+
+function _hideAllSecretFields() {
+  SECRET_OVERRIDE_FIELDS.forEach(name => _setSecretVisibility(name, false));
+}
+
+function _setOverrideFieldDisabled(name, disabled) {
+  const input = document.getElementById(name);
+  const toggle = document.querySelector(`.secret-toggle[data-target="${name}"]`);
+  if (input) input.disabled = !!disabled;
+  if (toggle) toggle.disabled = !!disabled;
+}
+
+// Auto Detect only fills credentials — URLs are handled by their placeholders
+// and the blank-saves-to-default rule, so it never overwrites a URL field.
+const CONNECTION_KEY_FIELDS = new Set(['TAUTULLI_API_KEY', 'PLEX_TOKEN', 'RADARR_API_KEY', 'JELLYFIN_API_KEY']);
+function _applyDetectedConnectionValues(values, { overwrite = false } = {}) {
+  if (!values || typeof values !== 'object') return false;
+  let changed = false;
+  CONNECTION_KEY_FIELDS.forEach(name => {
+    const value = values[name];
+    if (value === null || value === undefined || String(value).trim() === '') return;
+    const input = document.getElementById(name);
+    if (!input) return;
+    if (overwrite || !String(input.value || '').trim()) {
+      const next = String(value);
+      if (input.value !== next) {
+        input.value = next;
+        changed = true;
+      }
+    }
+  });
+  return changed;
+}
+
+async function autoDetectConnections({ overwrite = true, quiet = false } = {}) {
+  const btn = document.getElementById('btn-auto-detect-connections');
+  const status = document.getElementById('auto-detect-status');
+  const lockReason = _sectionLockReason('connections');
+  if (lockReason) {
+    _applyConfigRuntimeLocks();
+    if (!quiet) showToast(lockReason, 'warning');
+    return false;
+  }
+  if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); btn.textContent = 'Detecting…'; }
+  if (status && !quiet) status.textContent = 'Detecting…';
+  try {
+    const r = await fetch('/api/connections/autodetect', { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Auto Detect failed.');
+    const changed = _applyDetectedConnectionValues(d.values, { overwrite });
+    _hideAllSecretFields();
+    if (changed) {
+      markDirty();
+      if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+      if (status) status.textContent = 'Auto Detect filled the API keys it could read. Save them, then run Check for Errors.';
+      if (!quiet) showToast('Auto Detect filled the available API keys.', 'success');
+    } else {
+      if (status) status.textContent = d.ok
+        ? 'Auto Detect found keys, but the fields already matched them.'
+        : 'No API keys found in appdata — enter them manually.';
+      if (!quiet) showToast(status?.textContent || 'Auto Detect finished.', d.ok ? 'warning' : 'danger');
+    }
+    _syncDirtyState();
+    return changed;
+  } catch (e) {
+    if (status) status.textContent = 'Auto Detect failed: ' + e.message;
+    if (!quiet) showToast('Auto Detect failed: ' + e.message, 'danger');
+    return false;
+  } finally {
+    if (btn) { btn.disabled = !!_sectionLockReason('connections'); btn.classList.remove('btn-busy'); btn.textContent = 'Auto Detect API Keys'; }
+  }
+}
+
+// Animated open/close for the URLs and API Keys details, matching the
+// accordion sections' slide. Opening animates on the toggle event — that
+// covers the summary click AND the error-highlight code that sets .open
+// directly. Closing intercepts the summary click so the content can slide
+// shut before the details element actually closes.
+(function animateManualOverrides() {
+  const det = document.getElementById('manual-overrides');
+  const wrap = det?.querySelector('.details-anim');
+  const summary = det?.querySelector('summary');
+  if (!det || !wrap || !summary) return;
+  // One persistent listener + a mode field instead of per-animation
+  // add/remove: a missed transitionend (reduced motion, interrupted
+  // animation) can then never leave a stale handler behind to sabotage
+  // the next open.
+  let mode = null; // 'open' | 'close' | null
+  const settle = () => { wrap.style.height = ''; mode = null; };
+  wrap.addEventListener('transitionend', (e) => {
+    if (e.target !== wrap || e.propertyName !== 'height') return;
+    if (mode === 'close') det.open = false;
+    settle();
+  });
+  det.addEventListener('toggle', () => {
+    if (!det.open || mode) return;
+    mode = 'open';
+    wrap.style.height = '0px';
+    requestAnimationFrame(() => { wrap.style.height = wrap.scrollHeight + 'px'; });
+    setTimeout(() => { if (mode === 'open') settle(); }, 500);
+  });
+  summary.addEventListener('click', (e) => {
+    if (!det.open || mode) return; // opens are handled by the toggle event
+    e.preventDefault();
+    mode = 'close';
+    wrap.style.height = wrap.scrollHeight + 'px';
+    requestAnimationFrame(() => { wrap.style.height = '0px'; });
+    setTimeout(() => { if (mode === 'close') { det.open = false; settle(); } }, 500);
+  });
+})();
+
+_initSecretFields();
+document.querySelectorAll('.secret-toggle').forEach(btn => {
+  btn.addEventListener('click', (event) => {
+    event.preventDefault();
+    const name = btn.dataset.target;
+    const input = document.getElementById(name);
+    if (!name || !input || btn.disabled) return;
+    _setSecretVisibility(name, !_isSecretRevealed(input));
+  });
+});
+
+
+// ── Collapsed-section issue markers ──────────────────────────────────────────
+// Validation and connection warnings can live inside collapsed accordion tabs.
+// Add a subtle marker to the section header whenever that section contains a
+// visible red field/card so the user knows where to open next.
+const CONFIG_SECTION_ISSUE_SELECTOR = [
+  '.field-invalid',
+  '.connection-highlight',
+  '.mount-card-problem',
+  '.config-status-box.status-error'
+].join(',');
+let _sectionIssueUpdateQueued = false;
+
+function _ensureSectionIssueIndicators() {
+  document.querySelectorAll('#cfg-accordion .accordion-button').forEach(btn => {
+    if (btn.querySelector('.cfg-section-issue-indicator')) return;
+    const marker = document.createElement('span');
+    marker.className = 'cfg-section-issue-indicator';
+    marker.textContent = '!';
+    marker.setAttribute('aria-hidden', 'true');
+    marker.title = 'This section has a field that needs attention.';
+    btn.appendChild(marker);
+  });
+}
+
+function _elementIsEffectivelyHidden(el) {
+  if (!el) return true;
+  if (el.hidden || el.getAttribute('aria-hidden') === 'true') return true;
+  if (el.classList?.contains('d-none')) return true;
+  const style = window.getComputedStyle(el);
+  return style.display === 'none' || style.visibility === 'hidden';
+}
+
+function _sectionHasVisibleIssue(sectionEl) {
+  if (!sectionEl) return false;
+  return [...sectionEl.querySelectorAll(CONFIG_SECTION_ISSUE_SELECTOR)].some(el => {
+    if (_elementIsEffectivelyHidden(el)) return false;
+    if (el.classList.contains('connection-disabled') && !el.classList.contains('connection-highlight')) return false;
+    return true;
+  });
+}
+
+function _updateSectionIssueIndicators() {
+  _ensureSectionIssueIndicators();
+  document.querySelectorAll('#cfg-accordion .accordion-item').forEach(item => {
+    const button = item.querySelector(':scope > .accordion-header .accordion-button');
+    const section = item.querySelector(':scope > .accordion-collapse');
+    const hasIssue = _sectionHasVisibleIssue(section);
+    button?.classList.toggle('section-has-issue', hasIssue);
+    if (button) {
+      const sectionName = button.textContent.replace('!', '').trim();
+      button.title = hasIssue
+        ? `${sectionName} has a field that needs attention.`
+        : '';
+    }
+  });
+}
+
+function _scheduleSectionIssueUpdate() {
+  if (_sectionIssueUpdateQueued) return;
+  _sectionIssueUpdateQueued = true;
+  window.requestAnimationFrame(() => {
+    _sectionIssueUpdateQueued = false;
+    _updateSectionIssueIndicators();
+  });
+}
+
+function _connectionOnboardingForceConnections() {
+  try {
+    return new URLSearchParams(window.location.search).get('onboarding') === 'connections';
+  } catch (_) {
+    return false;
+  }
+}
+
+function _runConnectionOnboardingScroll() {
+  // Jump to Connections (accordion open, API-field overrides expanded) both
+  // during first-run onboarding and whenever the last probe found API errors
+  // — the failing fields are already highlighted by _applyConfigHealth.
+  if (!_connectionOnboardingActive && !_connectionErrorOnLoad) return;
+  const forceConnections = _connectionOnboardingForceConnections();
+  if (!_connectionErrorOnLoad && !forceConnections && window.location.hash && window.location.hash !== '#connections-section' && window.location.hash !== '#s-conn') return;
+
+  const section = document.getElementById('s-conn');
+  const target = document.getElementById('connections-section') || section;
+  const details = document.getElementById('manual-overrides');
+  if (details) details.open = true;
+
+  if (section) {
+    try {
+      bootstrap.Collapse.getOrCreateInstance(section, { toggle: false }).show();
+    } catch (_) {
+      section.classList.add('show');
+      document.querySelector('[data-bs-target="#s-conn"]')?.classList.remove('collapsed');
+    }
+  }
+
+  prScrollTo(target, { delayMs: 140 });
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _runConnectionOnboardingScroll, { once: true });
+} else {
+  _runConnectionOnboardingScroll();
+}
+
+// Deep link from the Dashboard's Cleanup Targets gear: open the collapsed
+// accordion section and scroll to it. The explicit scroll (a beat after the
+// connection-onboarding scroll's rAF+140ms) makes the user's clicked target
+// win over the connection-error auto-scroll.
+function _openSpaceThresholdsFromHash() {
+  if (window.location.hash !== '#space-thresholds-section') return;
+  _showSection('s-space');
+  document.querySelector('[data-bs-target="#s-space"]')?.classList.remove('collapsed');
+  prScrollTo(document.getElementById('space-thresholds-section'), { delayMs: 300 });
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', _openSpaceThresholdsFromHash, { once: true });
+} else {
+  _openSpaceThresholdsFromHash();
+}
+
+// Show the delay/Redline advisory on first load too — the form is server-
+// rendered (populateForm only runs after save/revert), so without this it would
+// only appear once a field changed.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => _updateDelayRedlineAdvisory(), { once: true });
+} else {
+  _updateDelayRedlineAdvisory();
+}
+
+// First-launch time-zone auto-detect (base.html) fires this once the server has
+// saved the browser's zone. Reflect it in the dropdown and treat it as the saved
+// value so the form doesn't read as dirty (nothing was manually changed).
+window.addEventListener('pr-timezone-initialized', (e) => {
+  const tz = e && e.detail && e.detail.tz;
+  if (!tz) return;
+  const sel = document.getElementById('TIME_ZONE');
+  if (sel) {
+    if (![...sel.options].some(o => o.value === tz)) sel.add(new Option(tz, tz), sel.options[1] || null);
+    sel.value = tz;
+  }
+  if (typeof _savedConfig === 'object' && _savedConfig) _savedConfig.TIME_ZONE = tz;
+  window.PR_SERVER_TIME_ZONE = tz;
+});
+
+function _toggleButtonClass(el, enabledClass, disabledClass, enabled) {
+  if (!el) return;
+  el.classList.toggle(enabledClass, !!enabled);
+  el.classList.toggle(disabledClass, !enabled);
+  el.disabled = !enabled;
+  el.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+}
+
+function _revertStyle(on) {
+  ['btn-revert'].forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const enabled = !!on && !_savePending;
+    el.classList.toggle('btn-revert-active', enabled);
+    el.disabled = !enabled;
+    el.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+  });
+}
+
+function _saveStyle(on) {
+  ['btn-save'].forEach(id => {
+    const el = document.getElementById(id);
+    if (_savePending) {
+      if (!el) return;
+      el.classList.add('btn-success');
+      el.classList.remove('btn-outline-secondary');
+      el.disabled = true;
+      el.setAttribute('aria-disabled', 'true');
+      el.setAttribute('aria-busy', 'true');
+      return;
+    }
+    if (el) el.removeAttribute('aria-busy');
+    _toggleButtonClass(el, 'btn-success', 'btn-outline-secondary', on);
+  });
+}
+
+function _sectionResetStyle(section, on) {
+  const el = document.getElementById(`btn-reset-${section}`);
+  if (!el) return;
+  const locked = section === 'space' && _spaceThresholdsLocked();
+  const missingSavedLibrary = section === 'space' && !_spaceThresholdsHaveUsableLibrary();
+  const enabled = !!on && !locked && !missingSavedLibrary;
+  el.disabled = !enabled;
+  el.setAttribute('aria-disabled', enabled ? 'false' : 'true');
+}
+
+function _numOrNull(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+function _positiveNumOrNull(value) {
+  const n = _numOrNull(value);
+  return n !== null && n > 0 ? n : null;
+}
+function _str(value) { return value === null || value === undefined ? '' : String(value); }
+function _strOrNull(value) {
+  return value === null || value === undefined || value === '' ? null : String(value);
+}
+function _arrayOfStrings(value) {
+  return Array.isArray(value) ? value.map(v => String(v ?? '').trim()).filter(Boolean) : [];
+}
+function _librarySuffix(value) {
+  let raw = String(value ?? '').trim().replaceAll('\\', '/');
+  if (!raw) return '';
+  if (raw === '/' || raw === LIBRARY_ROOT || raw === LIBRARY_ROOT_NAME) return '/';
+  if (raw.startsWith(LIBRARY_ROOT + '/')) raw = raw.slice(LIBRARY_ROOT.length + 1);
+  else if (raw.startsWith(LIBRARY_ROOT_NAME + '/')) raw = raw.slice(LIBRARY_ROOT_NAME.length + 1);
+  else raw = raw.replace(/^\/+/, '');
+  return raw.replace(/^\/+/, '').replace(/\/+$/, '');
+}
+function _libraryPath(value) {
+  const suffix = _librarySuffix(value);
+  if (suffix === '/') return LIBRARY_ROOT;
+  return suffix ? `${LIBRARY_ROOT}/${suffix}` : '';
+}
+function _monitorDirsFromInputs() {
+  return [...document.querySelectorAll('.monitor-dir')]
+    .map(i => _libraryPath(i.value))
+    .filter(Boolean);
+}
+function _hasSavedMonitorDirs() {
+  return _monitorDirsFromConfig(_savedConfig).length > 0;
+}
+function _monitorDirsFromConfig(cfg) {
+  return _arrayOfStrings(cfg?.MONITOR_DIRS).map(_libraryPath).filter(Boolean);
+}
+function _monitorDirInputSuffixes() {
+  return [...document.querySelectorAll('.monitor-dir')].map(i => _librarySuffix(i.value));
+}
+function _monitorDirSuffixesFromConfig(cfg) {
+  return _monitorDirsFromConfig(cfg).map(p => _librarySuffix(p));
+}
+function _arraysMatch(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => v === b[i]);
+}
+function _monitorDirRowsMatchConfig(cfg) {
+  return _arraysMatch(_monitorDirInputSuffixes(), _monitorDirSuffixesFromConfig(cfg));
+}
+function _canonicalConfig(cfg) {
+  cfg = cfg || {};
+  const monitorDirs = _monitorDirsFromConfig(cfg);
+  return {
+    RUN_MODE: cfg.RUN_MODE === 'headroom' ? 'headroom' : 'paused',
+    HEADROOM_GB: _numOrNull(cfg.HEADROOM_GB),
+    REDLINE_GB: _numOrNull(cfg.REDLINE_GB),
+    MAX_LIBRARY_GB: _positiveNumOrNull(cfg.MAX_LIBRARY_GB),
+    DELETE_DELAY_DAYS: _numOrNull(cfg.DELETE_DELAY_DAYS) ?? 0,
+    MAX_HEADROOM_PCT: _numOrNull(cfg.MAX_HEADROOM_PCT),
+    OUTPUT_DIR: _str(cfg.OUTPUT_DIR),
+    CHECK_PATH: LIBRARY_ROOT,
+    MONITOR_DIRS: monitorDirs,
+    MOVIE_EXTENSIONS: _arrayOfStrings(cfg.MOVIE_EXTENSIONS),
+    PROTECTED_COLLECTIONS: [..._arrayOfStrings(cfg.PROTECTED_COLLECTIONS)].sort(),
+    USE_PLEX: !!cfg.USE_PLEX,
+    USE_JELLYFIN: !!cfg.USE_JELLYFIN,
+    JELLYFIN_URL: _str(cfg.JELLYFIN_URL),
+    JELLYFIN_API_KEY: _str(cfg.JELLYFIN_API_KEY),
+    JELLYFIN_PROTECTED_COLLECTIONS: [..._arrayOfStrings(cfg.JELLYFIN_PROTECTED_COLLECTIONS)].sort(),
+    // On/off is all the user controls now — the stored value may be "auto" or
+    // the detected concrete section id, so comparing the raw string would mark
+    // the form dirty forever after a detection lands.
+    RADARR_OVERSEERR_SECTION_ID: _strOrNull(cfg.RADARR_OVERSEERR_SECTION_ID) === null ? null : 'auto',
+    _RADARR_DETECTED_SECTION_ID: _strOrNull(cfg._RADARR_DETECTED_SECTION_ID),
+    _RADARR_DETECTED_SECTION_NAME: _strOrNull(cfg._RADARR_DETECTED_SECTION_NAME),
+    _RADARR_DETECTED_SECTION_METHOD: _strOrNull(cfg._RADARR_DETECTED_SECTION_METHOD),
+    _RADARR_DETECTED_SECTION_METHOD_LABEL: _strOrNull(cfg._RADARR_DETECTED_SECTION_METHOD_LABEL),
+    IMDB_RATINGS_URL: _str(cfg.IMDB_RATINGS_URL),
+    IMDB_RATINGS_MAX_AGE_DAYS: _numOrNull(cfg.IMDB_RATINGS_MAX_AGE_DAYS),
+    LOG_RETENTION_DAYS: (cfg.LOG_RETENTION_DAYS ?? 30),
+    KEEP_INTERRUPTED_LOGS: !!cfg.KEEP_INTERRUPTED_LOGS,
+    DEBUG_MODE: !!cfg.DEBUG_MODE,
+    TIME_ZONE: _str(cfg.TIME_ZONE || 'auto'),
+    DISPLAY_TIME_FORMAT: _str(cfg.DISPLAY_TIME_FORMAT || '12h'),
+    DAILY_RUN_TIME: _str(cfg.DAILY_RUN_TIME || '00:00'),
+    TAUTULLI_APPDATA: _str(cfg.TAUTULLI_APPDATA),
+    RADARR_APPDATA: _str(cfg.RADARR_APPDATA),
+    TAUTULLI_URL: _str(cfg.TAUTULLI_URL),
+    TAUTULLI_API_KEY: _str(cfg.TAUTULLI_API_KEY),
+    PLEX_URL: _str(cfg.PLEX_URL),
+    PLEX_TOKEN: _str(cfg.PLEX_TOKEN),
+    RADARR_URL: _str(cfg.RADARR_URL),
+    RADARR_API_KEY: _str(cfg.RADARR_API_KEY),
+  };
+}
+function _stableStringify(value) {
+  if (Array.isArray(value)) return '[' + value.map(_stableStringify).join(',') + ']';
+  if (value && typeof value === 'object') {
+    return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + _stableStringify(value[k])).join(',') + '}';
+  }
+  return JSON.stringify(value);
+}
+function _configsMatch(a, b) {
+  const ca = _canonicalConfig(a);
+  const cb = _canonicalConfig(b);
+  // With no monitored directories saved, the Space Threshold inputs are locked
+  // and the form deliberately reports them zeroed — the user can't touch them,
+  // so a difference against the saved defaults isn't an unsaved change (it
+  // made fresh installs load permanently "dirty" with Revert armed).
+  if (!_spaceThresholdsHaveUsableLibrary() && !_hasSavedMonitorDirs()) {
+    ['HEADROOM_GB', 'REDLINE_GB', 'MAX_LIBRARY_GB'].forEach(k => { delete ca[k]; delete cb[k]; });
+  }
+  // While the saved Live mode is blocked (connection down / bad thresholds on
+  // load), the form deliberately presents Paused and the Live radio is
+  // disabled — the user CANNOT reproduce the saved 'headroom' state. Compare
+  // both sides as the effective presented mode, or the page loads dirty with
+  // an un-cleanable Revert loop (Revert re-checks the disabled radio, which
+  // immediately snaps back to Paused and differs again).
+  const liveRadio = document.getElementById('mode-headroom');
+  if (liveRadio && liveRadio.disabled) {
+    if (ca.RUN_MODE === 'headroom') ca.RUN_MODE = 'paused';
+    if (cb.RUN_MODE === 'headroom') cb.RUN_MODE = 'paused';
+  }
+  return _stableStringify(ca) === _stableStringify(cb);
+}
+
+const SECTION_DEFAULT_FIELDS = {
+  space: ['HEADROOM_GB', 'REDLINE_GB', 'MAX_LIBRARY_GB', 'DELETE_DELAY_DAYS'],
+  advanced: ['IMDB_RATINGS_URL', 'IMDB_RATINGS_MAX_AGE_DAYS', 'LOG_RETENTION_DAYS', 'KEEP_INTERRUPTED_LOGS', 'DEBUG_MODE', 'MAX_HEADROOM_PCT'],
+};
+
+
+function _isLiveRunMode(mode) {
+  return mode === 'headroom';
+}
+
+function _spaceThresholdsLocked() {
+  return _configActivityLocked() || _savedLiveModeLocked();
+}
+
+function _setDisabled(id, disabled) {
+  const el = document.getElementById(id);
+  if (el) el.disabled = !!disabled;
+}
+
+function _applySpaceThresholdLock() {
+  const locked = _spaceThresholdsLocked();
+  const selectedApisReady = _selectedMediaApisReady();
+  const hasSavedDirs = _hasSavedMonitorDirs();
+  const hasMonitorDirs = _spaceThresholdsHaveUsableLibrary();
+  const section = document.getElementById('space-thresholds-section');
+  const note = document.getElementById('space-threshold-lock-note');
+  const apiNote = document.getElementById('space-threshold-api-note');
+  const pathsNote = document.getElementById('space-threshold-paths-note');
+  const resetBtn = document.getElementById('btn-reset-space');
+  const headroomInput = document.getElementById('HEADROOM_GB');
+  const redlineToggle = document.getElementById('redline-enabled');
+  const redlineInput = document.getElementById('REDLINE_GB');
+  const redlineOn = !!document.getElementById('redline-enabled')?.checked;
+
+  section?.classList.toggle('space-thresholds-locked', locked);
+  document.getElementById('s-space')?.classList.toggle('section-run-ghost', locked);
+  if (note) {
+    note.textContent = _sectionLockReason('space') || 'Pause Live mode before changing thresholds.';
+    note.hidden = !locked;
+  }
+  if (apiNote) apiNote.hidden = selectedApisReady || locked;
+  if (pathsNote) pathsNote.hidden = hasMonitorDirs || !selectedApisReady || locked;
+  if (resetBtn) resetBtn.disabled = locked || !hasMonitorDirs;
+
+  if (!hasSavedDirs) {
+    if (headroomInput) headroomInput.value = '0';
+    if (redlineToggle) redlineToggle.checked = false;
+    if (redlineInput) redlineInput.value = '';
+    _headroomValidationArmed = false;
+    _redlineValidationArmed = false;
+  }
+
+  _setDisabled('HEADROOM_GB', locked || !hasMonitorDirs);
+  _setDisabled('redline-enabled', locked || !hasMonitorDirs);
+  _setDisabled('REDLINE_GB', locked || !hasMonitorDirs || !redlineOn);
+  _setDisabled('DELETE_DELAY_DAYS', locked || !hasMonitorDirs);
+  _applySpaceThresholdAvailability();
+}
+
+function _applySpaceThresholdAvailability() {
+  const locked = _spaceThresholdsLocked();
+  const selectedApisReady = _selectedMediaApisReady();
+  const hasSavedDirs = _hasSavedMonitorDirs();
+  const hasMonitorDirs = _spaceThresholdsHaveUsableLibrary();
+  const capToggle = document.getElementById('cap-enabled');
+  const capInput = document.getElementById('MAX_LIBRARY_GB');
+  const capNote = document.getElementById('cap-paths-note');
+  const capGroup = document.getElementById('cap-input-group');
+
+  if (capToggle && !hasSavedDirs) {
+    capToggle.checked = false;
+    _capValidationArmed = false;
+  }
+  if (capInput && !hasSavedDirs) capInput.value = '';
+
+  const capOn = !!capToggle?.checked;
+  if (capToggle) capToggle.disabled = locked || !hasMonitorDirs;
+  if (capInput) capInput.disabled = locked || !hasMonitorDirs || !capOn;
+  if (capNote) {
+    capNote.hidden = hasMonitorDirs;
+    capNote.textContent = selectedApisReady
+      ? 'Save a monitored directory first.'
+      : (!_filesystemReady() ? _filesystemBlockingText() : _mediaServerBlockText());
+  }
+  capGroup?.classList.toggle('connection-disabled', !hasMonitorDirs);
+}
+
+function _applyLibraryCapAvailability() {
+  _applySpaceThresholdAvailability();
+}
+
+function _sectionValues(cfg, section) {
+  const canonical = _canonicalConfig(cfg);
+  const out = {};
+  (SECTION_DEFAULT_FIELDS[section] || []).forEach(k => { out[k] = canonical[k]; });
+  return out;
+}
+
+function _sectionMatchesDefault(section) {
+  try { return _stableStringify(_sectionValues(getFormConfig(), section)) === _stableStringify(_sectionValues(_defaultConfig, section)); }
+  catch { return false; }
+}
+function _optionalEnabledInvalidDirty() {
+  return (_spaceThresholdsHaveUsableLibrary() && document.getElementById('cap-enabled')?.checked && !_libraryCapConfigured())
+    || (_spaceThresholdsHaveUsableLibrary() && document.getElementById('redline-enabled')?.checked && (!_nonNegativeNumberFilled('REDLINE_GB') || _redlineExceedsHeadroom()));
+}
+
+function _hasUnsavedChanges() {
+  try {
+    return !_configsMatch(getFormConfig(), _savedConfig) || !_monitorDirRowsMatchConfig(_savedConfig) || _optionalEnabledInvalidDirty();
+  } catch { return _dirty; }
+}
+
+function _syncSectionResetState() {
+  Object.keys(SECTION_DEFAULT_FIELDS).forEach(section => {
+    _sectionResetStyle(section, !_sectionMatchesDefault(section));
+  });
+}
+
+
+function _syncDirtyState() {
+  const isDirty = !_configInvalidLocked && _hasUnsavedChanges();
+  _dirty = isDirty;
+  _revertStyle(isDirty);
+  _saveStyle(isDirty);
+  _syncSectionResetState();
+  _applyImdbDownloadButtonState();
+  // Disarm the "Are you sure?" state only when the form is no longer dirty.
+  // Disarming just because it's armed would wipe the confirmation before
+  // saveConfig's double-click check sees it (via _setSavePending's dirty-sync),
+  // re-arming on every click. Outside-click and Run Mode changes disarm through
+  // their own listeners.
+  if (!isDirty) _resetConfirm();
+  return isDirty;
+}
+function markDirty() { _syncDirtyState(); }
+function clearDirty() {
+  _dirty = false;
+  _monitorDirsValidationArmed = false;
+  validateMonitorDirs();
+  _revertStyle(false);
+  _saveStyle(false);
+  _syncSectionResetState();
+  _applyImdbDownloadButtonState();
+}
+
+// Detect any change inside the form
+document.getElementById('cfg-form').addEventListener('input',  markDirty);
+document.getElementById('cfg-form').addEventListener('change', markDirty);
+document.getElementById('monitor-dirs')?.addEventListener('input', (event) => {
+  if (event.target?.classList?.contains('monitor-dir')) {
+    _applySpaceThresholdLock();
+    validateHeadroom({ show: false, focus: false });
+    validateRedline({ show: false, focus: false });
+    validateLibraryCap({ show: false, focus: false });
+    _updatePills();
+  }
+  if (event.target?.classList?.contains('monitor-dir') && _monitorDirsValidationArmed) {
+    const row = event.target.closest('.monitor-dir-row');
+    if (row) row.dataset.monitorIssue = '';
+    validateMonitorDirs();
+    _debounceMonitorDirRemoteValidation();
+    _syncDirtyState();
+  }
+});
+
+// ── Dynamic rows ──────────────────────────────────────────────────────────────
+
+const _escapeAttr = prHtmlEsc;  // shared with Filtering & Scoring (base.html)
+
+function addMonitorDir(value = '', { mark = true, focus = true } = {}) {
+  const pathsEditable = _savedMediaApiConnected();
+  if (!pathsEditable && mark) {
+    _applyMoviePathAvailability();
+    showToast(_mediaServerBlockText(), 'warning');
+    return;
+  }
+  const el = document.getElementById('monitor-dirs');
+  const row = document.createElement('div');
+  row.className = 'monitor-dir-wrapper mb-2';
+  row.innerHTML = `
+    <div class="input-group monitor-dir-row">
+      <input type="text" class="form-control monitor-dir" value="${_escapeAttr(_librarySuffix(value))}" placeholder="Movies" aria-label="Monitored library subfolder">
+      <button type="button" class="btn btn-outline-secondary" onclick="openLibraryBrowser(this)">Browse…</button>
+      <button type="button" class="btn btn-outline-secondary monitor-remove-btn" onclick="removeMonitorDir(this)" aria-label="Remove this monitored folder" title="Remove"><span aria-hidden="true">✕</span></button>
+    </div>
+    <div class="field-error monitor-dir-error"></div>`;
+  el.appendChild(row);
+  const input = row.querySelector('.monitor-dir');
+  _applyMoviePathAvailability();
+  _applySpaceThresholdLock();
+  if (mark) markDirty();
+  if (focus && input) setTimeout(() => input.focus(), 0);
+}
+
+function removeMonitorDir(button) {
+  if (!_savedMediaApiConnected()) {
+    _applyMoviePathAvailability();
+    showToast(_mediaServerBlockText(), 'warning');
+    return;
+  }
+  button?.closest?.('.monitor-dir-wrapper')?.remove();
+  _applySpaceThresholdLock();
+  if (_monitorDirsValidationArmed) validateMonitorDirs();
+  validateHeadroom({ show: false, focus: false });
+  validateRedline({ show: false, focus: false });
+  validateLibraryCap({ show: false, focus: false });
+  _updatePills();
+  markDirty();
+}
+
+let _libraryBrowserTargetInput = null;
+let _libraryBrowserCurrentPath = LIBRARY_ROOT;
+let _libraryBrowserParentPath = LIBRARY_ROOT;
+
+function _browserSuffix(path) {
+  return _librarySuffix(path);
+}
+
+
+function openLibraryBrowser(button) {
+  if (!_savedMediaApiConnected()) {
+    _applyMoviePathAvailability();
+    showToast(_mediaServerBlockText(), 'warning');
+    return;
+  }
+  const row = button?.closest?.('.monitor-dir-row');
+  _libraryBrowserTargetInput = row?.querySelector?.('.monitor-dir') || null;
+  const start = _libraryBrowserTargetInput?.value ? _libraryPath(_libraryBrowserTargetInput.value) : LIBRARY_ROOT;
+  browseLibraryPath(start);
+  const modalEl = document.getElementById('library-browser-modal');
+  if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+async function browseLibraryPath(path = LIBRARY_ROOT) {
+  const list = document.getElementById('library-browser-list');
+  const empty = document.getElementById('library-browser-empty');
+  const err = document.getElementById('library-browser-error');
+  const cur = document.getElementById('library-browser-current');
+  const up = document.getElementById('library-browser-up');
+  const choose = document.getElementById('library-browser-choose');
+  if (list) list.innerHTML = '<div class="form-text">Loading…</div>';
+  if (empty) empty.classList.add('d-none');
+  if (err) { err.classList.add('d-none'); err.textContent = ''; }
+
+  try {
+    const r = await fetch('/api/library/browse?path=' + encodeURIComponent(path || LIBRARY_ROOT));
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || 'Unable to browse library.');
+
+    _libraryBrowserCurrentPath = d.path || LIBRARY_ROOT;
+    _libraryBrowserParentPath = d.parent || LIBRARY_ROOT;
+    if (cur) cur.textContent = _libraryBrowserCurrentPath;
+    // At the library root the suffix is '/' — truthy — so "!suffix" never
+    // disabled anything. Up has nowhere to go at the root; Choose stays
+    // enabled ('/' is a legal monitored value meaning the whole library).
+    if (up) up.disabled = _browserSuffix(_libraryBrowserCurrentPath) === '/';
+    if (choose) choose.disabled = !_browserSuffix(_libraryBrowserCurrentPath);
+
+    if (list) {
+      list.innerHTML = '';
+      (d.dirs || []).forEach(item => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'list-group-item list-group-item-action library-browser-row';
+        btn.textContent = '📁 ' + item.name;
+        btn.addEventListener('click', () => browseLibraryPath(item.path));
+        list.appendChild(btn);
+      });
+    }
+    if (empty) empty.classList.toggle('d-none', !!(d.dirs || []).length);
+  } catch (e) {
+    if (list) list.innerHTML = '';
+    if (err) { err.textContent = e.message; err.classList.remove('d-none'); }
+  }
+}
+
+function chooseLibraryBrowserPath() {
+  if (!_libraryBrowserTargetInput) return;
+  _libraryBrowserTargetInput.value = _browserSuffix(_libraryBrowserCurrentPath);
+  _libraryBrowserTargetInput.dispatchEvent(new Event('input', { bubbles: true }));
+  const modalEl = document.getElementById('library-browser-modal');
+  if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+}
+
+// ── Populate form from a config object ───────────────────────────────────────
+
+function populateForm(cfg) {
+  const sv  = (id, val) => { const e = document.getElementById(id); if (e) e.value = val ?? ''; };
+  const sc  = (id, on)  => { const e = document.getElementById(id); if (e) e.checked = !!on; };
+  const sd  = (id, dis) => { const e = document.getElementById(id); if (e) e.disabled = dis; };
+  const cfgHasMonitorDirs = _monitorDirsFromConfig(cfg).length > 0;
+
+  const uiMode = cfg.RUN_MODE === 'headroom' ? 'headroom' : 'paused';
+  const modeEl = document.querySelector(`input[name="RUN_MODE"][value="${uiMode}"]`);
+  if (modeEl) modeEl.checked = true;
+
+  sv('HEADROOM_GB', cfgHasMonitorDirs ? cfg.HEADROOM_GB : 0);
+  _headroomValidationArmed = false;
+  validateHeadroom();
+  const hasRedline = cfgHasMonitorDirs && cfg.REDLINE_GB !== null && cfg.REDLINE_GB !== undefined;
+  sc('redline-enabled', hasRedline); sd('REDLINE_GB', !hasRedline);
+  // A disabled field keeps its last entered value visible (greyed out).
+  sv('REDLINE_GB', hasRedline ? cfg.REDLINE_GB : (cfg._REDLINE_GB_LAST ?? ''));
+  _redlineValidationArmed = false;
+  validateRedline();
+
+  const hasCap = cfgHasMonitorDirs && cfg.MAX_LIBRARY_GB !== null && cfg.MAX_LIBRARY_GB !== undefined && Number(cfg.MAX_LIBRARY_GB) > 0;
+  sc('cap-enabled', hasCap); sd('MAX_LIBRARY_GB', !hasCap);
+  sv('MAX_LIBRARY_GB', hasCap ? cfg.MAX_LIBRARY_GB : (cfg._MAX_LIBRARY_GB_LAST ?? ''));
+  _capValidationArmed = false;
+
+  sv('DELETE_DELAY_DAYS', cfg.DELETE_DELAY_DAYS ?? 0);
+  _deleteDelayValidationArmed = false;
+  validateDeleteDelay();
+
+  _monitorDirsValidationArmed = false;
+  document.getElementById('monitor-dirs').innerHTML = '';
+  (cfg.MONITOR_DIRS || []).forEach(dir => addMonitorDir(dir, { mark: false, focus: false }));
+  validateMonitorDirs();
+  _applySpaceThresholdLock();
+  validateLibraryCap();
+  // After monitored dirs are populated (so "usable library" is known) — the
+  // per-field validators above ran before that, when the advisory would hide.
+  _updateDelayRedlineAdvisory();
+
+  sc('USE_PLEX', cfg.USE_PLEX);
+  sc('USE_JELLYFIN', cfg.USE_JELLYFIN);
+  sv('JELLYFIN_URL', cfg.JELLYFIN_URL);
+  sv('JELLYFIN_API_KEY', cfg.JELLYFIN_API_KEY);
+  initCollections(cfg);
+  onServerSoftwareChange();
+  syncSavedVisibilitySections();
+
+  [   'TAUTULLI_URL','TAUTULLI_API_KEY','PLEX_URL','PLEX_TOKEN',
+   'RADARR_URL','RADARR_API_KEY'].forEach(k => sv(k, cfg[k]));
+  _hideAllSecretFields();
+
+  const hasSection = cfg.RADARR_OVERSEERR_SECTION_ID !== null && cfg.RADARR_OVERSEERR_SECTION_ID !== undefined;
+  sc('section-enabled', hasSection);
+  _syncSavedRadarrSectionDetection(cfg);
+
+  sv('IMDB_RATINGS_URL', cfg.IMDB_RATINGS_URL);
+  sv('IMDB_RATINGS_MAX_AGE_DAYS', cfg.IMDB_RATINGS_MAX_AGE_DAYS);
+  sv('LOG_RETENTION_DAYS', cfg.LOG_RETENTION_DAYS ?? 30);
+  sc('KEEP_INTERRUPTED_LOGS', cfg.KEEP_INTERRUPTED_LOGS);
+  sc('DEBUG_MODE', cfg.DEBUG_MODE);
+  sv('TIME_ZONE', cfg.TIME_ZONE || 'auto');
+  sv('DISPLAY_TIME_FORMAT', cfg.DISPLAY_TIME_FORMAT || '12h');
+  sv('DAILY_RUN_TIME', cfg.DAILY_RUN_TIME || '00:00');
+  updateServerClockLine();
+  sv('MAX_HEADROOM_PCT', cfg.MAX_HEADROOM_PCT);
+  _maxHeadroomPctValidationArmed = false;
+  validateMaxHeadroomPct();
+  _updatePills();
+  syncDebugModeVisibility();
+  if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+  _applyConfigRuntimeLocks();
+}
+
+// ── Read form values ──────────────────────────────────────────────────────────
+
+function getFormConfig() {
+  const v   = (id) => document.getElementById(id)?.value ?? '';
+  const n   = (id) => parseFloat(v(id)) || 0;
+  const requiredNumber = (id) => prBlankNumber(id);  // blank/garbage -> null
+  const chk = (id) => document.getElementById(id)?.checked;
+  const hasSavedDirs = _hasSavedMonitorDirs();
+  const selectedApisReady = _selectedMediaApisReady();
+  const thresholdsUsable = _spaceThresholdsHaveUsableLibrary();
+  const preserveLockedThresholds = hasSavedDirs && !selectedApisReady;
+  const savedHeadroom = _numOrNull(_savedConfig?.HEADROOM_GB) ?? 0;
+  const savedRedline = _numOrNull(_savedConfig?.REDLINE_GB);
+  const savedLibraryCap = _positiveNumOrNull(_savedConfig?.MAX_LIBRARY_GB);
+  return {
+    RUN_MODE: document.querySelector('input[name="RUN_MODE"]:checked')?.value ?? 'paused',
+    // Blank Headroom saves as 0 — same silent fill-in as the grace period.
+    HEADROOM_GB: thresholdsUsable ? (requiredNumber('HEADROOM_GB') ?? 0) : (preserveLockedThresholds ? savedHeadroom : 0),
+    REDLINE_GB:  thresholdsUsable ? (chk('redline-enabled') ? requiredNumber('REDLINE_GB') : null) : (preserveLockedThresholds ? savedRedline : null),
+    MAX_LIBRARY_GB: thresholdsUsable ? (chk('cap-enabled') ? n('MAX_LIBRARY_GB') : null) : (preserveLockedThresholds ? savedLibraryCap : null),
+    // Whole days a movie stays marked before deletion; blank saves as 0.
+    DELETE_DELAY_DAYS: thresholdsUsable ? (prBlankNumber('DELETE_DELAY_DAYS', 1) ?? 1)
+                                        : (preserveLockedThresholds ? (_numOrNull(_savedConfig?.DELETE_DELAY_DAYS) ?? 1) : 1),
+    // Text still sitting in a disabled optional field rides along so the
+    // server remembers it (shown greyed out; survives restarts).
+    _REDLINE_GB_LAST: (thresholdsUsable && !chk('redline-enabled')) ? requiredNumber('REDLINE_GB') : undefined,
+    _MAX_LIBRARY_GB_LAST: (thresholdsUsable && !chk('cap-enabled')) ? requiredNumber('MAX_LIBRARY_GB') : undefined,
+    MAX_HEADROOM_PCT: n('MAX_HEADROOM_PCT'),
+    OUTPUT_DIR: _savedConfig.OUTPUT_DIR,
+    CHECK_PATH: LIBRARY_ROOT,
+    MONITOR_DIRS: _monitorDirsFromInputs(),
+    MOVIE_EXTENSIONS: _savedConfig.MOVIE_EXTENSIONS,
+    PROTECTED_COLLECTIONS: Array.from(_collectionSelections.plex),
+    USE_PLEX: chk('USE_PLEX'),
+    USE_JELLYFIN: chk('USE_JELLYFIN'),
+    JELLYFIN_URL: v('JELLYFIN_URL').trim(),
+    JELLYFIN_API_KEY: v('JELLYFIN_API_KEY').trim(),
+    JELLYFIN_PROTECTED_COLLECTIONS: Array.from(_collectionSelections.jellyfin),
+    // Filtering & Scoring fields are edited on their own page (/explorer) and
+    // saved via /api/score-config — the Config save deliberately omits them
+    // and the backend carries the saved values through untouched.
+    RADARR_OVERSEERR_SECTION_ID: chk('section-enabled') ? 'auto' : null,
+    _RADARR_DETECTED_SECTION_ID: _radarrDetectedSectionValue(),
+    _RADARR_DETECTED_SECTION_NAME: _radarrDetectedSectionName(),
+    _RADARR_DETECTED_SECTION_METHOD: _radarrDetectedSectionMethod(),
+    _RADARR_DETECTED_SECTION_METHOD_LABEL: _radarrDetectedSectionMethodLabel(),
+    IMDB_RATINGS_URL:             v('IMDB_RATINGS_URL').trim(),
+    // Blank falls back to the default (7): parseInt('') is NaN, which
+    // serialized as null and made the save 400 with no field highlight.
+    IMDB_RATINGS_MAX_AGE_DAYS:    Math.max(1, parseInt(v('IMDB_RATINGS_MAX_AGE_DAYS')) || 7),
+    LOG_RETENTION_DAYS:           Math.max(0, parseInt(v('LOG_RETENTION_DAYS')) || 0),
+    KEEP_INTERRUPTED_LOGS:        chk('KEEP_INTERRUPTED_LOGS'),
+    DEBUG_MODE:                   chk('DEBUG_MODE'),
+    TIME_ZONE:                    (v('TIME_ZONE').trim() || 'auto'),
+    DAILY_RUN_TIME:               (v('DAILY_RUN_TIME').trim() || '00:00'),
+    DISPLAY_TIME_FORMAT:          v('DISPLAY_TIME_FORMAT') || '12h',
+    TAUTULLI_APPDATA:  TAUTULLI_APPDATA_DIR,
+    RADARR_APPDATA:    RADARR_APPDATA_DIR,
+    TAUTULLI_URL:      v('TAUTULLI_URL'),
+    TAUTULLI_API_KEY:  v('TAUTULLI_API_KEY'),
+    PLEX_URL:          v('PLEX_URL'),
+    PLEX_TOKEN:        v('PLEX_TOKEN'),
+    RADARR_URL:        v('RADARR_URL'),
+    RADARR_API_KEY:    v('RADARR_API_KEY'),
+  };
+}
+
+// ── Save ─────────────────────────────────────────────────────────────────────
+
+// ── Value pills in run mode cards ────────────────────────────────────────────
+
+let _capValidationArmed = false;
+let _headroomValidationArmed = false;
+let _maxHeadroomPctValidationArmed = false;
+let _redlineValidationArmed = false;
+let _monitorDirsValidationArmed = false;
+
+// prFieldRaw / prNumOrNull / prPositiveNumber / prInvalidVisible /
+// prBlankNumber / prWireBlurValidation / prApplyFieldFlag are shared with
+// the Filtering & Scoring page — defined in base.html.
+
+function _selectPaused() {
+  const status = document.getElementById('mode-paused');
+  if (status && !status.checked) {
+    status.checked = true;
+    _resetConfirm();
+    _syncDirtyState();
+  }
+}
+
+function _libraryCapConfigured() {
+  const capOn = document.getElementById('cap-enabled')?.checked;
+  return !!capOn && prPositiveNumber(prFieldRaw('MAX_LIBRARY_GB'));
+}
+
+// The Headroom the form would save: blank = 0, invalid = null.
+function _headroomFormValue() {
+  return prBlankNumber('HEADROOM_GB', 0);
+}
+
+function _headroomHasValue() {
+  const v = _headroomFormValue();
+  return v !== null && v >= 0;
+}
+
+function _maxHeadroomPctValid() {
+  // Match the server rule (0 < n <= 100): accepting any n > 0 here let a
+  // typo like 200 pass client validation, silently disarm the safety-limit
+  // math (200% of the disk trips nothing), and only fail at save time as a
+  // toast with no field highlight.
+  const n = prBlankNumber('MAX_HEADROOM_PCT');
+  return n !== null && n > 0 && n <= 100;
+}
+
+function _nonNegativeNumberFilled(id) {
+  const n = prBlankNumber(id);
+  return n !== null && n >= 0;
+}
+
+function _redlineExceedsHeadroom() {
+  const redline = prNumOrNull(prFieldRaw('REDLINE_GB'));
+  const headroom = _headroomFormValue();
+  return redline !== null && headroom !== null && redline > headroom;
+}
+
+function _redlineEqualsHeadroom() {
+  const redline = prNumOrNull(prFieldRaw('REDLINE_GB'));
+  const headroom = _headroomFormValue();
+  return redline !== null && headroom !== null && redline === headroom;
+}
+
+function _syncRedlineMax() {
+  const input = document.getElementById('REDLINE_GB');
+  const headroom = _headroomFormValue();
+  if (!input) return;
+  if (headroom !== null) input.setAttribute('max', String(headroom));
+  else input.removeAttribute('max');
+}
+
+function _redlineErrorText() {
+  return _redlineExceedsHeadroom()
+    ? 'Redline cannot be higher than Headroom (GB).'
+    : 'Enter a Redline above 0 GB before saving, or uncheck this option.';
+}
+
+function _showSection(sectionId) {
+  const section = document.getElementById(sectionId);
+  if (section && window.bootstrap) bootstrap.Collapse.getOrCreateInstance(section, { toggle: false }).show();
+}
+
+function _focusAfterSectionOpens(input) {
+  if (input) setTimeout(() => input.focus(), 100);
+}
+
+function _headroomSafetyLimitGb() {
+  const total = Number(_diskStats?.total_gb);
+  const pct = Number(prFieldRaw('MAX_HEADROOM_PCT'));
+  if (!Number.isFinite(total) || total <= 0 || !_maxHeadroomPctValid()) return null;
+  return total * pct / 100;
+}
+
+function _headroomSafetyExceeded() {
+  const headroom = _headroomFormValue();
+  const limit = _headroomSafetyLimitGb();
+  return headroom !== null && limit !== null && headroom > limit;
+}
+
+function _headroomSafetyText() {
+  const limit = _headroomSafetyLimitGb();
+  if (limit === null) return 'Headroom exceeds the safety cap. Lower Headroom or raise the safety cap to enable Live.';
+  return `Headroom exceeds the safety cap (${Math.floor(limit).toLocaleString()} GB max). Lower Headroom or raise the safety cap to enable Live.`;
+}
+
+// The safety percentage also floors the Library Size Cap: a Live run may delete
+// at most that percentage of the library, so the cap can't sit below
+// (library - max_pct% of library). Simulate is exempt (mirrors Headroom).
+function _libraryCapSafetyFloorGb() {
+  const lib = Number(_lastKnownLibraryGb);
+  const pct = Number(prFieldRaw('MAX_HEADROOM_PCT'));
+  if (!Number.isFinite(lib) || lib <= 0 || !_maxHeadroomPctValid()) return null;
+  return lib * (100 - pct) / 100;
+}
+
+function _libraryCapSafetyExceeded() {
+  if (!document.getElementById('cap-enabled')?.checked) return false;
+  const cap = prNumOrNull(prFieldRaw('MAX_LIBRARY_GB'));
+  const floor = _libraryCapSafetyFloorGb();
+  return cap !== null && floor !== null && cap < floor;
+}
+
+function _libraryCapSafetyText() {
+  const floor = _libraryCapSafetyFloorGb();
+  if (floor === null) return 'Library Size Cap is below the safety floor. Raise the cap or the safety percentage to enable Live.';
+  return `Library Size Cap is below the safety floor (${Math.ceil(floor).toLocaleString()} GB min). Raise the cap or the safety percentage to enable Live.`;
+}
+
+function _spaceThresholdBlockingText() {
+  if (!_selectedMediaApisReady()) return 'Connect or uncheck the selected media server first.';
+  if (!_hasSavedMonitorDirs()) return 'Save a monitored directory to enable Live.';
+  if (!_headroomHasValue()) return 'Enter a valid Headroom value to enable Live.';
+  if (!_maxHeadroomPctValid()) return 'Enter a valid Headroom safety percentage.';
+  const redlineOn = document.getElementById('redline-enabled')?.checked;
+  if (redlineOn && !prPositiveNumber(prFieldRaw('REDLINE_GB'))) return 'Enter a Redline above 0 GB, or disable Redline.';
+  if (redlineOn && _redlineExceedsHeadroom()) return 'Redline cannot be higher than Headroom.';
+  const capOn = document.getElementById('cap-enabled')?.checked;
+  if (capOn && !_libraryCapConfigured()) return 'Enter a Library Size Cap, or disable it.';
+  // Live needs at least one active space target; Headroom 0 with Redline and
+  // the Library Size Cap both off leaves nothing to enforce.
+  if (_noEffectiveSpaceLimit()) return 'Set a Headroom target, Redline, or Library Size Cap to enable Live.';
+  if (_headroomSafetyExceeded()) return _headroomSafetyText();
+  if (_libraryCapSafetyExceeded()) return _libraryCapSafetyText();
+  return '';
+}
+
+function _noEffectiveSpaceLimit() {
+  const headroom = _headroomFormValue();
+  const redlineOn = !!document.getElementById('redline-enabled')?.checked;
+  const capOn = !!document.getElementById('cap-enabled')?.checked;
+  return headroom === 0 && !redlineOn && !capOn;
+}
+function _spaceThresholdUnavailableText(action = 'configuring Space Thresholds') {
+  return _selectedMediaApisReady()
+    ? `Save a monitored directory before ${action}.`
+    : `Connect or uncheck the selected media server before ${action}.`;
+}
+function _currentConnectionBlockingText() {
+  const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+  const useJf = !!document.getElementById('USE_JELLYFIN')?.checked;
+  if (!usePlex && !useJf) return 'Select Plex or Jellyfin first.';
+  if (!_selectedMediaApisReady()) {
+    // Prefer the server's specific reason (e.g. which connection failed and
+    // why) over the generic instruction when the last probe reported one.
+    return (!_requiredConnectionOk && _requiredConnectionMessage)
+      || 'Connect or uncheck the selected media server first.';
+  }
+  return '';
+}
+
+function _monitorDirIssue(input) {
+  const raw = String(input?.value ?? '').trim().replaceAll('\\', '/');
+  if (!raw) return 'blank';
+  if (raw.startsWith('/') && raw !== '/' && raw !== LIBRARY_ROOT && !raw.startsWith(LIBRARY_ROOT + '/')) return 'invalid';
+  const suffix = _librarySuffix(raw);
+  if (!suffix) return 'blank';
+  const parts = suffix.split('/').filter(Boolean);
+  if (suffix.includes('//') || parts.some(p => p === '.' || p === '..')) return 'invalid';
+  return input?.closest?.('.monitor-dir-row')?.dataset?.monitorIssue || '';
+}
+
+function _monitorDirErrorText(issue) {
+  if (issue === 'blank') return 'Enter a folder, use /, or remove this row.';
+  if (issue === 'missing') return `That folder does not exist under ${LIBRARY_ROOT}.`;
+  return `Enter a valid ${LIBRARY_ROOT} folder, or remove this row.`;
+}
+
+function _setMonitorDirRowState(row, issue, visible) {
+  const input = row?.querySelector?.('.monitor-dir');
+  const wrapper = row?.closest?.('.monitor-dir-wrapper');
+  const err = wrapper?.querySelector?.('.monitor-dir-error');
+  if (err) err.textContent = visible ? _monitorDirErrorText(issue) : '';
+  prApplyFieldFlag(row, err, input, visible);
+}
+
+async function _monitorDirExists(input) {
+  const path = _libraryPath(input?.value);
+  if (!path) return false;
+  const r = await fetch('/api/library/validate?path=' + encodeURIComponent(path));
+  const d = await r.json().catch(() => ({}));
+  return !!(r.ok && d.ok);
+}
+
+let _monitorDirRemoteTimer = null;
+function _debounceMonitorDirRemoteValidation() {
+  clearTimeout(_monitorDirRemoteTimer);
+  _monitorDirRemoteTimer = setTimeout(() => {
+    if (_monitorDirsValidationArmed) validateMonitorDirsRemote({ show: false, focus: false });
+  }, 350);
+}
+
+function validateMonitorDirs({ show = false, focus = false } = {}) {
+  if (show) _monitorDirsValidationArmed = true;
+  const rows = [...document.querySelectorAll('.monitor-dir-row')];
+  let firstInvalid = null;
+  let anyInvalid = false;
+
+  rows.forEach(row => {
+    const input = row.querySelector('.monitor-dir');
+    const issue = _monitorDirIssue(input);
+    const invalid = !!issue;
+    anyInvalid = anyInvalid || invalid;
+    const visible = invalid && _monitorDirsValidationArmed;
+    _setMonitorDirRowState(row, issue, visible);
+    if (visible && !firstInvalid) firstInvalid = input;
+  });
+
+  if (focus && firstInvalid) {
+    _showSection('s-paths');
+    _focusAfterSectionOpens(firstInvalid);
+  }
+
+  if (_monitorDirsValidationArmed && !anyInvalid) _monitorDirsValidationArmed = false;
+  return _monitorDirsValidationArmed ? !anyInvalid : true;
+}
+
+async function validateMonitorDirsRemote({ show = false, focus = false } = {}) {
+  if (show) _monitorDirsValidationArmed = true;
+
+  // First catch blank/malformed values locally.
+  const formatOk = validateMonitorDirs({ show, focus: false });
+  const rows = [...document.querySelectorAll('.monitor-dir-row')];
+  if (!formatOk) {
+    if (focus) {
+      const first = rows.find(row => row.classList.contains('field-invalid'))?.querySelector('.monitor-dir');
+      if (first) { _showSection('s-paths'); _focusAfterSectionOpens(first); }
+    }
+    return false;
+  }
+
+  if (show) _monitorDirsValidationArmed = true;
+
+  let firstInvalid = null;
+  let anyInvalid = false;
+  for (const row of rows) {
+    const input = row.querySelector('.monitor-dir');
+    const path = _libraryPath(input?.value);
+    if (!path) continue;
+    const ok = await _monitorDirExists(input).catch(() => false);
+    row.dataset.monitorIssue = ok ? '' : 'missing';
+    const issue = ok ? '' : 'missing';
+    anyInvalid = anyInvalid || !!issue;
+    const visible = !!issue && _monitorDirsValidationArmed;
+    _setMonitorDirRowState(row, issue, visible);
+    if (visible && !firstInvalid) firstInvalid = input;
+  }
+
+  if (focus && firstInvalid) {
+    _showSection('s-paths');
+    _focusAfterSectionOpens(firstInvalid);
+  }
+  if (_monitorDirsValidationArmed && !anyInvalid) _monitorDirsValidationArmed = false;
+  return _monitorDirsValidationArmed ? !anyInvalid : true;
+}
+
+function validateHeadroom({ show = false, focus = false } = {}) {
+  const input = document.getElementById('HEADROOM_GB');
+  const field = document.getElementById('headroom-field');
+  const err = document.getElementById('headroom-error');
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    prApplyFieldFlag(field, err, input, false);
+    return true;
+  }
+  const invalid = !_headroomHasValue();
+
+  if (show) _headroomValidationArmed = true;
+  // Same focus suppression as Redline/Cap/Safety-%: don't flash the error
+  // mid-edit while the field is focused (select-all-and-retype went red).
+  const visible = prInvalidVisible(invalid, _headroomValidationArmed, input, field);
+  prApplyFieldFlag(field, err, input, visible);
+
+  if (visible && focus && input) {
+    _showSection('s-space');
+    _focusAfterSectionOpens(input);
+  }
+
+  return !invalid;
+}
+
+function validateMaxHeadroomPct({ show = false, focus = false } = {}) {
+  const input = document.getElementById('MAX_HEADROOM_PCT');
+  const field = document.getElementById('max-headroom-pct-field');
+  const err = document.getElementById('max-headroom-pct-error');
+  const invalid = !_maxHeadroomPctValid();
+
+  if (show) _maxHeadroomPctValidationArmed = true;
+  const visible = prInvalidVisible(invalid, _maxHeadroomPctValidationArmed, input, field);
+  prApplyFieldFlag(field, err, input, visible);
+
+  if (visible && focus && input) {
+    _showSection('s-adv');
+    _focusAfterSectionOpens(input);
+  }
+
+  return !invalid;
+}
+
+function validateRedline({ show = false, focus = false } = {}) {
+  const redlineOn = document.getElementById('redline-enabled')?.checked;
+  const input = document.getElementById('REDLINE_GB');
+  const field = document.getElementById('redline-field');
+  const err = document.getElementById('redline-error');
+  const onlyNote = document.getElementById('redline-only-note');
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    prApplyFieldFlag(field, err, input, false);
+    if (onlyNote) onlyNote.hidden = true;
+    return true;
+  }
+  _syncRedlineMax();
+  const missing = !!redlineOn && !prPositiveNumber(prFieldRaw('REDLINE_GB'));
+  const aboveHeadroom = !!redlineOn && !missing && _redlineExceedsHeadroom();
+  const invalid = missing || aboveHeadroom;
+
+  if (show) _redlineValidationArmed = true;
+  const visible = prInvalidVisible(invalid, _redlineValidationArmed, input, field);
+
+  if (err) err.textContent = _redlineErrorText();
+  prApplyFieldFlag(field, err, input, visible);
+
+  if (visible && focus && input) {
+    _showSection('s-space');
+    _focusAfterSectionOpens(input);
+  }
+
+  if (onlyNote) onlyNote.hidden = !(redlineOn && !invalid && _redlineEqualsHeadroom());
+
+  _updateDelayRedlineAdvisory();
+  return !invalid;
+}
+
+// A deletion delay defers freeing marked movies for N days. Redline is the only
+// trigger that bypasses the delay (deletes immediately when free space is
+// critically low). Without it, a fast-filling library can run out of space
+// before marks age out — advise (don't require) a Redline floor in that case.
+function _updateDelayRedlineAdvisory() {
+  const note = document.getElementById('delay-redline-advisory');
+  if (!note) return;
+  const delay = prBlankNumber('DELETE_DELAY_DAYS', 1) ?? 1;
+  const redlineOn = !!document.getElementById('redline-enabled')?.checked;
+  // 1 day is the minimum grace everyone has; only flag a LONGER delay (2+),
+  // where the overgrowth window without a Redline floor is meaningfully wider.
+  const show = _spaceThresholdsHaveUsableLibrary() && delay >= 2 && !redlineOn;
+  if (show) {
+    note.textContent = `No Redline floor set — with a ${delay}-day delay, a fast-filling library could run out of space before marks age out. Redline deletes immediately when space is critically low, bypassing the delay.`;
+  }
+  note.hidden = !show;
+}
+
+function validateLibraryCap({ show = false, focus = false } = {}) {
+  _applyLibraryCapAvailability();
+  if (!_spaceThresholdsHaveUsableLibrary()) return true;
+
+  const capOn = document.getElementById('cap-enabled')?.checked;
+  const input = document.getElementById('MAX_LIBRARY_GB');
+  const group = document.getElementById('cap-input-group');
+  const err = document.getElementById('cap-error');
+  const invalid = !!capOn && !_libraryCapConfigured();
+
+  if (show) _capValidationArmed = true;
+  const visible = prInvalidVisible(invalid, _capValidationArmed, input, group);
+  prApplyFieldFlag(group, err, input, visible);
+
+  if (visible && focus && input) {
+    _showSection('s-space');
+    _focusAfterSectionOpens(input);
+  }
+
+  return !invalid;
+}
+
+let _deleteDelayValidationArmed = false;
+function _deleteDelayValid() {
+  const n = prBlankNumber('DELETE_DELAY_DAYS', 1);   // blank = the 1-day minimum
+  return n !== null && n >= 1 && n <= 365 && Number.isInteger(n);
+}
+function validateDeleteDelay({ show = false, focus = false } = {}) {
+  const input = document.getElementById('DELETE_DELAY_DAYS');
+  const group = document.getElementById('delete-delay-field');
+  const err = document.getElementById('delete-delay-error');
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    prApplyFieldFlag(group, err, input, false);
+    return true;
+  }
+  const invalid = !_deleteDelayValid();
+  if (show) _deleteDelayValidationArmed = true;
+  const visible = prInvalidVisible(invalid, _deleteDelayValidationArmed, input, group);
+  prApplyFieldFlag(group, err, input, visible);
+  if (visible && focus && input) {
+    _showSection('s-space');
+    _focusAfterSectionOpens(input);
+  }
+  _updateDelayRedlineAdvisory();
+  return !invalid;
+}
+
+function toggleLibraryCap() {
+  if (_spaceThresholdsLocked()) {
+    _applySpaceThresholdLock();
+    showToast('Pause Live mode before changing thresholds.', 'warning');
+    return;
+  }
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    _applySpaceThresholdLock();
+    showToast(_spaceThresholdUnavailableText('enabling Library Size Cap'), 'warning');
+    return;
+  }
+  const enabled = document.getElementById('cap-enabled')?.checked;
+  const input = document.getElementById('MAX_LIBRARY_GB');
+  if (input) input.disabled = !enabled;
+  _capValidationArmed = false;
+  validateLibraryCap();
+  if (enabled && input) setTimeout(() => { input.focus(); validateLibraryCap(); }, 0);
+  _updatePills();
+}
+
+function toggleRedline() {
+  if (_spaceThresholdsLocked()) {
+    _applySpaceThresholdLock();
+    showToast('Pause Live mode before changing thresholds.', 'warning');
+    return;
+  }
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    _applySpaceThresholdLock();
+    showToast(_spaceThresholdUnavailableText('enabling Redline'), 'warning');
+    return;
+  }
+  const enabled = document.getElementById('redline-enabled')?.checked;
+  const input = document.getElementById('REDLINE_GB');
+  if (input) input.disabled = !enabled;
+  _redlineValidationArmed = false;
+  validateRedline();
+  if (enabled && input) setTimeout(() => { input.focus(); validateRedline(); }, 0);
+  _updatePills();
+}
+
+function toggleSectionId() {
+  if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+}
+
+function _setRunModeDisabled(modeName, disabled, alert = false) {
+  const mode = document.getElementById(`mode-${modeName}`);
+  const card = document.getElementById(`mode-card-${modeName}`);
+  if (!mode || !card) return;
+  mode.disabled = !!disabled;
+  card.classList.toggle('run-mode-disabled', !!disabled);
+  card.classList.toggle('run-mode-disabled--alert', !!disabled && !!alert);
+  card.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+}
+
+// True only when Live is blocked specifically by a safety-percentage violation
+// (headroom or library cap) — not a hard block like a missing connection.
+function _liveBlockIsSafety() {
+  if (_currentConnectionBlockingText()) return false;
+  const t = _spaceThresholdBlockingText();
+  return t !== '' && (t === _headroomSafetyText() || t === _libraryCapSafetyText());
+}
+
+function _updateRunModeAvailability() {
+  // During a run the whole Automatic Run Mode category is ghosted with a
+  // single inline notice, consistent with the other config categories: both
+  // run-mode radios and all three time settings lock until the run finishes.
+  const runLocked = _configActivityLocked();
+  _setNotice('run-mode-lock-note', runLocked ? 'A run is active. Try again when it finishes.' : '');
+  document.getElementById('s-mode')?.classList.toggle('section-run-ghost', runLocked);
+  const pausedRadio = document.getElementById('mode-paused');
+  if (pausedRadio) pausedRadio.disabled = runLocked;
+  ['DAILY_RUN_TIME', 'TIME_ZONE', 'DISPLAY_TIME_FORMAT'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) { el.disabled = runLocked; el.setAttribute('aria-disabled', runLocked ? 'true' : 'false'); }
+  });
+
+  // The simulate-required ghost only gates ARMING Live (paused → Live) — an
+  // already-armed Live must never be flipped to Paused by a status poll.
+  const simBlock = (_simulateRequired && !_isLiveRunMode(_savedConfig?.RUN_MODE))
+    ? 'Over space limits — run Simulate to review the deletion plan, then enable Live.' : '';
+  const liveBlock = _currentConnectionBlockingText() || _spaceThresholdBlockingText() || simBlock;
+
+  _setRunModeDisabled('headroom', runLocked || !!liveBlock, _liveBlockIsSafety());
+
+  const descHeadroom = document.getElementById('desc-headroom');
+  if (descHeadroom) {
+    descHeadroom.textContent = liveBlock || descHeadroom.dataset.enabledText;
+  }
+
+  // Fall back to Paused only when Live is genuinely unavailable — never for a
+  // transient run lock, which must not change the saved selection.
+  const liveMode = document.getElementById('mode-headroom');
+  if (!runLocked && liveMode?.disabled && liveMode.checked) {
+    _selectPaused();
+  }
+}
+
+
+function _updatePills() {
+  const h = document.getElementById('HEADROOM_GB')?.value;
+  const l = document.getElementById('MAX_LIBRARY_GB')?.value?.trim() ?? '';
+  const capEnabled = !!document.getElementById('cap-enabled')?.checked;
+  const capConfigured = _libraryCapConfigured();
+  const capHasInput = l !== '';
+  const r = document.getElementById('REDLINE_GB')?.value?.trim() ?? '';
+  const redlineEnabled = !!document.getElementById('redline-enabled')?.checked;
+  const redlineValid = prPositiveNumber(prFieldRaw('REDLINE_GB'));
+  const redlineHasInput = r !== '';
+  const hTxt = 'Headroom: ' + (String(h ?? '').trim() !== '' ? prCommaNum(h) : '0') + ' GB';
+  const rTxt = redlineValid && r ? 'Redline: ' + prCommaNum(r) + ' GB' : 'Redline: —';
+  const lTxt = capConfigured && l ? 'Library size cap: ' + prCommaNum(l) + ' GB' : 'Library size cap: —';
+  const ph = document.getElementById('pill-headroom');
+  if (ph) ph.textContent = hTxt;
+  const pr = document.getElementById('pill-redline');
+  if (pr) {
+    pr.textContent = rTxt;
+    pr.hidden = !redlineEnabled || !redlineHasInput;
+    pr.classList.toggle('pr-pill--warning', redlineEnabled && redlineHasInput && !redlineValid);
+  }
+  const pl = document.getElementById('pill-live-cap');
+  if (pl) {
+    pl.textContent = lTxt;
+    pl.hidden = !capEnabled || !capHasInput;
+    pl.classList.toggle('pr-pill--warning', capEnabled && capHasInput && !capConfigured);
+  }
+  _updateRunModeAvailability();
+  _scheduleSectionIssueUpdate();
+}
+document.getElementById('HEADROOM_GB')?.addEventListener('input', () => { validateHeadroom({ show: true }); validateRedline({ show: true }); _updatePills(); });
+document.getElementById('REDLINE_GB')?.addEventListener('input', () => { validateRedline({ show: true }); _updatePills(); });
+document.getElementById('MAX_HEADROOM_PCT')?.addEventListener('input', () => { validateMaxHeadroomPct({ show: true }); _updatePills(); });
+
+function _applyConnectivityGating(radarrConnected) {
+  // Optional Radarr cleanup is only enterable once the Radarr API connects;
+  // until then the box stays visible but ghosted.
+  const secEnabled = document.getElementById('section-enabled');
+  if (secEnabled) secEnabled.disabled = !radarrConnected;
+  _setConnectionGhost('optional-cleanup-box', !!radarrConnected);
+  // Radarr cleanup works against the PLEX library Radarr manages. With Plex
+  // deselected, the Radarr connection fields are ghosted too — so the plain
+  // "Connect Radarr to unlock this" was a dead-end instruction for
+  // Jellyfin-only setups. Say what is actually required.
+  const note = document.getElementById('section-requires-radarr');
+  if (note) {
+    const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+    note.textContent = usePlex
+      ? 'Connect Radarr to unlock this.'
+      : 'Radarr cleanup works with the Plex library — enable Plex under Server software, then connect Radarr to unlock this.';
+  }
+}
+
+function _clearConnectionHighlights() {
+  document.querySelectorAll('.connection-highlight').forEach(el => el.classList.remove('connection-highlight'));
+  document.querySelectorAll('.connection-disabled').forEach(el => el.classList.remove('connection-disabled'));
+  ['TAUTULLI_URL','TAUTULLI_API_KEY','PLEX_URL','PLEX_TOKEN','JELLYFIN_URL','JELLYFIN_API_KEY','RADARR_URL','RADARR_API_KEY'].forEach(name => {
+    _setOverrideFieldDisabled(name, false);
+  });
+  document.querySelectorAll('.mount-card-problem').forEach(el => el.classList.remove('mount-card-problem'));
+}
+
+var _configInvalidLocked = false;
+var _invalidBannerScrolled = false;
+function _applyInvalidConfigLock(issues) {
+  const locked = Array.isArray(issues) && issues.length > 0;
+  _configInvalidLocked = locked;
+  const banner = document.getElementById('invalid-config-banner');
+  if (banner) {
+    banner.hidden = !locked;
+    if (locked && !_invalidBannerScrolled) {
+      // Once per page load: the onboarding auto-scroll can land past the
+      // banner, and the banner holds the only working controls.
+      _invalidBannerScrolled = true;
+      prScrollTo(banner, { delayMs: 80, smooth: false });
+    }
+    const ul = document.getElementById('invalid-config-list');
+    if (ul && locked) {
+      ul.replaceChildren(...issues.map(i => {
+        const li = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = i.key;
+        li.append(code, ' ' + i.message + '.');
+        return li;
+      }));
+    }
+  }
+  document.getElementById('cfg-accordion')?.classList.toggle('config-invalid-lock', locked);
+  if (locked) {
+    ['btn-save', 'btn-revert'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.disabled = true;
+    });
+  }
+}
+function _bannerStatus(msg, danger) {
+  const st = document.getElementById('invalid-config-status');
+  if (st) { st.textContent = msg || ''; st.style.color = danger ? 'var(--text-danger)' : ''; }
+}
+async function _bannerPost(url, errField) {
+  try {
+    const d = await fetch(url, { method: 'POST' }).then(r => r.json());
+    if (d && d.ok) return true;
+    _bannerStatus((d && (d[errField] || d.error || d.message)) || 'Reset failed.', true);
+  } catch (e) {
+    _bannerStatus('Reset failed.', true);
+  }
+  return false;
+}
+async function onResetInvalidClick() {
+  const btn = document.getElementById('btn-reset-invalid');
+  if (btn) btn.disabled = true;
+  _bannerStatus('Resetting invalid values…');
+  if (await _bannerPost('/api/config/reset-invalid', 'error')) {
+    _bannerStatus('Done — reloading…');
+    window.location.reload();
+    return;
+  }
+  if (btn) btn.disabled = false;
+}
+async function onBannerFullResetClick() {
+  if (!window.confirm('Reset MediaReducer to first-time setup? Settings, cache, and the library sample are wiped. Logs are kept.')) return;
+  if (await _bannerPost('/api/config/reset', 'message')) window.location.href = '/';
+}
+function _applyConfigHealth(d) {
+  // A transient result (a fetch that never reached the server) paints the box
+  // once but is NOT remembered: storing it made a single network blip a
+  // persistent red error state — re-applied on every keystroke and tab
+  // revisit, and ghosting the Radarr box (the synthetic object carries no
+  // radarr_connected) — until a later check succeeded.
+  if (d && typeof d === 'object' && !d.transient) {
+    _lastConfigHealth = d;
+  }
+  _applyInvalidConfigLock((d && d.invalid_config) || []);
+  const box = document.getElementById('config-health-box');
+  const summary = document.getElementById('config-health-summary');
+  const list = document.getElementById('config-health-list');
+  if (!box || !summary || !list) return;
+
+  const cleanupEnabled = _optionalCleanupEnabled();
+  const protectedEnabled = _protectedCollectionsEnabled();
+  // A transient (network-failure) result carries no *_connected flags — fall
+  // back to the last real probe so one blip doesn't ghost the Radarr box.
+  const radarrReady = _savedConnectionReady(['RADARR_URL', 'RADARR_API_KEY'],
+    d.radarr_connected ?? (_lastConfigHealth && _lastConfigHealth.radarr_connected));
+  _clearConnectionHighlights();
+  _applyConnectivityGating(radarrReady);
+  if (d.radarr_cleanup_forced_disabled) {
+    const sectionToggle = document.getElementById('section-enabled');
+    if (sectionToggle) sectionToggle.checked = false;
+  }
+  const displayErrors = [...(d.errors || [])];
+  let displayWarnings = [...(d.warnings || [])];
+  const displaySeverity = displayErrors.length ? 'error' : (displayWarnings.length ? 'warning' : 'ok');
+
+  box.classList.remove('status-ok', 'status-warning', 'status-error');
+  box.classList.add(`status-${displaySeverity}`);
+  // First contact is SETUP, not breakage: an untouched install has done
+  // nothing wrong yet, so don't greet it with "Fix the errors below."
+  const _onboarding = _connectionOnboardingActive
+    && displayErrors.length > 0
+    && !(document.getElementById('USE_PLEX')?.checked || document.getElementById('USE_JELLYFIN')?.checked);
+  summary.textContent = displayErrors.length
+    ? (_onboarding ? 'Setup needed — pick your server software below.' : 'Fix the errors below.')
+    : (displayWarnings.length ? 'Ready with warnings.' : (cleanupEnabled ? 'Ready.' : 'Ready. Optional Radarr cleanup is disabled.'));
+
+  const items = [...displayErrors, ...displayWarnings];
+  list.innerHTML = '';
+  if (items.length) {
+    items.forEach(msg => {
+      const li = document.createElement('li');
+      li.textContent = msg;
+      list.appendChild(li);
+    });
+    list.classList.remove('d-none');
+  } else {
+    list.classList.add('d-none');
+  }
+
+  (d.highlights || []).forEach(name => {
+    // Dependent feature fields such as Protected collections should lock when
+    // their saved API connection is unavailable, but the red warning state
+    // belongs on the connection URL/token fields only.
+    if (name === 'PROTECTED_COLLECTIONS') return;
+    if (name === 'SERVER_SOFTWARE') {
+      // Pseudo-field: no media server is enabled — flag the checkbox row.
+      document.getElementById('server-software-row')?.classList.add('connection-highlight');
+      return;
+    }
+    document.getElementById(`override-field-${name}`)?.classList.add('connection-highlight');
+  });
+  (d.disabled_fields || []).forEach(name => {
+    if (ALWAYS_EDITABLE_OPTIONAL_CONNECTION_FIELDS.has(name)) return;
+    if (!protectedEnabled && name === 'PROTECTED_COLLECTIONS') return;
+    const wrap = document.getElementById(`override-field-${name}`);
+    if (wrap) wrap.classList.add('connection-disabled');
+    _setOverrideFieldDisabled(name, true);
+  });
+  (d.mount_highlights || []).forEach(name => {
+    if (!cleanupEnabled && OPTIONAL_CLEANUP_MOUNTS.has(name)) return;
+    document.getElementById(`mount-card-${name}`)?.classList.add('mount-card-problem');
+  });
+
+  const overrideHighlightNames = new Set(['TAUTULLI_URL', 'TAUTULLI_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY', 'RADARR_URL', 'RADARR_API_KEY']);
+  if ([...(d.highlights || [])].some(name => overrideHighlightNames.has(name))) {
+    const details = document.getElementById('manual-overrides');
+    if (details) details.open = true;
+  }
+
+  _requiredConnectionOk = !!d.critical_ok;
+  _requiredConnectionMessage = d.required_tooltip || 'Connect the selected media server first.';
+
+  // Do not auto-disable Optional cleanup just because one optional app is not
+  // mounted. The health box explains which optional cleanup pieces will be
+  // skipped, while local MediaReducer cleanup remains allowed.
+
+  _applyConfigRuntimeLocks();
+  _updateRunModeAvailability();
+}
+
+async function checkConfigErrors() {
+  const btn = document.getElementById('btn-config-check');
+  const lockReason = _sectionLockReason('connections');
+  if (lockReason) {
+    _applyConfigRuntimeLocks();
+    showToast(lockReason, 'warning');
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); btn.textContent = 'Checking…'; }
+  try {
+    const r = await fetch('/api/config/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(getFormConfig()),
+      cache: 'no-store',
+    });
+    const d = await r.json();
+    if (_configsMatch(getFormConfig(), _savedConfig)) {
+      _savedConfigHealth = d;
+      syncSavedVisibilitySections();
+    }
+    _applyConfigHealth(d);
+    showToast(d.ok ? 'Connection check passed.' : 'Connection check found issues.', d.ok ? 'success' : (d.severity === 'warning' ? 'warning' : 'danger'));
+  } catch (e) {
+    _applyConfigHealth({ transient: true, severity: 'error', summary: 'Could not run connection check.', errors: ['Could not reach MediaReducer to run the check — try again. (' + String(e && e.message || e) + ')'], warnings: [], highlights: [], disabled_fields: [], mount_highlights: [], invalid_config: (_lastConfigHealth && _lastConfigHealth.invalid_config) || [] });
+  } finally {
+    if (btn) { btn.disabled = !!_sectionLockReason('connections'); btn.classList.remove('btn-busy'); btn.textContent = 'Check for Errors'; }
+  }
+}
+
+function _reapplyConnectionHealthHighlights() {
+  // Browser tab suspension / bfcache restores can leave Bootstrap inputs repainted
+  // without the connection-highlight classes visibly applied. Re-apply the last
+  // known health result so PLEX_URL / PLEX_TOKEN and other problem fields stay
+  // marked until the user runs a new check or fixes the config.
+  if (!_lastConfigHealth) return;
+  window.requestAnimationFrame(() => _applyConfigHealth(_lastConfigHealth));
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') _reapplyConnectionHealthHighlights();
+});
+window.addEventListener('pageshow', _reapplyConnectionHealthHighlights);
+
+// Verify Docker volume mounts on page load and show status in Connections section
+let _lastMountData = null;
+function renderMountBadges() {
+  // _lastMountData === null means the verify request itself failed — a
+  // network blip, not a missing mount. Say "could not check" instead of the
+  // red "not found — check .env", which sent users hunting a phantom .env
+  // problem.
+  const unchecked = _lastMountData === null;
+  const d = _lastMountData || {};
+  const usePlex = !!document.getElementById('USE_PLEX')?.checked;
+  const useJf   = !!document.getElementById('USE_JELLYFIN')?.checked;
+  const _show = (id, ok, optional, enabled) => {
+    const el = document.getElementById('verify-' + id);
+    if (!el) return;
+    if (enabled === false) {
+      el.textContent = '(Not enabled)';
+      el.style.color = 'var(--text-muted)';
+    } else if (unchecked) {
+      el.textContent = '? could not check — reload the page';
+      el.style.color = 'var(--text-muted)';
+    } else if (ok) {
+      el.textContent = '✓ verified';
+      el.style.color = 'var(--text-accent)';
+    } else if (optional) {
+      el.textContent = '○ not mounted';
+      el.style.color = 'var(--text-muted)';
+    } else {
+      el.textContent = '✗ not found — check .env';
+      el.style.color = 'var(--text-danger)';
+    }
+  };
+  _show('tautulli', d.tautulli, false, usePlex);
+  _show('jellyfin', d.jellyfin, false, useJf);
+  _show('radarr',   d.radarr,   true,  undefined);
+}
+(async function _verifyMounts() {
+  try {
+    _lastMountData = await fetch('/api/connections/verify').then(r => r.json());
+  } catch (e) { _lastMountData = null; }
+  renderMountBadges();
+})();
+
+// ── Protected collection / box-set pickers ────────────────────────────────────
+// Selections are held in a model (not the DOM) so a failed scan never wipes the
+// user's saved choices: the list is always the union of scanned names and the
+// currently-selected names, with the selected-but-not-scanned ones flagged.
+// (_collectionSelections / _collectionOptions are declared near the top.)
+function renderCollectionList(server) {
+  const listEl = document.getElementById(server + '-collections-list');
+  if (!listEl) return;
+  const sel = _collectionSelections[server];
+  const scanned = _collectionOptions[server] || [];
+  const scannedSet = new Set(scanned);
+  const all = Array.from(new Set([...scanned, ...sel]))
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  const label = 'collections';
+  if (all.length === 0) {
+    listEl.innerHTML = '<div class="form-text collections-empty">No ' + label + ' loaded yet — click Scan above.</div>';
+    return;
+  }
+  listEl.innerHTML = '';
+  all.forEach(name => {
+    const row = document.createElement('label');
+    row.className = 'collection-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'form-check-input';
+    cb.checked = sel.has(name);
+    cb.disabled = !!_sectionLockReason('paths');
+    cb.addEventListener('change', () => { if (cb.checked) sel.add(name); else sel.delete(name); });
+    const span = document.createElement('span');
+    span.className = 'collection-name';
+    span.textContent = name;
+    row.appendChild(cb);
+    row.appendChild(span);
+    if (!scannedSet.has(name)) {
+      const hint = document.createElement('span');
+      hint.className = 'collection-missing';
+      hint.textContent = 'not found on server';
+      row.appendChild(hint);
+    }
+    listEl.appendChild(row);
+  });
+}
+
+async function scanCollections(server) {
+  const statusEl = document.getElementById(server + '-collections-status');
+  const btn = document.getElementById('btn-scan-' + server);
+  const lockReason = _sectionLockReason('paths');
+  if (lockReason) {
+    if (statusEl) { statusEl.textContent = lockReason; statusEl.style.color = 'var(--text-muted)'; }
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); }
+  if (statusEl) { statusEl.textContent = 'Scanning…'; statusEl.style.color = 'var(--text-muted)'; }
+  try {
+    const d = await fetch('/api/collections', { method: 'POST' }).then(r => r.json());
+    const info = (d && d[server]) || {};
+    if (info.ok) {
+      _collectionOptions[server] = info.names || [];
+      // Saved protections the server no longer lists are KEPT and flagged —
+      // never silently dropped (runs fail closed on them and say why). Make
+      // the lapse loud: this used to be a small inline note that quietly
+      // removed the protection.
+      const missing = info.missing || [];
+      if (missing.length) {
+        const serverName = server === 'plex' ? 'Plex' : 'Jellyfin';
+        showToast(`Protected collection${missing.length === 1 ? '' : 's'} ${missing.map(n => `'${n}'`).join(', ')} no longer exist${missing.length === 1 ? 's' : ''} on ${serverName} — runs are blocked until fixed there or unchecked here.`, 'warning');
+      }
+      const n = (info.names || []).length;
+      if (statusEl) {
+        const suffix = missing.length ? `; ${missing.length} saved selection${missing.length === 1 ? '' : 's'} missing on the server` : '';
+        statusEl.textContent = n + (n === 1 ? ' found' : ' found') + suffix;
+        statusEl.style.color = missing.length ? 'var(--text-warning)' : 'var(--text-muted)';
+      }
+    } else if (statusEl) {
+      statusEl.textContent = info.error || 'Could not scan — check the connection above.';
+      statusEl.style.color = 'var(--text-danger)';
+    }
+  } catch (e) {
+    if (statusEl) { statusEl.textContent = 'Scan failed.'; statusEl.style.color = 'var(--text-danger)'; }
+  } finally {
+    if (btn) { btn.disabled = !!_sectionLockReason('paths'); btn.classList.remove('btn-busy'); }
+    renderCollectionList(server);
+  }
+}
+
+function autoScanConnectedCollections() {
+  if (_savedPlexApiConnected()) scanCollections('plex');
+  if (_savedJellyfinApiConnected()) scanCollections('jellyfin');
+}
+
+function syncDebugModeVisibility() {
+  const enabled = !!_savedConfig?.DEBUG_MODE;
+  document.querySelectorAll('.debug-mode-control').forEach(el => {
+    el.classList.toggle('d-none', !enabled);
+  });
+}
+
+async function createDebugReport() {
+  const btn = document.getElementById('btn-create-report');
+  const status = document.getElementById('debug-report-status');
+  if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); btn.textContent = 'Building…'; }
+  if (status) { status.textContent = 'Collecting config, connection, and API data…'; status.style.color = 'var(--text-muted)'; }
+  try {
+    const r = await fetch('/api/debug/report', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Report failed.');
+    const name = d.filename || ('debug_report_' + prFileStamp() + '.txt');
+    if (!prDownloadText(name, d.text || '')) throw new Error('Report was empty.');
+    if (status) { status.textContent = 'Downloaded ' + name; status.style.color = 'var(--text-accent)'; }
+    showToast('Diagnostic report downloaded', 'success');
+  } catch (e) {
+    if (status) { status.textContent = 'Report failed: ' + (e.message || e); status.style.color = 'var(--text-danger)'; }
+    showToast('Report failed', 'danger');
+  } finally {
+    if (btn) { btn.disabled = false; btn.classList.remove('btn-busy'); btn.textContent = 'Download report'; }
+  }
+}
+
+function _plexDebugItemText(item) {
+  const lines = [];
+  lines.push(`      - ${item.title || '(no title)'} | type=${item.type || 'n/a'} | year=${item.year || 'n/a'} | ratingKey=${item.rating_key || 'n/a'} | key=${item.key || 'n/a'}`);
+  if (item.guid) lines.push(`        guid: ${item.guid}`);
+  if ((item.guids || []).length) lines.push(`        Guid[]: ${item.guids.join(', ')}`);
+  const files = item.files || [];
+  if (!files.length) {
+    lines.push('        Files: (none returned)');
+  } else {
+    files.forEach((part, idx) => {
+      lines.push(`        Part ${idx + 1}: id=${part.id || 'n/a'} key=${part.key || 'n/a'} size=${part.size || 'n/a'} file=${part.file || 'n/a'}`);
+    });
+  }
+  return lines.join('\n');
+}
+
+function renderPlexDebug(data) {
+  const lines = [];
+  lines.push('Plex protected-collection debug');
+  lines.push('Selected: ' + ((data.selected || []).join(', ') || '(none)'));
+  lines.push('Section source: ' + (data.section_source || 'n/a'));
+  lines.push('Sections found: ' + ((data.sections || []).map(s => `${s.title || '(no title)'} [key=${s.key}, type=${s.type || 'n/a'}]`).join(', ') || '(none)'));
+  lines.push('');
+  lines.push('Collection listing attempts:');
+  (data.section_attempts || []).forEach(attempt => {
+    lines.push(`  ${attempt.endpoint} | section=${attempt.section_title || '(no title)'} [${attempt.section_key}]`);
+    lines.push(`    count=${attempt.count}${attempt.truncated ? ' (first 100 shown)' : ''}${attempt.error ? ' | ERROR: ' + attempt.error : ''}`);
+    if ((attempt.names || []).length) lines.push('    names=' + attempt.names.join(', '));
+  });
+  lines.push('');
+  lines.push('Matched selected collection(s): ' + (data.matched_count || 0));
+  if (!(data.collections || []).length) {
+    lines.push('  No selected collection names matched the collections Plex listed.');
+  }
+  (data.collections || []).forEach(coll => {
+    lines.push('');
+    lines.push(`Collection: ${coll.title || '(no title)'} | section=${coll.section_title || 'n/a'} [${coll.section_key || 'n/a'}] | ratingKey=${coll.rating_key || 'n/a'} | key=${coll.key || 'n/a'} | collection_key=${coll.collection_key || 'n/a'} | type=${coll.type || 'n/a'}`);
+    (coll.child_attempts || []).forEach(attempt => {
+      lines.push(`  Endpoint: ${attempt.endpoint}`);
+      lines.push(`    count=${attempt.count}${attempt.truncated ? ' (first 100 shown)' : ''}${attempt.error ? ' | ERROR: ' + attempt.error : ''}`);
+      if (!(attempt.items || []).length) {
+        lines.push('      (no items returned)');
+      } else {
+        (attempt.items || []).forEach(item => lines.push(_plexDebugItemText(item)));
+      }
+    });
+  });
+  prShowDebugBox('Plex protected collections', lines.join('\n'));
+}
+
+async function debugPlexCollections() {
+  const btn = document.getElementById('btn-debug-plex');
+  const statusEl = document.getElementById('plex-collections-status');
+  const names = Array.from(_collectionSelections.plex || []);
+  if (!names.length) {
+    showToast('Tick at least one Plex collection first.', 'warning');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) { statusEl.textContent = 'Debugging selected collection...'; statusEl.style.color = 'var(--text-muted)'; }
+  const startedAt = performance.now();
+  prShowDebugBox('Plex protected collections', 'Asking Plex what is inside: ' + names.join(', ') + '…');
+  try {
+    const r = await fetch('/api/collections/plex/debug', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Debug request failed.');
+    await prDebugMinVisible(startedAt);
+    renderPlexDebug(d);
+    if (statusEl) { statusEl.textContent = 'Debug loaded'; statusEl.style.color = 'var(--text-muted)'; }
+  } catch (e) {
+    await prDebugMinVisible(startedAt);
+    prShowDebugBox('Plex protected collections', 'Plex debug failed: ' + (e.message || e));
+    if (statusEl) { statusEl.textContent = 'Debug failed.'; statusEl.style.color = 'var(--text-danger)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _jellyfinDebugItemText(item) {
+  const lines = [];
+  const ids = [];
+  if (item.id) ids.push('Id=' + item.id);
+  if (item.item_id) ids.push('ItemId=' + item.item_id);
+  if (item.movie_id) ids.push('MovieId=' + item.movie_id);
+  lines.push(`      - ${item.name || '(no name)'} | type=${item.type || 'n/a'} | ${ids.join(' | ') || 'no ids'}`);
+  if (item.path) lines.push(`        Path: ${item.path}`);
+  if (item.parent_id) lines.push(`        ParentId: ${item.parent_id}`);
+  if (item.collection_type) lines.push(`        CollectionType: ${item.collection_type}`);
+  const providerIds = item.provider_ids || {};
+  if (Object.keys(providerIds).length) lines.push(`        ProviderIds: ${JSON.stringify(providerIds)}`);
+  const mediaSources = item.media_sources || [];
+  mediaSources.forEach((ms, idx) => {
+    lines.push(`        MediaSource ${idx + 1}: id=${ms.id || 'n/a'} size=${ms.size || 'n/a'} path=${ms.path || 'n/a'}`);
+  });
+  return lines.join('\n');
+}
+
+function renderJellyfinDebug(data) {
+  const lines = [];
+  lines.push('Jellyfin protected-collection debug');
+  lines.push('Selected: ' + ((data.selected || []).join(', ') || '(none)'));
+  lines.push('Users found: ' + ((data.users || []).map(u => `${u.name || '(no name)'} [${u.id}]`).join(', ') || '(none)'));
+  if (data.users_error) lines.push('Users error: ' + data.users_error);
+  lines.push('Using user id: ' + (data.using_user_id || '(none)'));
+  lines.push('');
+  lines.push('BoxSet listing attempts:');
+  (data.boxset_attempts || []).forEach(attempt => {
+    lines.push(`  ${attempt.endpoint} ${JSON.stringify(attempt.params || {})}`);
+    lines.push(`    count=${attempt.count}${attempt.truncated ? ' (first 100 shown)' : ''}${attempt.error ? ' | ERROR: ' + attempt.error : ''}`);
+    if ((attempt.names || []).length) lines.push('    names=' + attempt.names.join(', '));
+  });
+  lines.push('');
+  lines.push('Matched selected collection(s): ' + (data.matched_count || 0));
+  if (!(data.collections || []).length) {
+    lines.push('  No selected collection names matched the BoxSets Jellyfin listed.');
+  }
+  (data.collections || []).forEach(coll => {
+    lines.push('');
+    lines.push(`Collection: ${coll.name || '(no name)'} | id=${coll.id || 'n/a'} | type=${coll.type || 'n/a'}`);
+    (coll.child_attempts || []).forEach(attempt => {
+      const tag = (attempt.engine === undefined) ? '' : (attempt.engine ? ' [engine]' : ' [debug-only]');
+      lines.push(`  Endpoint: ${attempt.endpoint} ${JSON.stringify(attempt.params || {})}${tag}`);
+      lines.push(`    count=${attempt.count}${attempt.truncated ? ' (first 100 shown)' : ''}${attempt.error ? ' | ERROR: ' + attempt.error : ''}`);
+      if (!(attempt.items || []).length) {
+        lines.push('      (no items returned)');
+      } else {
+        (attempt.items || []).forEach(item => lines.push(_jellyfinDebugItemText(item)));
+      }
+    });
+  });
+  prShowDebugBox('Jellyfin protected collections', lines.join('\n'));
+}
+
+async function debugJellyfinCollections() {
+  const btn = document.getElementById('btn-debug-jellyfin');
+  const statusEl = document.getElementById('jellyfin-collections-status');
+  const names = Array.from(_collectionSelections.jellyfin || []);
+  if (!names.length) {
+    showToast('Tick at least one Jellyfin collection first.', 'warning');
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (statusEl) { statusEl.textContent = 'Debugging selected collection...'; statusEl.style.color = 'var(--text-muted)'; }
+  const startedAt = performance.now();
+  prShowDebugBox('Jellyfin protected collections', 'Asking Jellyfin what is inside: ' + names.join(', ') + '…');
+  try {
+    const r = await fetch('/api/collections/jellyfin/debug', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Debug request failed.');
+    await prDebugMinVisible(startedAt);
+    renderJellyfinDebug(d);
+    if (statusEl) { statusEl.textContent = 'Debug loaded'; statusEl.style.color = 'var(--text-muted)'; }
+  } catch (e) {
+    await prDebugMinVisible(startedAt);
+    prShowDebugBox('Jellyfin protected collections', 'Jellyfin debug failed: ' + (e.message || e));
+    if (statusEl) { statusEl.textContent = 'Debug failed.'; statusEl.style.color = 'var(--text-danger)'; }
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function initCollections(cfg) {
+  _collectionSelections.plex     = new Set(cfg.PROTECTED_COLLECTIONS || []);
+  _collectionSelections.jellyfin = new Set(cfg.JELLYFIN_PROTECTED_COLLECTIONS || []);
+  renderCollectionList('plex');
+  renderCollectionList('jellyfin');
+}
+
+// ── Reset to first-time setup (two-click confirm, then redirect) ──────────────
+let _resetArmed = false;
+function _disarmReset() {
+  _resetArmed = false;
+  const btn = document.getElementById('btn-reset-all');
+  if (btn) btn.classList.remove('btn-busy');
+  const status = document.getElementById('reset-status');
+  if (btn) {
+    _morphButtonText(btn, 'Reset to first-time setup');
+  }
+  if (status) { status.textContent = ''; status.style.color = 'var(--text-muted)'; }
+}
+function _isResetConfirmTarget(target) {
+  return !!target?.closest?.('#btn-reset-all');
+}
+document.addEventListener('click', (ev) => {
+  if (!_resetArmed) return;
+  if (_isResetConfirmTarget(ev.target)) return;
+  _disarmReset();
+  ev.preventDefault();
+  ev.stopPropagation();
+}, true);
+async function onResetClick() {
+  const btn = document.getElementById('btn-reset-all');
+  const status = document.getElementById('reset-status');
+  if (!_resetArmed) {
+    _resetArmed = true;
+    if (btn) {
+      _morphButtonText(btn, 'Are you sure?', { noShrink: true });
+    }
+    if (status) {
+      status.textContent = _configActivityLocked()
+        ? 'This will cancel the active run and reset.'
+        : 'Ready to reset.';
+      status.style.color = 'var(--text-muted)';
+    }
+    return;
+  }
+  _resetArmed = false;
+  if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); _morphButtonText(btn, 'Resetting…'); }
+  if (status) { status.textContent = ''; status.style.color = 'var(--text-muted)'; }
+  try {
+    const d = await fetch('/api/config/reset', { method: 'POST' }).then(r => r.json());
+    if (d && d.ok) {
+      if (status) { status.textContent = 'Done — returning to setup…'; }
+      window.location.href = '/';
+    } else {
+      if (btn) { btn.disabled = false; }
+      _disarmReset();
+      if (status) { status.textContent = (d && d.message) || 'Reset failed.'; status.style.color = 'var(--text-danger)'; }
+    }
+  } catch (e) {
+    if (btn) { btn.disabled = false; }
+    _disarmReset();
+    if (status) { status.textContent = 'Reset failed.'; status.style.color = 'var(--text-danger)'; }
+  }
+}
+// ── Clear archived run logs ─────────────────────────────────────────────────
+async function onClearLogsClick() {
+  const btn = document.getElementById('btn-clear-logs');
+  if (!btn || btn.disabled) return;
+  if (_configActivityLocked()) {
+    showToast('A run is active. Try again when it finishes.', 'warning');
+    return;
+  }
+  if (!_filesystemReady()) {
+    showToast(_filesystemBlockingText(), 'warning');
+    return;
+  }
+  btn.disabled = true;
+  btn.classList.add('btn-busy');
+  btn.textContent = 'Clearing…';
+  try {
+    const r = await fetch(`/api/logs/archived/clear?${prTimeQuery()}`, { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error((d && d.message) || 'Clear failed.');
+    showToast((d && d.message) || 'Logs cleared', 'success');
+  } catch (e) {
+    showToast('Clear logs failed: ' + e.message, 'danger');
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('btn-busy');
+    btn.textContent = 'Clear logs';
+    await refreshArchivedLogsStatus();
+  }
+}
+async function refreshArchivedLogsStatus() {
+  const statusEl = document.getElementById('archived-logs-status');
+  const btn = document.getElementById('btn-clear-logs');
+  try {
+    const r = await fetch(`/api/logs/archived/status?${prTimeQuery()}`, { cache: 'no-store' });
+    const d = await r.json();
+    if (statusEl) {
+      statusEl.textContent = _configActivityLocked()
+        ? 'A run is active. Archived logs cannot be cleared right now.'
+        : (!_filesystemReady() ? _filesystemBlockingText() : (d.label || 'Archived log directory is empty.'));
+    }
+    if (btn) {
+      btn.disabled = !!d.empty || _configActivityLocked() || !_filesystemReady();
+    }
+  } catch (e) {
+    // A failed status fetch is not knowledge — don't state a confident wrong
+    // fact ("empty") that also implies the Clear button has nothing to do.
+    if (statusEl) statusEl.textContent = 'Could not check the archived logs — reload the page to retry.';
+  }
+}
+
+function _setRadarrSectionDetectionIdle(message = 'The Plex section ID is detected automatically after Radarr and Plex connect.') {
+  const el = document.getElementById('section-detected');
+  if (!el) return;
+  el.textContent = message;
+  el.style.color = 'var(--text-muted)';
+  delete el.dataset.sectionId;
+  delete el.dataset.sectionName;
+  delete el.dataset.sectionMethod;
+  delete el.dataset.sectionMethodLabel;
+}
+
+function _radarrSectionMethodLabel(method, explicitLabel = '') {
+  const label = String(explicitLabel || '').trim();
+  if (label) return label;
+  const key = String(method || '').trim();
+  const labels = {
+    'path-prefix': 'path prefix',
+    'root-prefix': 'root folder path',
+    'folder-name': 'library folder name',
+  };
+  return labels[key] || key.replace(/-/g, ' ');
+}
+
+function _applyRadarrSectionDetection(d) {
+  const el = document.getElementById('section-detected');
+  if (!el) return;
+  if (d && d.ok && d.section_id) {
+    const sectionId = String(d.section_id).trim();
+    const sectionName = String(d.section_name || '').trim();
+    const method = String(d.method || '').trim();
+    const methodLabel = _radarrSectionMethodLabel(method, d.method_label);
+    const nameText = sectionName ? ` (${sectionName})` : '';
+    const methodText = methodLabel ? ` via ${methodLabel}` : '';
+    el.textContent = `Detected section: ${sectionId}${nameText}${methodText}`;
+    el.style.color = 'var(--text-accent)';
+    el.dataset.sectionId = sectionId;
+    if (sectionName) el.dataset.sectionName = sectionName; else delete el.dataset.sectionName;
+    if (method) el.dataset.sectionMethod = method; else delete el.dataset.sectionMethod;
+    if (methodLabel) el.dataset.sectionMethodLabel = methodLabel; else delete el.dataset.sectionMethodLabel;
+    return;
+  }
+  delete el.dataset.sectionId;
+  delete el.dataset.sectionName;
+  delete el.dataset.sectionMethod;
+  delete el.dataset.sectionMethodLabel;
+  if (d) {
+    el.textContent = `Detected section: unavailable — ${d.message || 'recheck after Radarr and Plex connect'}`;
+    el.style.color = 'var(--text-muted)';
+  } else {
+    _setRadarrSectionDetectionIdle();
+  }
+}
+
+function _syncSavedRadarrSectionDetection(cfg) {
+  const cached = String(cfg?._RADARR_DETECTED_SECTION_ID || '').trim();
+  if (cached) {
+    _applyRadarrSectionDetection({
+      ok: true,
+      section_id: cached,
+      section_name: cfg?._RADARR_DETECTED_SECTION_NAME,
+      method: cfg?._RADARR_DETECTED_SECTION_METHOD,
+      method_label: cfg?._RADARR_DETECTED_SECTION_METHOD_LABEL,
+    });
+  } else {
+    _setRadarrSectionDetectionIdle();
+  }
+}
+
+function _radarrDetectedSectionValue() {
+  return document.getElementById('section-detected')?.dataset?.sectionId
+    || _savedConfig?._RADARR_DETECTED_SECTION_ID
+    || null;
+}
+function _radarrDetectedSectionName() {
+  return document.getElementById('section-detected')?.dataset?.sectionName
+    || _savedConfig?._RADARR_DETECTED_SECTION_NAME
+    || null;
+}
+function _radarrDetectedSectionMethod() {
+  return document.getElementById('section-detected')?.dataset?.sectionMethod
+    || _savedConfig?._RADARR_DETECTED_SECTION_METHOD
+    || null;
+}
+function _radarrDetectedSectionMethodLabel() {
+  return document.getElementById('section-detected')?.dataset?.sectionMethodLabel
+    || _savedConfig?._RADARR_DETECTED_SECTION_METHOD_LABEL
+    || null;
+}
+
+document.getElementById('MAX_LIBRARY_GB')?.addEventListener('input', () => { validateLibraryCap({ show: true }); _updatePills(); });
+['RADARR_URL', 'RADARR_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY'].forEach(name => {
+  document.getElementById(name)?.addEventListener('input', () => {
+    if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+  });
+});
+
+// prWireBlurValidation comes from base.html (shared with Filtering & Scoring).
+prWireBlurValidation('MAX_LIBRARY_GB', validateLibraryCap);
+prWireBlurValidation('DELETE_DELAY_DAYS', validateDeleteDelay);
+prWireBlurValidation('MAX_HEADROOM_PCT', validateMaxHeadroomPct);
+prWireBlurValidation('REDLINE_GB', validateRedline);
+prWireBlurValidation('HEADROOM_GB', validateHeadroom);
+
+document.getElementById('cap-enabled')?.addEventListener('change', toggleLibraryCap);
+document.getElementById('redline-enabled')?.addEventListener('change', toggleRedline);
+document.getElementById('section-enabled')?.addEventListener('change', toggleSectionId);
+
+function _wireRunModeCardClicks() {
+  document.querySelectorAll('.run-mode-card').forEach(card => {
+    card.addEventListener('click', (event) => {
+      // Let native radio clicks work normally, but make the rest of the card select it too.
+      if (event.target?.matches?.('input[name="RUN_MODE"]')) return;
+
+      const radio = card.querySelector('input[name="RUN_MODE"]');
+      if (!radio || radio.disabled || card.getAttribute('aria-disabled') === 'true') return;
+
+      if (!radio.checked) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+  });
+}
+_wireRunModeCardClicks();
+_applySpaceThresholdLock();
+syncSavedVisibilitySections();
+// Initialize the protected-collection pickers from the saved config on load.
+// (populateForm only runs on save/revert/reset, so without this the pickers
+// start empty and a later save would wipe PROTECTED_COLLECTIONS.)
+initCollections(_savedConfig);
+let _lastKnownLibraryGb = null;
+function updateCurrentLibrarySizeBadge(gb) {
+  const numericTracked = Number(gb);
+  if (Number.isFinite(numericTracked) && numericTracked > 0 && numericTracked !== _lastKnownLibraryGb) {
+    _lastKnownLibraryGb = numericTracked;
+    // The cap safety floor scales with the library size, so re-evaluate whether
+    // Live is allowed whenever a fresh measurement lands.
+    if (typeof _updateRunModeAvailability === 'function') _updateRunModeAvailability();
+  }
+  const badge = document.getElementById('current-library-size-badge');
+  if (!badge) return;
+  // While a background Summary is measuring the library, show a live
+  // "Scanning…" state (the animated dots come from .pending-ellipsis).
+  if (_configSummaryActive) {
+    badge.textContent = 'Scanning';
+    badge.classList.add('pending-ellipsis');
+    return;
+  }
+  badge.classList.remove('pending-ellipsis');
+  const numericGb = Number(gb);
+  // An unknown size is not a measurement — "Current: 0 GB" read as a real
+  // number right next to advice about sizing the cap relative to it.
+  if (!(Number.isFinite(numericGb) && numericGb > 0)) {
+    badge.textContent = 'Current: not measured yet';
+    return;
+  }
+  badge.textContent = 'Current: ' + numericGb.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' GB';
+}
+
+async function refreshCurrentLibrarySizeBadge() {
+  updateCurrentLibrarySizeBadge(0);
+  try {
+    const r = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    _configRunActive = !!d.run_active;
+    _configSummaryActive = !!d.summary_active;
+    updateCurrentLibrarySizeBadge(d.library_gb);
+    _applyConfigRuntimeLocks();
+  } catch (_) { /* keep the 0 GB fallback visible */ }
+}
+
+async function refreshConfigRuntimeState() {
+  const wasLocked = _configActivityLocked();
+  try {
+    const r = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    _configRunActive = !!d.run_active;
+    _configSummaryActive = !!d.summary_active;
+    _simulateRequired = !!(d.live_state?.space_thresholds?.simulate_required);
+    updateCurrentLibrarySizeBadge(d.library_gb);
+  } catch (_) {
+    return;
+  }
+  _applyConfigRuntimeLocks();
+  _updateRunModeAvailability();
+  _applyImdbDownloadButtonState();
+  _applyClearCacheButtonState();
+  if (wasLocked && !_configActivityLocked()) refreshArchivedLogsStatus();
+}
+
+let _currentLibrarySizePollActive = false;
+async function pollCurrentLibrarySizeBadgeUntilIdle() {
+  if (_currentLibrarySizePollActive) return;
+  _currentLibrarySizePollActive = true;
+  try {
+    for (let tries = 0; tries < 60; tries++) {
+      await new Promise(resolve => setTimeout(resolve, tries === 0 ? 500 : 1000));
+      try {
+        const r = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+        if (!r.ok) continue;
+        const d = await r.json();
+        _configRunActive = !!d.run_active;
+        _configSummaryActive = !!d.summary_active;
+        updateCurrentLibrarySizeBadge(d.library_gb);
+        _applyConfigRuntimeLocks();
+        if (!d.summary_active) break;
+      } catch (_) { /* transient; keep polling for the active refresh */ }
+    }
+  } finally {
+    _currentLibrarySizePollActive = false;
+  }
+}
+
+// Live server clock under the Time zone dropdown, always in the zone the app
+// is ACTUALLY running on — a dropdown selection only takes effect on Save
+// (the save handler updates PR_SERVER_TIME_ZONE, so the clock jumps then).
+// Also flags a wrong host clock: epoch comparison is timezone-independent,
+// so a real skew means the server clock itself is off.
+function updateServerClockLine() {
+  const el = document.getElementById('server-clock-line');
+  if (!el) return;
+  const zone = prResolvedTimeZone();
+  let now;
+  try {
+    now = new Intl.DateTimeFormat(undefined, {
+      timeZone: zone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: 'numeric', minute: '2-digit', second: '2-digit',
+      hour12: prTimeFormat() !== '24h',
+    }).format(new Date(prServerEpochNow() * 1000));
+  } catch (_) { el.textContent = ''; return; }
+  const skewMin = Math.round(Math.abs(prClockSkewSeconds()) / 60);
+  el.innerHTML = `Server time: ${prHtmlEsc(now)}` + (Math.abs(prClockSkewSeconds()) > 120
+    ? ` <span class="text-danger">— ~${skewMin} min off from this device. Check the host clock.</span>`
+    : '');
+}
+updateServerClockLine();
+setInterval(updateServerClockLine, 1000);
+
+// Show the current monitored library size next to the Library Size Cap so the
+// cap can be set relative to it (same source the Dashboard storage card uses).
+refreshCurrentLibrarySizeBadge();
+setInterval(refreshConfigRuntimeState, 10000);
+// Pre-populate the lists by scanning any connected server on load; the Scan
+// buttons then just refresh. Saved selections stay checked either way.
+autoScanConnectedCollections();
+_updatePills();
+refreshImdbDownloadStatus();
+refreshCacheClearStatus();
+refreshArchivedLogsStatus();
+_syncDirtyState();
+
+
+
+// A cap the current library already exceeds means the very next Live pass
+// prunes down to it — surface that at save time and require the second click.
+function _immediatePruneWarning(cfg, nowLive) {
+  // Cap-driven prune: the cap is being armed/changed below the library size.
+  const capWarning = (() => {
+    if (cfg.MAX_LIBRARY_GB === null || cfg.MAX_LIBRARY_GB === undefined) return '';
+    const capGb = Number(cfg.MAX_LIBRARY_GB);
+    if (!Number.isFinite(capGb) || capGb <= 0) return '';
+    if (!Number.isFinite(_lastKnownLibraryGb) || _lastKnownLibraryGb <= capGb) return '';
+    // Only warn when the cap is the thing being armed or changed — an untouched,
+    // already-saved cap should not nag on every unrelated save.
+    const savedCap = Number(_savedConfig?.MAX_LIBRARY_GB);
+    const capChanged = !(Number.isFinite(savedCap) && savedCap === capGb);
+    const goingLive = nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom');
+    if (!capChanged && !goingLive) return '';
+    const size = Math.round(_lastKnownLibraryGb).toLocaleString();
+    const cap = prCommaNum(capGb);
+    return nowLive
+      ? `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — Live will start pruning immediately. Save again to confirm.`
+      : `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — the next Live run will prune down to it. Save again to confirm.`;
+  })();
+  if (capWarning) return capWarning;
+  // Headroom/redline-driven prune: going Live while free space is ALREADY
+  // past a threshold — the first scheduler tick (within ~15 minutes) prunes.
+  // Without this, arming Live under a breached headroom got a bare
+  // "Are you sure?" while the cap case got a full sentence.
+  if (nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom')) {
+    const total = Number(_diskStats?.total_gb);
+    const used = Number(_diskStats?.used_gb);
+    const free = Number(_diskStats?.free_gb);
+    const head = Number(cfg.HEADROOM_GB);
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(head) && head > 0) {
+      let deficit = 0;
+      if (Number.isFinite(used)) deficit = Math.max(deficit, used - (total - head));
+      const red = Number(cfg.REDLINE_GB);
+      if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
+        deficit = Math.max(deficit, head - free);
+      }
+      if (deficit > 0) {
+        return `Free space is already ${prGbAmount(deficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`;
+      }
+    }
+  }
+  return '';
+}
+
+// ── Double-confirm when switching to Live ───────────────────────────────────
+
+function _setSaveText(text) {
+  const top = document.getElementById('btn-save');
+  const opts = text === 'Are you sure?' ? { noShrink: true } : {};
+  _morphButtonText(top, text === 'Save Configuration' ? 'Save' : text, opts);
+}
+
+function _setSavePending(on) {
+  _savePending = !!on;
+  const btn = document.getElementById('btn-save');
+  if (btn) btn.classList.toggle('btn-pending-ellipsis', _savePending);
+  _setSaveText(_savePending ? 'Saving' : 'Save Configuration');
+  _syncDirtyState();
+}
+
+function _clearPruneToast() {
+  if (_dismissPruneToast) { _dismissPruneToast(); _dismissPruneToast = null; }
+}
+function _resetConfirm() {
+  if (_confirmSave) { _confirmSave = false; _setSaveText('Save Configuration'); }
+  _clearPruneToast();
+}
+
+function _isSaveConfirmTarget(target) {
+  return !!target?.closest?.('#btn-save');
+}
+
+// While the save button is in its "Are you sure?" state, any click away from
+// the save buttons cancels confirmation instead of activating another control.
+document.addEventListener('click', (ev) => {
+  if (!_confirmSave) return;
+  if (_isSaveConfirmTarget(ev.target)) return;
+  _resetConfirm();
+  ev.preventDefault();
+  ev.stopPropagation();
+}, true);
+
+// Reset if user changes mode selection or reverts
+document.querySelectorAll('input[name="RUN_MODE"]').forEach(e => e.addEventListener('change', _resetConfirm));
+
+window.addEventListener('beforeunload', (event) => {
+  // Guard unsaved edits too, not just an in-flight save: clicking Dashboard
+  // in the header silently threw away a dirty form.
+  if (!_savePending && !_dirty) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+async function saveConfig() {
+  if (_savePending) return;
+  if (_configActivityLocked()) {
+    _applyConfigRuntimeLocks();
+    showToast('A run is active. Try again when it finishes.', 'warning');
+    _resetConfirm();
+    return;
+  }
+
+  if (!_hasUnsavedChanges()) {
+    clearDirty();
+    _resetConfirm();
+    return;
+  }
+
+  // Capture the confirmation BEFORE _setSavePending/_syncDirtyState run —
+  // the user's confirming click must count even if something disarms the
+  // button state mid-flow.
+  const confirmedLive = _confirmSave;
+
+  _setSavePending(true);
+
+  const headroomOk = validateHeadroom({ show: true, focus: false });
+  const maxPctOk = validateMaxHeadroomPct({ show: true, focus: false });
+  const redlineOk = validateRedline({ show: true, focus: false });
+  const capOk = validateLibraryCap({ show: true, focus: false });
+  const delayOk = validateDeleteDelay({ show: true, focus: false });
+  const monitorOk = await validateMonitorDirsRemote({ show: true, focus: false });
+  if (!headroomOk || !maxPctOk || !redlineOk || !capOk || !delayOk || !monitorOk) {
+    if (!headroomOk) validateHeadroom({ show: true, focus: true });
+    else if (!maxPctOk) validateMaxHeadroomPct({ show: true, focus: true });
+    else if (!redlineOk) validateRedline({ show: true, focus: true });
+    else if (!capOk) validateLibraryCap({ show: true, focus: true });
+    else if (!delayOk) validateDeleteDelay({ show: true, focus: true });
+    else await validateMonitorDirsRemote({ show: true, focus: true });
+    _syncDirtyState();
+    _resetConfirm();
+    _setSavePending(false);
+    return;
+  }
+
+  _updateRunModeAvailability();
+  const cfg = getFormConfig();
+
+  const liveBlock = cfg.RUN_MODE?.startsWith('headroom')
+    ? (_currentConnectionBlockingText() || _spaceThresholdBlockingText())
+    : '';
+  if (liveBlock) {
+    showToast(liveBlock, 'danger');
+    _selectPaused();
+    _resetConfirm();
+    _setSavePending(false);
+    return;
+  }
+
+  // Two-click confirm for any save that arms pruning: switching Paused → Live,
+  // or saving a Library Size Cap that the current library already exceeds
+  // (which would prune down to the cap as soon as Live runs). Same in-page
+  // save-button morph as every other confirmation — no browser popups.
+  const wasLive = _savedConfig.RUN_MODE?.startsWith('headroom');
+  const nowLive = cfg.RUN_MODE?.startsWith('headroom');
+  const pruneWarning = _immediatePruneWarning(cfg, nowLive);
+  if (!confirmedLive && ((!wasLive && nowLive) || pruneWarning)) {
+    _setSavePending(false);
+    _confirmSave = true;
+    _setSaveText('Are you sure?');
+    // Sticky: the warning must stay readable for the whole "Are you sure?"
+    // decision. It comes down on the confirming click or on cancel.
+    if (pruneWarning) { _clearPruneToast(); _dismissPruneToast = showToast(pruneWarning, 'warning', { sticky: true }); }
+    return;
+  }
+  _confirmSave = false;
+  _clearPruneToast();
+  _setSaveText('Saving');
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const savedConfig = d.config || getFormConfig();
+      _savedConfig = savedConfig;  // Revert now reflects the newly saved state, including backend safety changes.
+      if (d.connection_health) _savedConfigHealth = d.connection_health;
+      // The save round-trips connection probes and can take many seconds, and
+      // the fields stay editable meanwhile. A wholesale populateForm would
+      // silently discard anything typed during that window — keep the user's
+      // newer edits and repopulate only the untouched fields with the
+      // server-normalized values.
+      const nowForm = getFormConfig();
+      const cNow = _canonicalConfig(nowForm);
+      const cSubmitted = _canonicalConfig(cfg);
+      const editedKeys = Object.keys(cNow).filter(
+        k => _stableStringify(cNow[k]) !== _stableStringify(cSubmitted[k]));
+      if (editedKeys.length) {
+        const merged = { ...savedConfig };
+        editedKeys.forEach(k => { merged[k] = nowForm[k]; });
+        populateForm(merged);
+      } else {
+        populateForm(savedConfig);
+      }
+      if (d.connection_health) _applyConfigHealth(d.connection_health);
+      _applyConfigRuntimeLocks();
+      const _savedTz = _savedConfig.TIME_ZONE || 'auto';
+      window.PR_SERVER_TIME_ZONE = _savedTz === 'auto' ? window.PR_HOST_TIME_ZONE : _savedTz;
+      window.PR_DISPLAY_TIME_FORMAT = _savedConfig.DISPLAY_TIME_FORMAT || '12h';
+      updateServerClockLine();
+      _resetConfirm();
+      if (editedKeys.length) markDirty(); else clearDirty();
+      if (Array.isArray(d.server_software_auto_disabled) && d.server_software_auto_disabled.length) {
+        // If Jellyfin is being dropped, its protections stop applying while
+        // the same files may stay deletable through Plex — that lapse is the
+        // dangerous part, not the deselection itself.
+        const jfDropped = d.server_software_auto_disabled.some(n => /jellyfin/i.test(String(n)));
+        showToast(d.server_software_auto_disabled.join(' and ')
+          + ' was deselected: the API connection failed or the key is blank. '
+          + 'Fix the connection, then re-enable it under Server software.'
+          + (jfDropped ? ' Jellyfin favorite/collection protections are inactive until then.' : ''),
+          'warning');
+      }
+      autoScanConnectedCollections();
+      refreshImdbDownloadStatus();
+      refreshCacheClearStatus();
+      if (d.radarr_section_detection) {
+        _applyRadarrSectionDetection(d.radarr_section_detection);
+      } else {
+        _syncSavedRadarrSectionDetection(_savedConfig);
+      }
+      if (d.summary_refresh_started) {
+        pollCurrentLibrarySizeBadgeUntilIdle();
+      }
+      const health = d.connection_health || null;
+      if (d.automatic_run_mode_paused) {
+        showToast('Saved. Automatic Live mode was paused: '
+          + (d.automatic_run_mode_paused_reason || 're-enable it once the connections check out.'), 'warning');
+      } else if (d.radarr_cleanup_forced_disabled) {
+        showToast('Saved. Radarr cleanup was disabled.', 'warning');
+      } else if (d.api_config_changed && health && !health.critical_ok) {
+        showToast('Saved. Connection issues found.', 'danger');
+      } else if (d.api_config_changed && health && health.severity === 'warning') {
+        showToast('Saved with connection warnings.', 'warning');
+      } else {
+        showToast('Configuration saved', 'success');
+      }
+    } else {
+      if (d.connection_health) _applyConfigHealth(d.connection_health);
+      showToast('Save failed: ' + d.error, 'danger');
+    }
+  } catch (e) {
+    showToast('Save failed: ' + e.message, 'danger');
+  } finally {
+    _setSavePending(false);
+  }
+}
+
+
+function _imdbUrlDirty() {
+  const current = document.getElementById('IMDB_RATINGS_URL')?.value?.trim() || '';
+  const saved = String(_savedConfig?.IMDB_RATINGS_URL || '').trim();
+  return current !== saved;
+}
+
+function _formatImdbDownloadWait(seconds) {
+  const total = Math.max(0, Number(seconds) || 0);
+  if (total <= 0) return 'now';
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.ceil((total % 3600) / 60);
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function _applyImdbDownloadButtonState() {
+  const btn = document.getElementById('btn-imdb-download');
+  const statusEl = document.getElementById('imdb-download-status');
+  if (!btn) return;
+
+  const status = _imdbDownloadStatus || {};
+  const urlDirty = _imdbUrlDirty();
+  const runtimeLocked = _configActivityLocked() || !_filesystemReady();
+  const canDownload = !!status.can_download && !urlDirty && !runtimeLocked;
+  const locked = !!status.download_locked;
+  btn.disabled = !canDownload;
+  btn.classList.remove('btn-busy');
+  btn.classList.toggle('disabled', !canDownload);
+  btn.setAttribute('aria-disabled', canDownload ? 'false' : 'true');
+
+  if (!status.exists) btn.textContent = 'Download IMDb Ratings';
+  else if (locked) btn.textContent = `Available in ${_formatImdbDownloadWait(status.seconds_until_download)}`;
+  else btn.textContent = 'Download Latest IMDb Ratings';
+
+  if (statusEl) {
+    if (_configActivityLocked()) {
+      statusEl.textContent = 'A run is active. IMDb downloads are disabled until it finishes.';
+    } else if (!_filesystemReady()) {
+      statusEl.textContent = _filesystemBlockingText();
+    } else if (urlDirty) {
+      statusEl.textContent = 'Save the IMDb dataset URL before downloading from it.';
+    } else if (status.exists) {
+      const size = status.size_mb ? `${status.size_mb} MB` : 'size unknown';
+      const mtime = status.mtime_ts ? prFormatEpoch(status.mtime_ts) : (status.mtime || 'unknown date');
+      if (locked) {
+        const next = status.next_download_ts ? prFormatEpoch(status.next_download_ts) : (status.next_download || '24 hours after the last download');
+        statusEl.textContent = `Local file: ${size}, last updated ${mtime}. Next manual download available ${next} (${_formatImdbDownloadWait(status.seconds_until_download)}).`;
+      } else {
+        statusEl.textContent = `Local file: ${size}, last updated ${mtime}. Download is available.`;
+      }
+    } else {
+      statusEl.textContent = 'No local IMDb ratings file found. Download is available.';
+    }
+  }
+}
+
+async function refreshImdbDownloadStatus() {
+  try {
+    const r = await fetch(`/api/imdb/status?${prTimeQuery()}`, { cache: 'no-store' });
+    _imdbDownloadStatus = await r.json();
+  } catch (e) {
+    _imdbDownloadStatus = { can_download: false, exists: false, reason: e.message || 'Status check failed.' };
+  }
+  _applyImdbDownloadButtonState();
+}
+
+async function forceDownloadImdbRatings() {
+  const btn = document.getElementById('btn-imdb-download');
+  if (!btn || btn.disabled) return;
+  if (!_filesystemReady()) {
+    showToast(_filesystemBlockingText(), 'warning');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.classList.add('btn-busy');
+  btn.textContent = 'Downloading…';
+
+  try {
+    const r = await fetch(`/api/imdb/download?${prTimeQuery()}`, { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    if (d.status) _imdbDownloadStatus = d.status;
+    if (!r.ok || !d.ok) throw new Error(d.message || 'IMDb download failed.');
+    showToast(d.message || 'IMDb ratings downloaded', 'success');
+  } catch (e) {
+    showToast('IMDb download failed: ' + e.message, 'danger');
+  } finally {
+    await refreshImdbDownloadStatus();
+  }
+}
+
+function _applyClearCacheButtonState() {
+  const btn = document.getElementById('btn-clear-cache');
+  const statusEl = document.getElementById('cache-clear-status');
+  if (!btn) return;
+
+  const status = _cacheClearStatus || {};
+  const runtimeLocked = _configActivityLocked() || !_filesystemReady();
+  const canClear = !!status.can_clear && !runtimeLocked;
+  btn.disabled = !canClear;
+  btn.classList.remove('btn-busy');
+  btn.classList.toggle('disabled', !canClear);
+  btn.setAttribute('aria-disabled', canClear ? 'false' : 'true');
+  btn.textContent = status.exists ? 'Clear cache' : 'No cache file';
+
+  if (statusEl) {
+    if (status.exists) {
+      const size = status.size_kb ? `${status.size_kb} KB` : 'size unknown';
+      const mtime = status.mtime_ts ? prFormatEpoch(status.mtime_ts) : (status.mtime || 'unknown date');
+      const suffix = _configActivityLocked()
+        ? ' A run is active.'
+        : (!_filesystemReady() ? ` ${_filesystemBlockingText()}` : (status.can_clear ? ' Cache can be cleared.' : ` ${status.reason || 'Cache cannot be cleared right now.'}`));
+      statusEl.textContent = `Local cache file: ${size}, last updated ${mtime}.${suffix}`;
+    } else {
+      statusEl.textContent = _configActivityLocked() ? 'A run is active. Cache is locked.' : (!_filesystemReady() ? _filesystemBlockingText() : (status.reason || 'No cache file found.'));
+    }
+  }
+}
+
+async function refreshCacheClearStatus() {
+  try {
+    const r = await fetch(`/api/cache/status?${prTimeQuery()}`, { cache: 'no-store' });
+    _cacheClearStatus = await r.json();
+  } catch (e) {
+    _cacheClearStatus = { exists: false, can_clear: false, reason: e.message || 'Status check failed.' };
+  }
+  _applyClearCacheButtonState();
+}
+
+async function clearCache() {
+  const btn = document.getElementById('btn-clear-cache');
+  if (!btn || btn.disabled) return;
+  if (!_filesystemReady()) {
+    showToast(_filesystemBlockingText(), 'warning');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.classList.add('btn-busy');
+  btn.textContent = 'Clearing…';
+
+  try {
+    const r = await fetch(`/api/cache/clear?${prTimeQuery()}`, { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    if (d.status) _cacheClearStatus = d.status;
+    if (!r.ok || !d.ok) throw new Error(d.message || 'Cache clear failed.');
+    showToast(d.message || 'Cache cleared', 'success');
+    if (d.summary_refresh_started) {
+      pollCurrentLibrarySizeBadgeUntilIdle().then(refreshCacheClearStatus);
+    }
+  } catch (e) {
+    showToast('Cache clear failed: ' + e.message, 'danger');
+  } finally {
+    await refreshCacheClearStatus();
+  }
+}
+
+// ── Revert / Section Reset to Default ─────────────────────────────────────────
+
+function revertForm() {
+  populateForm(_savedConfig);
+  clearDirty();
+  _resetConfirm();
+  _applyConfigRuntimeLocks();
+}
+
+function resetSectionToDefault(section) {
+  if (section === 'space' && _spaceThresholdsLocked()) {
+    _applySpaceThresholdLock();
+    showToast(_sectionLockReason('space') || 'Pause Live mode before changing thresholds.', 'warning');
+    return;
+  }
+  if (section === 'space' && !_spaceThresholdsHaveUsableLibrary()) {
+    _applySpaceThresholdLock();
+    showToast(_spaceThresholdUnavailableText('configuring Space Thresholds'), 'warning');
+    return;
+  }
+  const fields = SECTION_DEFAULT_FIELDS[section];
+  if (!fields) return;
+  const next = getFormConfig();
+  fields.forEach(key => {
+    const value = _defaultConfig[key];
+    next[key] = Array.isArray(value) ? [...value] : value;
+  });
+  populateForm(next);
+  markDirty();
+  _resetConfirm();
+  const names = { space: 'Space Thresholds', advanced: 'Advanced' };
+  showToast(`${names[section] || 'Section'} reset to defaults. Save to keep the change.`, 'warning');
+}
+
+// Initialize section reset buttons from the current form values.
+_syncSectionResetState();
+
+
+const _cfgFormForIssueObserver = document.getElementById('cfg-form');
+if (_cfgFormForIssueObserver) {
+  new MutationObserver(() => _scheduleSectionIssueUpdate()).observe(_cfgFormForIssueObserver, {
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'hidden', 'aria-invalid']
+  });
+}
+_scheduleSectionIssueUpdate();
+
+// Apply the backend health result once on load so saved connection state,
+// dependent-field gating, and any visible connection warnings are in sync.
+if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+</script>
+{% endblock %}

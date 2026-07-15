@@ -1,0 +1,2484 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — MediaReducer{% endblock %}
+
+{% block content %}
+<!-- ── Page header ── -->
+<div class="d-flex align-items-center mb-4 page-title-bar" style="gap:12px;">
+  <span class="page-title">Dashboard</span>
+</div>
+<script>window.__prDashboardOwnsBadge = true;</script>
+
+<style>
+  .dashboard-metrics {
+    align-items: stretch;
+  }
+  .dashboard-metric-card .mode-live {
+    border-color: #7e9b84;
+    color: #a9d0ae;
+    background: rgba(126, 155, 132, .18);
+  }
+  :root[data-theme="light"] .dashboard-metric-card .mode-live {
+    border-color: #6f9275;
+    color: #4f7657;
+    background: rgba(126, 155, 132, .22);
+  }
+  .dashboard-metric-card {
+    min-height: 154px;
+  }
+  .dashboard-metric-card .stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+  }
+  .metric-topline {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 30px;
+  }
+  .metric-topline .label {
+    margin-bottom: 0;
+  }
+  /* Marked-for-deletion footer spanning both columns of the Lifetime pruned
+     button, so it stands out from the two lifetime stats. */
+  .dashboard-marked-strip {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-top: 1px solid color-mix(in srgb, var(--text-warning) 34%, var(--border));
+    background: color-mix(in srgb, var(--text-warning) 15%, transparent);
+    color: var(--text-warning);
+    font-size: .76rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    line-height: 1.1;
+    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  /* display:flex above overrides the UA [hidden] rule — honor hidden here. */
+  .dashboard-marked-strip[hidden] { display: none; }
+  .dashboard-marked-strip .dashboard-marked-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dashboard-marked-strip strong { font-weight: 800; font-size: .82rem; }
+  .dashboard-marked-dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-warning);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-warning) 24%, transparent);
+  }
+  .dashboard-history-btn:hover .dashboard-marked-strip,
+  .dashboard-history-btn:focus .dashboard-marked-strip {
+    background: color-mix(in srgb, var(--text-warning) 20%, transparent);
+  }
+  .breach-note {
+    /* Pinned to the Cleanup Targets card bottom; same face as the labels
+       above it (.dashboard-mini-label), in red. */
+    margin-top: auto;
+    font-size: .78rem;
+    line-height: 1.1;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    color: var(--text-danger);
+  }
+  /* The specific target being crossed goes red — label and number both. */
+  .dashboard-target-row.is-breached .value,
+  .dashboard-target-row.is-breached .value .unit,
+  .dashboard-target-row.is-breached .dashboard-mini-label,
+  .dashboard-library-line.is-breached .dashboard-mini-value,
+  .dashboard-library-line.is-breached .dashboard-mini-value .unit,
+  .dashboard-library-line.is-breached .dashboard-mini-label {
+    color: var(--text-danger);
+  }
+  .dashboard-refresh-btn {
+    flex: 0 0 auto;
+  }
+  .dashboard-refresh-icon { font-size: 1rem; display: inline-block; }
+  .metric-main {
+    min-width: 0;
+  }
+  .metric-main .value,
+  .dashboard-target-row .value,
+  .dashboard-last-run .value {
+    overflow-wrap: anywhere;
+    color: var(--text-primary);
+    font-size: 1.55rem;
+    font-weight: 700;
+    line-height: 1.15;
+    letter-spacing: 0;
+  }
+  .metric-main .value .unit,
+  .dashboard-target-row .value .unit {
+    color: var(--text-muted);
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .dashboard-metric-sub,
+  .dashboard-last-run .sub {
+    color: var(--text-muted);
+    font-size: .78rem;
+    line-height: 1.3;
+    font-weight: 500;
+    letter-spacing: 0;
+    text-transform: uppercase;
+  }
+  .metric-bottom {
+    margin-top: auto;
+  }
+  .dashboard-target-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    align-items: start;
+  }
+  .dashboard-target-row {
+    min-width: 0;
+  }
+  /* Every value+label unit reads the same way: number first, tiny
+     uppercase label beneath it. */
+  .dashboard-target-row .dashboard-mini-label,
+  .dashboard-library-line .dashboard-mini-label,
+  .dashboard-history-segment .dashboard-mini-label {
+    margin-top: 5px;
+    margin-bottom: 0;
+  }
+  .dashboard-target-row .value,
+  .dashboard-last-run .value {
+    min-width: 0;
+  }
+  .dashboard-mini-label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-muted);
+    /* Matches .dashboard-metric-sub / #next-run-sub so every secondary line on
+       the dashboard reads at one size. */
+    font-size: .78rem;
+    line-height: 1.1;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .07em;
+    white-space: nowrap;
+  }
+  .dashboard-mini-value {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-primary);
+    font-size: 1rem;
+    line-height: 1.15;
+    font-weight: 750;
+  }
+  .dashboard-mini-value .unit {
+    color: var(--text-muted);
+    font-size: .78rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  .dashboard-history-btn {
+    width: 100%;
+    min-width: 0;
+    /* auto top margin pins the button to the card bottom (last flex child) to
+       line up with the Storage disk bar; must override the earlier
+       .metric-bottom rule that a plain margin:0 would lose to. */
+    margin: auto 0 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: hidden;
+    text-align: left;
+    border: 1px solid color-mix(in srgb, var(--border-strong) 78%, transparent);
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+    color: var(--text-primary);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+    transition: border-color .15s ease, background .15s ease, transform .15s ease;
+  }
+  .dashboard-history-btn:hover, .dashboard-history-btn:focus {
+    border-color: var(--accent);
+    background: var(--surface-3);
+    transform: translateY(-1px);
+  }
+  .dashboard-mode-link {
+    display: inline-flex;
+    align-items: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
+  }
+  .dashboard-mode-link:hover, .dashboard-mode-link:focus {
+    color: var(--text-accent);
+    border-color: var(--border-accent);
+    background: var(--bg-accent);
+    transform: translateY(-1px);
+  }
+  .dashboard-mode-link.mode-live:hover, .dashboard-mode-link.mode-live:focus {
+    color: #a9d0ae;
+    border-color: #7e9b84;
+    background: rgba(126, 155, 132, .26);
+  }
+  :root[data-theme="light"] .dashboard-mode-link.mode-live:hover,
+  :root[data-theme="light"] .dashboard-mode-link.mode-live:focus {
+    color: #4f7657;
+    border-color: #6f9275;
+    background: rgba(126, 155, 132, .30);
+  }
+  .dashboard-mode-link:focus-visible {
+    outline: 2px solid var(--border-accent);
+    outline-offset: 2px;
+  }
+  .dashboard-history-segment {
+    min-width: 0;
+    padding: 10px 12px;
+  }
+  .dashboard-history-segment + .dashboard-history-segment {
+    border-left: 1px solid var(--border);
+  }
+  .dashboard-last-run {
+    min-width: 0;
+  }
+  .dashboard-last-run #last-run-value {
+    display: block;
+    color: var(--text-primary);
+  }
+  #next-run-sub {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: .78rem;
+    line-height: 1.3;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0;
+  }
+  /* Live + over a space limit: the counted-down run will actually prune. */
+  #next-run-sub.will-prune {
+    color: var(--text-danger);
+  }
+  /* Deleted Movie History table — matches the Score Explorer's library-sample
+     table: compact, sticky header, side-scroll for columns. */
+  .deleted-history-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  .deleted-history-table {
+    width: 100%;
+    min-width: 640px;
+    border-collapse: collapse;
+    font-size: .78rem;
+  }
+  .deleted-history-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--popup-bg-2);
+    text-align: left;
+    padding: 8px 10px;
+    font-size: .7rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-strong);
+    white-space: nowrap;
+  }
+  .deleted-history-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  .deleted-history-table tbody tr:last-child td { border-bottom: none; }
+  .deleted-history-table tbody tr:hover td {
+    background: color-mix(in srgb, var(--text-accent) 8%, transparent);
+  }
+  /* Marked-for-deletion rows are pinned on top and tinted like the marked line. */
+  .deleted-history-table tr.dh-marked td {
+    background: color-mix(in srgb, var(--text-warning) 7%, transparent);
+  }
+  .deleted-history-table tr.dh-marked:hover td {
+    background: color-mix(in srgb, var(--text-warning) 13%, transparent);
+  }
+  .dh-badge {
+    display: inline-block;
+    font-size: .64rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 2px 7px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .dh-badge.marked { color: var(--text-warning); background: color-mix(in srgb, var(--text-warning) 16%, transparent); }
+  .dh-badge.deleted { color: var(--text-muted); background: var(--surface-3); }
+  .dh-title { white-space: normal; min-width: 170px; font-weight: 500; color: var(--text-primary); }
+  .dh-num { font-variant-numeric: tabular-nums; }
+  .dh-details { color: var(--text-secondary); }
+  /* Path shown in full, never truncated: a long path widens the table and the
+     wrapper's overflow:auto gives a horizontal scrollbar instead of an ellipsis. */
+  .dh-path {
+    color: var(--text-muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: .72rem;
+  }
+  .deleted-history-empty {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: .82rem;
+    text-align: center;
+    padding: 24px;
+  }
+  /* display:flex above overrides the UA [hidden] rule — honor hidden, else the
+     "Loading…"/empty placeholder stays visible under the table. */
+  .deleted-history-empty[hidden] { display: none; }
+  .deleted-history-pager[hidden] { display: none; }
+  .deleted-history-pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-right: auto;
+    font-size: .76rem;
+    color: var(--text-muted);
+  }
+  .deleted-history-pager button {
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    font-size: .74rem;
+    font-weight: 600;
+    padding: 3px 11px;
+    cursor: pointer;
+  }
+  .deleted-history-pager button:hover:not(:disabled) { color: var(--text-primary); border-color: var(--border-accent); }
+  .deleted-history-pager button:disabled { opacity: .4; cursor: default; }
+  /* Wider than the standard popup so the table's columns fit on desktop. */
+  .pr-popup--table .modal-dialog { max-width: min(1180px, calc(100vw - 24px)); }
+  .pr-popup--table.pr-popup--fill .modal-content { height: min(760px, calc(100vh - 72px)); }
+  /* Fullscreen on phones, exactly like the detailed-log window. */
+  @media (max-width: 640px) {
+    .pr-popup--table .modal-dialog {
+      max-width: none; width: 100%; margin: 0; min-height: 100%;
+    }
+    .pr-popup--table.pr-popup--fill .modal-content {
+      height: 100vh; height: 100dvh; border-radius: 0; border: none;
+    }
+    .deleted-history-table { font-size: .74rem; }
+  }
+  @media (max-width: 991.98px) {
+    .dashboard-metric-card {
+      min-height: 0;
+    }
+  }
+  /* Desktop (three cards side by side): the cards share three imaginary
+     rows — big number block, mini value line, bottom widget — so equal
+     minimum heights keep Storage / Cleanup Targets / Last Run lined up:
+       row 1  free-space + capacity | headroom + redline | last run + timer
+       row 2  Media library         | Library cap        | —
+       row 3  storage bar           | breach note        | history button */
+  @media (min-width: 992px) {
+    .dashboard-metric-card .metric-main {
+      min-height: 50px;
+    }
+    .dashboard-metric-card .dashboard-library-line {
+      min-height: 38px;
+    }
+    .dashboard-metric-card .stat-card > .metric-bottom:not(.dashboard-history-btn) {
+      min-height: 58px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .dashboard-metric-card .breach-note:not([hidden]) {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+    }
+    .dashboard-history-btn {
+      min-height: 58px;
+    }
+  }
+  @media (max-width: 575.98px) {
+    .dashboard-metric-card .stat-card {
+      gap: 10px;
+    }
+    .dashboard-mini-value {
+      white-space: normal;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dashboard-history-btn:hover, .dashboard-history-btn:focus { transform: none; }
+  }
+</style>
+
+<!-- ── Stat cards ── -->
+<div class="row g-3 mb-4 dashboard-metrics">
+
+  <div class="col-lg-4 col-md-6">
+    <div class="card h-100 dashboard-metric-card">
+      <div class="stat-card">
+        <div class="metric-topline">
+          <div class="label">Storage</div>
+          <button type="button" class="btn-icon dashboard-refresh-btn" id="btn-summary-refresh"
+                  onclick="refreshStorageSummary()" title="Refresh disk &amp; library size"
+                  aria-label="Refresh disk and library size">
+            <span class="dashboard-refresh-icon" aria-hidden="true">↻</span>
+          </button>
+        </div>
+        {# One markup for both states: when the disk read failed at render
+           time the same elements show placeholders, so the ↻ refresh can
+           populate them without a page reload. #}
+          <div class="metric-main">
+            <div class="value"><span id="storage-free">{{ disk.free_gb|commafy if disk else '—' }}</span> <span class="unit">GB free</span></div>
+            <div class="sub dashboard-metric-sub" id="storage-sub">{% if disk %}{{ disk.used_gb|commafy }} / {{ disk.total_gb|commafy }} GB &nbsp;({{ disk.pct_used }}% USED){% else %}Could not read {{ library_root }} — fix the mount, then press ↻{% endif %}</div>
+          </div>
+          <div class="dashboard-library-line">
+            <span class="dashboard-mini-value">
+              <span id="library-size-value">{% if library_gb is not none %}{{ '{:,.0f}'.format(library_gb) }}{% else %}—{% endif %}</span>
+              <span class="unit" id="library-size-unit"{% if library_gb is none %} hidden{% endif %}>GB</span>
+            </span>
+            <span class="dashboard-mini-label">Media library</span>
+          </div>
+          <div class="metric-bottom">
+            <div class="disk-bar" id="storage-bar-track">
+              <div class="disk-bar-clip">
+                <div class="disk-bar-fill" id="storage-bar" style="width:{{ disk.pct_used if disk else 0 }}%"></div>
+                <div class="disk-bar-library" id="storage-bar-library" style="width:0%"></div>
+              </div>
+              <div class="disk-bar-mark disk-bar-mark--cap" id="storage-mark-cap" hidden></div>
+              <div class="disk-bar-mark disk-bar-mark--headroom" id="storage-mark-headroom" hidden></div>
+              <div class="disk-bar-mark disk-bar-mark--redline" id="storage-mark-redline" hidden></div>
+            </div>
+            <div class="disk-bar-legend" id="storage-bar-legend">
+              <span class="dbl-item" id="dbl-library" hidden><i class="dbl-key dbl-key--library"></i>Library</span>
+              <span class="dbl-item" id="dbl-cap" hidden><i class="dbl-key dbl-key--cap"></i>Library cap</span>
+              <span class="dbl-item" id="dbl-headroom" hidden><i class="dbl-key dbl-key--headroom"></i>Headroom</span>
+              <span class="dbl-item" id="dbl-redline" hidden><i class="dbl-key dbl-key--redline"></i>Redline</span>
+            </div>
+          </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4 col-md-6">
+    <div class="card h-100 dashboard-metric-card">
+      <div class="stat-card">
+        <div class="metric-topline">
+          <div class="label">Cleanup Targets</div>
+          <a class="btn-icon dashboard-refresh-btn" href="/config#space-thresholds-section"
+             title="Open Space Thresholds settings" aria-label="Open Space Thresholds settings">
+            <span class="dashboard-refresh-icon" aria-hidden="true">⚙</span>
+          </a>
+        </div>
+        <div class="dashboard-target-list metric-main">
+          <div class="dashboard-target-row" id="target-row-headroom">
+            <div class="value">{% if thresholds_configured %}{{ headroom_gb|commafy }} <span class="unit">GB</span>{% else %}Not set{% endif %}</div>
+            <span class="dashboard-mini-label">Headroom target</span>
+          </div>
+          <div class="dashboard-target-row" id="target-row-redline">
+            <div class="value">
+              {% if not thresholds_configured %}Not set{% elif redline_gb %}{{ redline_gb|commafy }} <span class="unit">GB</span>{% else %}Disabled{% endif %}
+            </div>
+            <span class="dashboard-mini-label">Redline floor</span>
+          </div>
+        </div>
+        {# Same size/classes as the Storage card's "Media library" line —
+           the two sit side by side on desktop (row 2 of the metric cards). #}
+        <div class="dashboard-library-line" id="target-row-cap">
+          <span class="dashboard-mini-value">
+            {% if max_library_gb %}<span>{{ max_library_gb|commafy }}</span> <span class="unit">GB</span>{% else %}Disabled{% endif %}
+          </span>
+          <span class="dashboard-mini-label">Library cap</span>
+        </div>
+        <div class="breach-note" id="breach-note" hidden></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4 col-md-12">
+    <div class="card h-100 dashboard-metric-card">
+      <div class="stat-card">
+        {% set is_live = run_mode == 'headroom' %}
+        {% set mode_labels = {
+          'paused': 'Paused', 'headroom': 'Live',
+        } %}
+        <div class="metric-topline">
+          <div class="label">Last Run</div>
+          {% set run_mode_config_href = '/config?onboarding=connections#automatic-run-mode' if connection_onboarding_needed else '/config#automatic-run-mode' %}
+          <a class="pr-pill {{ 'mode-live' if is_live else 'mode-debug' }} dashboard-mode-link"
+             href="{{ run_mode_config_href }}"
+             title="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Automatic Run Mode settings' }}"
+             aria-label="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Automatic Run Mode settings' }}">
+            {{ mode_labels.get(run_mode, run_mode) }}
+          </a>
+        </div>
+        <div class="dashboard-last-run metric-main">
+          <span class="value" id="last-run-value" data-last-run-ts="{{ last_run_ts or '' }}">{{ last_run or '—' }}</span>
+          <div class="sub" id="next-run-sub">{% if run_mode == 'paused' %}Scheduler paused{% else %}Next run: calculating…{% endif %}</div>
+        </div>
+        <button type="button" class="dashboard-history-btn metric-bottom" onclick="openDeletedHistory()"
+                title="Show deleted.log history">
+          <span class="dashboard-history-segment">
+            <span class="dashboard-mini-value">
+              <span id="pruned-count-value">{{ deleted_count|commafy(0) }}</span>
+              <span class="unit" id="pruned-count-unit">{{ 'MOVIE' if deleted_count == 1 else 'MOVIES' }}</span>
+            </span>
+            <span class="dashboard-mini-label">Lifetime pruned</span>
+          </span>
+          <span class="dashboard-history-segment">
+            {% set reclaimed_parts = (deleted_reclaimed_label or '0 GB').split(' ', 1) %}
+            <span class="dashboard-mini-value" id="pruned-space-value" data-reclaimed-bytes="{{ deleted_reclaimed_bytes or 0 }}">
+              <span id="pruned-space-number">{{ reclaimed_parts[0]|group_int }}</span>
+              <span class="unit" id="pruned-space-unit">{{ reclaimed_parts[1]|default('GB', true)|upper }}</span>
+            </span>
+            <span class="dashboard-mini-label">Space reclaimed</span>
+          </span>
+          <span class="dashboard-marked-strip" id="pruned-marked"
+                title="Marked for deletion — the delay window is running; open the history to review them"
+                {{ '' if marked_count else 'hidden' }}>
+            <span class="dashboard-marked-dot" aria-hidden="true"></span>
+            <span class="dashboard-marked-text"><strong id="pruned-marked-count">{{ marked_count|commafy(0) }}</strong> marked for deletion</span>
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Run controls + log ── -->
+<div class="card mb-0 run-controls-card" id="run-progress">
+  <style>
+
+    .dashboard-stop-btn {
+      --bs-btn-color: var(--text-danger);
+      --bs-btn-bg: transparent;
+      --bs-btn-border-color: var(--text-danger);
+      --bs-btn-hover-color: #fff7f7;
+      --bs-btn-hover-bg: var(--text-danger);
+      --bs-btn-hover-border-color: var(--text-danger);
+      --bs-btn-active-color: #fff7f7;
+      --bs-btn-active-bg: var(--text-danger);
+      --bs-btn-active-border-color: var(--text-danger);
+      min-width: 76px;
+      background: transparent !important;
+      border-color: var(--text-danger) !important;
+      color: var(--text-danger) !important;
+      font-weight: 700;
+      transition: opacity .15s ease, filter .15s ease, background-color .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .dashboard-stop-btn:hover,
+    .dashboard-stop-btn:focus,
+    .dashboard-stop-btn:active,
+    .dashboard-stop-btn:first-child:active {
+      background: var(--text-danger) !important;
+      border-color: var(--text-danger) !important;
+      color: #fff7f7 !important;
+      filter: none;
+    }
+    .dashboard-stop-btn:disabled {
+      background: transparent !important;
+      border-color: color-mix(in srgb, var(--text-danger) 55%, var(--border-strong)) !important;
+      color: var(--text-danger) !important;
+      opacity: .34;
+      filter: grayscale(.45);
+      cursor: not-allowed;
+    }
+    .dashboard-tip-wrap {
+      display: inline-flex;
+      position: relative;
+    }
+    .dashboard-tip-wrap[data-hover-tip]:not([data-hover-tip=""]) {
+      cursor: help;
+    }
+    .dashboard-tip-wrap .dashboard-live-btn:disabled {
+      pointer-events: none;
+    }
+    .dashboard-run-tooltip {
+      position: fixed;
+      z-index: 9999;
+      display: none;
+      pointer-events: none;
+      max-width: 300px;
+      padding: 7px 9px;
+      border-radius: 7px;
+      border: 1px solid var(--border-strong);
+      background: var(--popup-bg);
+      color: var(--text-primary);
+      font-size: .76rem;
+      line-height: 1.3;
+      box-shadow: var(--shadow);
+    }
+    .run-controls-card {
+      position: relative;
+      overflow: visible;
+      /* Scroll target for the header run badge — clear both sticky bars. */
+      scroll-margin-top: calc(var(--pr-header-h, 58px) + var(--pr-titlebar-h, 54px) + 10px);
+    }
+    .run-help {
+      position: absolute;
+      left: 16px;
+      right: 16px;
+      top: 58px;
+      z-index: 30;
+      padding: 12px 16px;
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      background: var(--popup-bg);
+      box-shadow: var(--shadow);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      font-size: .92rem;
+      line-height: 1.6;
+      color: var(--text-muted);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transform: translateY(-10px);
+      transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s;
+    }
+    .run-help.is-visible {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: auto;
+      transform: translateY(0);
+      transition-delay: 0s;
+    }
+    .run-help strong { color: var(--text-secondary); font-weight: 700; }
+    .run-help em { color: var(--text-secondary); font-style: italic; }
+    @media (prefers-reduced-motion: reduce) {
+      .run-help { transform: none; }
+    }
+    .run-help-toggle { font-weight: 600; }
+    .run-progress { padding: 14px 16px 2px; }
+    .rp-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:14px; }
+    /* Geometry inherited from .pr-pill; JS swaps is-done/is-idle/is-error. */
+    .rp-pill          { border-color:var(--border-accent);  background:var(--bg-accent);   color:var(--text-accent); }
+    .rp-pill.is-live  { border-color:var(--border-danger);  background:var(--bg-danger);   color:var(--text-danger); }
+    .rp-pill.is-done  { border-color:color-mix(in srgb, var(--text-secondary) 30%, transparent); background:var(--bg-sage);    color:var(--text-secondary); }
+    .rp-pill.is-idle  { border-color:var(--border-strong);  background:var(--bg-neutral);  color:var(--text-muted); }
+    .rp-pill.is-error { border-color:var(--border-danger);  background:var(--bg-danger);   color:var(--text-danger); }
+    .rp-pill.is-warn  { border-color:var(--border-warning); background:var(--bg-warning);  color:var(--text-warning); }
+    .rp-trigger { font-size:.78rem; color:var(--text-muted); }
+    .rp-msg { font-size:.78rem; color:var(--text-secondary); margin-left:auto; text-align:right; }
+    .rp-steps { display:flex; align-items:flex-start; margin-bottom:16px; }
+    .rp-step { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;
+               position:relative; text-align:center; min-width:0; }
+    .rp-step:not(:first-child)::before { content:""; position:absolute; top:11px; left:-50%;
+               width:100%; height:1.5px; background:var(--border); z-index:0; }
+    .rp-step.is-done:not(:first-child)::before { background:var(--accent); }
+    .rp-step.is-active:not(:first-child)::before { background:var(--accent); }
+    .rp-step.is-failed:not(:first-child)::before { background:var(--text-danger); }
+    .rp-step.is-failed-line:not(:first-child)::before { background:var(--text-danger); }
+    .rp-step.is-success-line:not(:first-child)::before { background:#7e9b84; }
+    .rp-step.is-warn-line:not(:first-child)::before { background:var(--text-warning); }
+    .rp-dot { position:relative; z-index:1; width:23px; height:23px; border-radius:50%;
+              border:1.5px solid var(--border-strong); background:var(--surface-1);
+              display:flex; align-items:center; justify-content:center; font-size:.72rem; color:var(--text-muted); }
+    .rp-step.is-active .rp-dot { background:var(--accent); border-color:var(--accent); color:var(--page-bg);
+              animation:rp-dot-pulse var(--pr-pulse-period) ease-in-out infinite; }
+    @keyframes rp-dot-pulse {
+      0%   { opacity:1;   box-shadow:0 0 0 0   color-mix(in srgb, var(--accent) 55%, transparent); }
+      70%  { opacity:.55; box-shadow:0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); }
+      100% { opacity:1;   box-shadow:0 0 0 0   color-mix(in srgb, var(--accent) 0%, transparent); }
+    }
+    .rp-step.is-done .rp-dot { background:var(--bg-sage); border-color:transparent; color:var(--text-secondary); }
+    .rp-step.is-failed .rp-dot { background:var(--bg-danger); border-color:var(--text-danger); color:var(--text-danger); font-weight:700; }
+    .rp-step.is-success-end .rp-dot { background:#7e9b84; border-color:#7e9b84; color:var(--page-bg); box-shadow:0 0 0 3px color-mix(in srgb, #7e9b84 22%, transparent); }
+    .rp-step.is-warn-end .rp-dot { background:var(--text-warning); border-color:var(--text-warning); color:var(--page-bg); box-shadow:0 0 0 3px color-mix(in srgb, var(--text-warning) 24%, transparent); }
+    .rp-dot-label { font-size:.7rem; color:var(--text-muted); line-height:1.2; }
+    .rp-step.is-active .rp-dot-label { color:var(--text-primary); }
+    .rp-step.is-done .rp-dot-label { color:var(--text-secondary); }
+    .rp-step.is-failed .rp-dot-label { color:var(--text-danger); }
+    .rp-barrow { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px; }
+    .rp-bar-label { font-size:.82rem; font-weight:600; color:var(--text-primary); }
+    .rp-bar-pct { font-size:.76rem; color:var(--text-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .rp-track { height:8px; background:var(--surface-3); border-radius:999px; overflow:hidden; }
+    .rp-bar { position:relative; height:100%; width:0%; overflow:hidden; background:var(--accent); border-radius:999px; transition:width .25s ease; }
+    /* While a run is active the fill carries scrolling barber-pole stripes,
+       plus the sweeping highlight below — together they read as "working"
+       even when the percentage holds still for a while. */
+    .rp-bar.is-running {
+      background-image:linear-gradient(45deg,
+        rgba(255,255,255,.18) 25%, transparent 25%, transparent 50%,
+        rgba(255,255,255,.18) 50%, rgba(255,255,255,.18) 75%, transparent 75%, transparent);
+      background-size:16px 16px;
+      animation:rp-bar-stripes var(--pr-spin-period) linear infinite;
+    }
+    @keyframes rp-bar-stripes {
+      from { background-position:16px 0; }
+      to   { background-position:0 0; }
+    }
+    .rp-bar.is-running::after {
+      content:"";
+      position:absolute;
+      inset:0;
+      background:linear-gradient(90deg, transparent 0%, rgba(255,255,255,.34) 45%, transparent 75%);
+      transform:translateX(-100%);
+      animation:rp-bar-sweep 1.25s ease-in-out infinite;
+    }
+    @keyframes rp-bar-sweep {
+      0% { transform:translateX(-100%); }
+      100% { transform:translateX(100%); }
+    }
+    .rp-bar.is-done { background:var(--text-accent); }
+    .rp-current { font-size:.76rem; color:var(--text-muted); margin-top:7px; min-height:1.1em; }
+    .rp-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; margin-top:14px; }
+    .rp-stat { background:var(--surface-2); border-radius:8px; padding:8px 10px; border:1px solid transparent; }
+    /* Clickable stats share the Lifetime pruned box's border + hover treatment. */
+    .rp-stat.log-jumpable {
+      cursor: pointer;
+      border-color: color-mix(in srgb, var(--border-strong) 78%, transparent);
+      background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+      transition: border-color .15s ease, background .15s ease, transform .15s ease;
+    }
+    .rp-stat.log-jumpable:hover, .rp-stat.log-jumpable:focus-visible {
+      border-color: var(--accent);
+      background: var(--surface-3);
+      transform: translateY(-1px);
+    }
+    /* The clickable status pill shares the Paused/Live mode pill's hover. */
+    .rp-pill.log-jumpable {
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
+    }
+    .rp-pill.log-jumpable:hover, .rp-pill.log-jumpable:focus-visible {
+      color: var(--text-accent);
+      border-color: var(--border-accent);
+      background: var(--bg-accent);
+      transform: translateY(-1px);
+    }
+    /* The Error/Stopped badge fills solid red on hover — same cue as the
+       danger-action buttons — instead of the accent hover above. */
+    .rp-pill.is-error.log-jumpable:hover, .rp-pill.is-error.log-jumpable:focus-visible {
+      color: #fff7f7;
+      border-color: var(--text-danger);
+      background: var(--text-danger);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .rp-stat.log-jumpable:hover, .rp-stat.log-jumpable:focus-visible,
+      .rp-pill.log-jumpable:hover, .rp-pill.log-jumpable:focus-visible { transform: none; }
+    }
+    .rp-stat-label { font-size:.68rem; color:var(--text-muted); }
+    .rp-stat-val { font-size:1.15rem; font-weight:600; color:var(--text-primary);
+                   font-variant-numeric:tabular-nums; margin-top:1px; }
+    .rp-log-toggle { background:none; border:none; color:var(--text-muted); font-size:.78rem;
+                     padding:10px 0 4px; cursor:pointer; display:inline-flex; align-items:center; gap:6px; }
+    .rp-log-toggle:hover { color:var(--text-secondary); }
+    .rp-log-icon { display:inline-block; font-size:.82rem; }
+
+    /* Floating / full-screen detailed-log window */
+    .log-window {
+      position: fixed; z-index: 1080;
+      top: 84px; left: 50%; transform: translateX(-50%);
+      width: min(1100px, 92vw); height: calc(100vh - 112px);
+      min-width: 320px; min-height: 200px; max-width: 96vw; max-height: calc(100vh - 112px);
+      display: flex; flex-direction: column;
+      background: var(--popup-bg); border: 1px solid var(--border-strong);
+      border-radius: 14px; box-shadow: var(--shadow);
+      overflow: hidden; resize: both;
+    }
+    .log-window[hidden] { display: none; }
+    /* Fade + slide entrance. The slide uses the standalone `translate` property
+       so it composes with `transform` rather than overriding it: the window is
+       transform-centered until dragged (then inline left/top + transform:none),
+       and the animation must fight neither state. */
+    .log-window:not([hidden]) { animation: pr-rise-in var(--pr-anim-in); }
+    .log-window-header {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 8px 9px 14px; cursor: move; user-select: none; touch-action: none;
+      background: var(--popup-bg-2); border-bottom: 1px solid var(--border);
+      border-radius: 14px 14px 0 0; flex: 0 0 auto;
+    }
+    .log-window-title { font-size: .8rem; font-weight: 600; color: var(--text-secondary); }
+    .log-window-view { color: var(--text-muted); font-weight: 500; }
+    .log-window-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+    .log-window-fullbtn, .log-window-dlbtn {
+      border: 1px solid var(--border-strong); border-radius: 999px;
+      background: var(--surface-2); color: var(--text-secondary);
+      font-size: .7rem; font-weight: 600; padding: 3px 10px; cursor: pointer;
+      white-space: nowrap;
+    }
+    .log-window-fullbtn:hover, .log-window-fullbtn:focus,
+    .log-window-dlbtn:hover, .log-window-dlbtn:focus { color: var(--text-primary); border-color: var(--border-accent); }
+    .log-window-close {
+      background: none; border: none; cursor: pointer;
+      color: var(--text-muted); font-size: .95rem; line-height: 1;
+      width: 28px; height: 28px; border-radius: 7px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .log-window-close:hover, .log-window-close:focus { color: var(--text-primary); background: var(--surface-3); }
+    .log-window-body { position: relative; flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
+    .log-jump {
+      position: absolute; right: 22px; bottom: 14px; z-index: 2;
+      border: 1px solid var(--border-strong); border-radius: 999px;
+      background: var(--popup-bg-2); color: var(--text-secondary);
+      font-size: .74rem; font-weight: 600; padding: 5px 12px;
+      cursor: pointer; box-shadow: var(--shadow);
+    }
+    .log-jump:hover, .log-jump:focus { color: var(--text-primary); border-color: var(--border-accent); background: var(--surface-3); }
+    .log-window .log-term {
+      flex: 1 1 auto; height: auto; min-height: 0; margin: 0;
+      border: none; border-top: none; border-radius: 0;
+    }
+    @media (max-width: 640px) {
+      .log-window {
+        inset: 0 !important; top: 0 !important; left: 0 !important;
+        width: 100% !important; height: 100% !important;
+        max-width: none !important; max-height: none !important;
+        transform: none !important; translate: none !important; resize: none !important;
+        border: none !important; border-radius: 0 !important;
+      }
+      .log-window-header { cursor: default; border-radius: 0; touch-action: auto; }
+      .log-window .log-term { font-size: .68rem; line-height: 1.55; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .rp-bar.is-running { background-image:none; }
+      .rp-bar.is-running::after { display:none; }
+    }
+  </style>
+  <div class="card-header d-flex align-items-center" style="gap:10px;flex-wrap:wrap;">
+    Run Controls
+    <div class="ms-auto d-flex gap-2 flex-wrap">
+      <span class="dashboard-tip-wrap" data-hover-tip="{{ live_state.simulate_tooltip if live_state.simulate_disabled else '' }}">
+        <button class="btn btn-sm btn-outline-secondary" onclick="triggerRun('debug_sim')" id="btn-sim"
+                {% if live_state.simulate_disabled %}disabled{% endif %}>
+          Simulate
+        </button>
+      </span>
+      <span class="dashboard-tip-wrap" data-hover-tip="{{ live_state.live_tooltip if live_state.live_disabled else '' }}">
+        <button class="btn btn-sm btn-danger-action dashboard-live-btn btn-morph" onclick="liveRun('headroom', 'btn-live')" id="btn-live"
+                {% if live_state.live_disabled %}disabled{% endif %}>
+          <span class="btn-morph-label">Live Run</span>
+        </button>
+      </span>
+      <button class="btn btn-sm dashboard-stop-btn" onclick="stopRun()" id="btn-stop"
+              {% if not run_active %}disabled{% endif %}
+              title="{{ 'Stop the active run' if run_active else 'No active run to stop' }}">
+        ■ Stop
+      </button>
+      <button class="btn btn-sm btn-icon run-help-toggle" type="button" id="btn-run-help"
+              onclick="toggleRunHelp()" aria-controls="run-help" aria-expanded="false"
+              title="Show run-control help">i</button>
+      {% if debug_mode %}
+      <button class="btn btn-sm btn-outline-warning pr-debug-btn" type="button" id="btn-debug-run-state"
+              onclick="prRunDebug('/api/debug/run-state', 'Run &amp; engine state', this)"
+              title="Debug: run, scheduler, storage, and connection state">Debug</button>
+      {% endif %}
+    </div>
+  </div>
+  <div class="run-help" id="run-help">
+    <strong>Simulate</strong> previews deletions without touching files.
+    <strong>Live Run</strong> deletes eligible movies to meet your thresholds immediately —
+    the deletion delay and daily schedule apply to automatic runs only.
+    The Storage card's <strong>↻</strong> refreshes disk and library numbers only.
+  </div>
+  <div class="run-progress" id="run-progress">
+    <div class="rp-head">
+      <span class="pr-pill rp-pill is-idle" id="rp-pill" onclick="jumpToLogSection('errors')">Idle</span>
+      <span class="rp-trigger" id="rp-trigger"></span>
+      <span class="rp-msg" id="rp-msg">{% if live_state.space_satisfied %}No runs yet — space limits are satisfied.{% elif live_state.simulate_disabled %}No runs yet — finish setup in Configuration, then start with Simulate.{% else %}No runs yet — start with Simulate to preview a cleanup.{% endif %}</span>
+    </div>
+    <div class="rp-steps" id="rp-steps">
+      <div class="rp-step" data-step="checking"><span class="rp-dot">1</span><span class="rp-dot-label">Checking</span></div>
+      <div class="rp-step" data-step="library"><span class="rp-dot">2</span><span class="rp-dot-label">Reading library</span></div>
+      <div class="rp-step" data-step="scanning"><span class="rp-dot">3</span><span class="rp-dot-label">Scanning</span></div>
+      <div class="rp-step" data-step="cleanup"><span class="rp-dot">4</span><span class="rp-dot-label" id="rp-step-cleanup-label">Cleanup</span></div>
+      <div class="rp-step" data-step="done"><span class="rp-dot">5</span><span class="rp-dot-label">Done</span></div>
+    </div>
+    <div class="rp-barrow">
+      <span class="rp-bar-label" id="rp-bar-label">Ready</span>
+      <span class="rp-bar-pct" id="rp-bar-pct"></span>
+    </div>
+    <div class="rp-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-labelledby="rp-bar-label"><div class="rp-bar" id="rp-bar"></div></div>
+    <div class="rp-current" id="rp-current"></div>
+    <div class="rp-stats">
+      <div class="rp-stat" id="rp-jump-scan" onclick="jumpToLogSection('scan')"><div class="rp-stat-label">Scanned</div><div class="rp-stat-val" id="rp-stat-scanned">0</div></div>
+      <div class="rp-stat" id="rp-jump-eligible" onclick="jumpToLogSection('eligible')"><div class="rp-stat-label">Eligible</div><div class="rp-stat-val" id="rp-stat-eligible">0</div></div>
+      <div class="rp-stat" id="rp-jump-deletions" onclick="jumpToLogSection('deletions')"><div class="rp-stat-label" id="rp-stat-deleted-label">Deleted</div><div class="rp-stat-val" id="rp-stat-deleted">0</div></div>
+      <div class="rp-stat" id="rp-jump-summary" onclick="jumpToLogSection('summary')"><div class="rp-stat-label" id="rp-stat-freed-label">Freed</div><div class="rp-stat-val" id="rp-stat-freed">0 GB</div></div>
+    </div>
+  </div>
+  <div style="padding:0 16px 12px;">
+    <button type="button" class="rp-log-toggle" id="btn-log-toggle" onclick="openLogWindow()" aria-haspopup="dialog">
+      <span class="rp-log-icon" aria-hidden="true">⤢</span><span>Show detailed log</span>
+    </button>
+  </div>
+</div>
+
+<div class="log-window" id="log-window" hidden role="dialog" aria-modal="false" aria-labelledby="log-window-title">
+  <div class="log-window-header" id="log-window-header">
+    <span class="log-window-title" id="log-window-title">Detailed log<span class="log-window-view" id="log-window-view" hidden></span></span>
+    <div class="log-window-actions">
+      <button type="button" class="log-window-dlbtn" id="log-window-dlbtn" onclick="downloadDetailedLog(this)">Download</button>
+      <button type="button" class="log-window-fullbtn" id="log-window-fullbtn" hidden onclick="showFullLog()">Show full log</button>
+      <button type="button" class="log-window-close" id="log-window-close" onclick="closeLogWindow()" aria-label="Close log">✕</button>
+    </div>
+  </div>
+  <div class="log-window-body">
+    <pre class="log-term" id="log-term">Pick an action above to run MediaReducer.
+Live output will stream here.</pre>
+    <button type="button" class="log-jump" id="log-jump" hidden onclick="_logJumpToBottom()">↓ Jump to latest</button>
+  </div>
+</div>
+
+<div class="modal fade pr-popup pr-popup--fill pr-popup--table" id="deleted-history-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title">Deleted Movie History</h5>
+          <div id="deleted-history-summary" style="font-size:.78rem;color:var(--text-muted);">Loading deleted.log…</div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="deleted-history-wrap" id="deleted-history-wrap">
+          <table class="deleted-history-table" id="deleted-history-table">
+            <thead><tr>
+              <th>Status</th>
+              <th>Title</th>
+              <th>Size</th>
+              <th>Date</th>
+              <th>Details</th>
+              <th>Path</th>
+            </tr></thead>
+            <tbody id="deleted-history-tbody"></tbody>
+          </table>
+        </div>
+        <div class="deleted-history-empty" id="deleted-history-empty" hidden>Loading deleted.log…</div>
+      </div>
+      <div class="modal-footer">
+        <div class="deleted-history-pager" id="deleted-history-pager" hidden>
+          <button type="button" id="dh-prev" onclick="_dhPage(-1)">‹ Prev</button>
+          <span id="dh-page-label"></span>
+          <button type="button" id="dh-next" onclick="_dhPage(1)">Next ›</button>
+        </div>
+        <!-- No footer Close button: the header's ✕ (btn-close) already dismisses
+             the modal, and dropping it lets Download + Erase log sit in one row. -->
+        <button type="button" class="btn btn-outline-secondary" id="btn-download-deleted-log" onclick="downloadDeletedHistory(this)">Download</button>
+        <button type="button" class="btn btn-outline-secondary" id="btn-clear-deleted-log" onclick="clearDeletedHistory()">Erase log</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+let _active       = {{ 'true' if run_active else 'false' }};
+const _paused     = {{ 'true' if run_mode == 'paused' else 'false' }};
+let _summaryOk = {{ 'false' if live_state.summary_disabled else 'true' }};
+let _simulateOk = {{ 'false' if live_state.simulate_disabled else 'true' }};
+let _liveOk = {{ 'false' if live_state.live_disabled else 'true' }};
+let _summaryDisabledMessage = {{ (live_state.summary_tooltip or 'Connect the selected media server first.')|tojson }};
+let _simulateDisabledMessage = {{ (live_state.simulate_tooltip or 'Fix Space Thresholds first.')|tojson }};
+let _liveDisabledMessage = {{ (live_state.live_tooltip or 'Fix Space Thresholds first.')|tojson }};
+let _nextRunTime  = null;
+let _autopauseReason = {{ (autopause_reason or '')|tojson }};
+// Storage-bar threshold markers; refreshed by status polls. Headroom/Redline
+// are free-space targets; the library cap is a library-size target.
+let _storageHeadroomGb   = {{ headroom_gb|tojson }};
+let _storageRedlineGb    = {{ redline_gb|tojson }};
+let _storageLibraryCapGb = {{ max_library_gb|tojson }};
+// The once-per-day headroom window: a headroom-only breach won't prune
+// again today once it's used (redline/cap ignore the window).
+let _headroomWindowUsedToday = {{ headroom_window_used_today|tojson }};
+// Live blocked because a target exceeds the safety percentage — the breach
+// note must not promise a freed amount no run can deliver.
+let _safetyBlocked = {{ live_state.space_thresholds.get('safety_blocked', false)|tojson }};
+// Deletion-delay state: with a delay set, a daily run may only MARK — the
+// red countdown and the breach note key off whether marks are ripe and when
+// the next marked deletion lands.
+let _deleteDelayDays = {{ delete_delay_days|tojson }};
+let _dailyRunTime = {{ daily_run_time|tojson }};
+let _markedRipeCount = {{ delete_forecast.ripe|tojson }};
+// The next deletion EVENT from the marked plan: the exact batch the next
+// deleting daily run removes. on=null means "ripe now" (the next run).
+let _markedEvent = {
+  on: {{ delete_forecast.event_on|tojson }},
+  count: {{ delete_forecast.event_count|tojson }},
+  bytes: {{ delete_forecast.event_bytes|tojson }},
+};
+let _confirmLiveMode = null;
+let _summaryBusy = false;
+let _summaryPollActive = false;
+let _runStartPending = false;
+let _runStartButtonId = null;
+let _logPollTimer = null;
+let _statusPollTimer = null;
+let _logFetchInFlight = false;
+let _statusFetchInFlight = false;
+const _ACTIVE_LOG_LINES = 900;
+// The finished-run view requests the whole log ('all', server-capped); active
+// runs keep a light 900-line tail since they re-poll every second.
+const _FINAL_LOG_LINES = 'all';
+const _LOG_POLL_MS = 750;
+
+
+function _positionRunHelp() {
+  const help = document.getElementById('run-help');
+  const card = help?.closest('.run-controls-card');
+  const header = card?.querySelector('.card-header');
+  if (!help || !card || !header) return;
+  const headerBottom = header.offsetTop + header.offsetHeight;
+  help.style.top = `${headerBottom + 10}px`;
+}
+
+function toggleRunHelp(forceShow = null) {
+  const help = document.getElementById('run-help');
+  const btn = document.getElementById('btn-run-help');
+  if (!help || !btn) return;
+  const show = forceShow === null ? !help.classList.contains('is-visible') : !!forceShow;
+  _positionRunHelp();
+  help.classList.toggle('is-visible', show);
+  btn.classList.toggle('is-active', show);
+  btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+  btn.title = show ? 'Hide run-control help' : 'Show run-control help';
+}
+
+window.addEventListener('resize', _positionRunHelp);
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') toggleRunHelp(false);
+});
+
+document.addEventListener('click', (ev) => {
+  const help = document.getElementById('run-help');
+  const btn = document.getElementById('btn-run-help');
+  if (!help || !help.classList.contains('is-visible')) return;
+  if (btn && btn.contains(ev.target)) return;
+  toggleRunHelp(false);
+});
+
+
+
+function _resetLiveConfirm() {
+  _confirmLiveMode = null;
+  if (_runStartPending && _runStartButtonId === 'btn-live') return;
+  _morphButtonText(document.getElementById('btn-live'), 'Live Run');
+}
+
+function _runButtonDefaultLabel(id) {
+  return id === 'btn-live' ? 'Live Run' : (id === 'btn-sim' ? 'Simulate' : '');
+}
+
+function _setRunStartPending(on, buttonId = null) {
+  const previous = _runStartButtonId;
+  _runStartPending = !!on;
+  _runStartButtonId = _runStartPending ? buttonId : null;
+
+  if (previous && previous !== buttonId) {
+    const oldBtn = document.getElementById(previous);
+    oldBtn?.classList.remove('btn-pending-ellipsis');
+    const oldLabel = _runButtonDefaultLabel(previous);
+    if (oldLabel) _morphButtonText(oldBtn, oldLabel);
+    oldBtn?.removeAttribute('aria-busy');
+  }
+
+  if (buttonId) {
+    const btn = document.getElementById(buttonId);
+    if (btn) {
+      btn.classList.toggle('btn-pending-ellipsis', _runStartPending);
+      if (_runStartPending) btn.setAttribute('aria-busy', 'true');
+      else btn.removeAttribute('aria-busy');
+      _morphButtonText(btn, _runStartPending ? 'Starting' : _runButtonDefaultLabel(buttonId));
+    }
+  }
+  _applyButtonStates();
+}
+
+window.addEventListener('beforeunload', (event) => {
+  if (!_runStartPending) return;
+  event.preventDefault();
+  event.returnValue = '';
+});
+
+function _isLiveConfirmTarget(target) {
+  return !!target?.closest?.('#btn-live');
+}
+
+// While Live Run is asking for confirmation, any click away from the Live Run
+// button backs out of the confirmation instead of activating another control.
+document.addEventListener('click', (ev) => {
+  if (!_confirmLiveMode) return;
+  if (_isLiveConfirmTarget(ev.target)) return;
+  _resetLiveConfirm();
+  ev.preventDefault();
+  ev.stopPropagation();
+}, true);
+
+// ── Jump-to-section: stats and the status pill deep-link into the log ────────
+// Section availability comes from the server with every /api/logs/last poll,
+// computed over the FULL log file — so a target is clickable exactly when the
+// run has genuinely written that section, regardless of how much of the log is
+// loaded in the window. Clicking loads JUST that section into the window
+// (long wrapped lines make scroll-position math unreliable); "Show full log"
+// returns to the complete log.
+let _logSections = {};            // kind -> bool, from the last /api/logs/last poll
+let _rpErrorsClickable = false;   // pill is a jump target only in error/warn states
+let _logViewMode = 'tail';        // 'tail' = full/live log, 'section' = one section
+let _logViewKind = null;
+
+const _LOG_SECTION_LABELS = {
+  errors: 'Errors & warnings', scan: 'Scan', eligible: 'Eligible candidates',
+  deletions: 'Deletions', summary: 'Summary',
+};
+// The engine writes these sections strictly in this order, so a section is
+// finished — and safe to open as a stable jump target — once a later section
+// has started, or once the run itself has ended. While the run is still
+// appending to a section, its stat box stays inert.
+const _LOG_SECTION_ORDER = ['scan', 'eligible', 'deletions', 'summary'];
+function _logSectionComplete(kind) {
+  if (!_logSections[kind]) return false;
+  if (!_active) return true;
+  const i = _LOG_SECTION_ORDER.indexOf(kind);
+  if (i === -1) return true;
+  return _LOG_SECTION_ORDER.slice(i + 1).some(k => _logSections[k]);
+}
+
+function _applyLogJumpAffordance() {
+  const targets = {
+    scan: 'rp-jump-scan', eligible: 'rp-jump-eligible',
+    deletions: 'rp-jump-deletions', summary: 'rp-jump-summary',
+  };
+  const titles = {
+    scan: 'Open the scan section of the detailed log',
+    eligible: 'Open the sorted eligible candidates in the detailed log',
+    deletions: 'Open the deletions section of the detailed log',
+    summary: 'Open the run summary in the detailed log',
+  };
+  for (const [kind, id] of Object.entries(targets)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const on = _logSectionComplete(kind);
+    el.classList.toggle('log-jumpable', on);
+    if (on) { el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0'); el.title = titles[kind]; }
+    else { el.removeAttribute('role'); el.removeAttribute('tabindex'); el.removeAttribute('title'); }
+  }
+  const pill = document.getElementById('rp-pill');
+  if (pill) {
+    const on = _rpErrorsClickable && !!_logSections.errors;
+    pill.classList.toggle('log-jumpable', on);
+    if (on) { pill.setAttribute('role', 'button'); pill.setAttribute('tabindex', '0'); pill.title = 'Show the errors and warnings from the detailed log'; }
+    else { pill.removeAttribute('role'); pill.removeAttribute('tabindex'); pill.removeAttribute('title'); }
+  }
+}
+
+function _setLogViewUI() {
+  const badge = document.getElementById('log-window-view');
+  const btn = document.getElementById('log-window-fullbtn');
+  const inSection = _logViewMode === 'section';
+  if (badge) {
+    badge.hidden = !inSection;
+    badge.textContent = inSection ? (' — ' + (_LOG_SECTION_LABELS[_logViewKind] || 'Section')) : '';
+  }
+  if (btn) btn.hidden = !inSection;
+}
+
+async function jumpToLogSection(kind) {
+  if (kind === 'errors' && !_rpErrorsClickable) return;
+  if (kind !== 'errors' && !_logSectionComplete(kind)) return;   // still being written — stat isn't clickable
+  if (!_logSections[kind]) return;   // not written yet
+  const win = document.getElementById('log-window');
+  const term = document.getElementById('log-term');
+  if (!win || !term) return;
+  try {
+    const d = await _fetchJson(`/api/logs/section?kind=${kind}&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 10000);
+    if (!d.found) return;
+    if (win.hidden) openLogWindow({ load: false });
+    _logViewMode = 'section';
+    _logViewKind = kind;
+    _termPinned = false;             // static view: never follow live output
+    term.textContent = prNormalizeDisplayedTimestamps(d.content || '');
+    term.scrollTop = 0;
+    _setLogViewUI();
+    _updateLogJumpButton();
+  } catch (_) { /* transient fetch failure — leave the window as it is */ }
+}
+
+function showFullLog() {
+  _logViewMode = 'tail';
+  _logViewKind = null;
+  _setLogViewUI();
+  _termPinned = true;
+  refreshLastLog(_active ? _ACTIVE_LOG_LINES : 'all');
+}
+
+// Guards the async detailed-log fetch against a second click: the 3s status
+// poll runs _applyButtonStates() independently, which would otherwise re-enable
+// the button mid-fetch and let a double-click fire two downloads.
+let _logDlInFlight = false;
+async function downloadDetailedLog(btn) {
+  if (_active) {
+    showToast('A run is active. You can download the log when it finishes.', 'warning');
+    return;
+  }
+  if (_logDlInFlight) return;
+  _logDlInFlight = true;
+  const label = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Preparing…'; }
+  let msg = null;
+  try {
+    const d = await _fetchJson(`/api/logs/last?lines=all&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 20000);
+    const text = prNormalizeDisplayedTimestamps(d.content || '');
+    if (!prDownloadText(`mediareducer-run-log-${prFileStamp()}.txt`, text)) msg = 'Log is empty';
+  } catch (_) {
+    msg = 'Download failed';
+  } finally {
+    _logDlInFlight = false;
+    if (btn) btn.textContent = msg || label;
+    _applyButtonStates();   // single authority for .disabled (respects _active)
+    if (btn && msg) setTimeout(() => { if (btn.textContent === msg) btn.textContent = label; }, 1600);
+  }
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target;
+  if (el && el.classList && el.classList.contains('log-jumpable')) {
+    e.preventDefault();
+    el.click();
+  }
+});
+
+// Sticky autoscroll for the detailed log: follow new output only while the
+// user is at (or near) the bottom. Scrolling up detaches so they can read
+// history during an active run; scrolling back down (or the Jump button)
+// re-attaches. Programmatic scrolls also fire 'scroll', so the pinned flag
+// stays true after every automatic follow.
+let _termPinned = true;
+
+function _termAtBottom(term) {
+  return term.scrollHeight - term.scrollTop - term.clientHeight < 24;
+}
+
+function _updateLogJumpButton() {
+  const btn = document.getElementById('log-jump');
+  if (btn) btn.hidden = _termPinned;
+}
+
+function _logJumpToBottom() {
+  const term = document.getElementById('log-term');
+  if (!term) return;
+  _termPinned = true;
+  term.scrollTop = term.scrollHeight;
+  _updateLogJumpButton();
+}
+
+document.getElementById('log-term')?.addEventListener('scroll', (e) => {
+  _termPinned = _termAtBottom(e.target);
+  _updateLogJumpButton();
+});
+
+function _setTerm(content) {
+  const term = document.getElementById('log-term');
+  if (!term) return;
+  const follow = _termPinned;
+  const keepTop = term.scrollTop;
+  term.textContent = prNormalizeDisplayedTimestamps(content || '');
+  term.scrollTop = follow ? term.scrollHeight : keepTop;
+  _updateLogJumpButton();
+}
+
+// ── Run progress panel ──────────────────────────────────────────────────────
+const _RP_STEP_INDEX = { checking:0, library:1, scanning:2, simulating:3, deleting:3, cleanup:3, summary:4, done:4 };
+let _rpRunKey = null;
+let _rpMaxIdx = 0;
+let _rpStageKey = null;
+let _rpStageStart = 0;
+let _rpScanDoneAt = 0;   // when the scan loop hit its total (silent scoring follows)
+let _rpFreeDoneAt = 0;   // when the free loop hit its byte target (silent summary follows)
+
+// Best-effort fill for a stage with nothing to count (checking, library):
+// ease toward 90% on a clock — moves immediately, slows while it waits, and
+// leaves the last stretch for the real completion.
+function _rpStageCreep() {
+  const t = Date.now() - _rpStageStart;
+  return Math.min(90, 100 * (1 - Math.exp(-t / 5000)));
+}
+
+// A denominatored stage (scanning, deleting/simulating) finishes its counted
+// loop and then does silent finalize work — the scan scores/sorts/logs every
+// candidate; the free loop writes the run summary and runs Radarr cleanup.
+// The counted portion fills to 92%; this eases the reserved top band forward
+// across that tail so the bar keeps moving instead of parking at 100%.
+function _rpFinalizeEase(since) {
+  const t = Date.now() - since;
+  return Math.min(99, 92 + 7 * (1 - Math.exp(-t / 2500)));
+}
+
+
+function _rpTriggerLabel(t) {
+  const map = { 'scheduled daily':'Scheduled daily', 'REDLINE':'Redline', 'LIBRARY CAP':'Library Size Cap' };
+  return String(t || '').split(' + ').map(x => map[x] || x).join(' + ');
+}
+
+function renderProgress(p) {
+  if (!p || !p.status) return;
+  const status = p.status;
+  const phase = p.phase || 'checking';
+  const mode = p.mode || '';
+  const active = (status === 'starting' || status === 'running');
+  const success = status === 'done';
+  const withErrors = success && !!p.completed_with_errors;
+  const stopped = status === 'stopped';
+  const failed = status === 'error';
+  const interrupted = !active && !success;
+  const isSim = mode === 'debug_sim';
+  const isInfo = mode === 'debug_info';
+
+  if (p.started_at && p.started_at !== _rpRunKey) { _rpRunKey = p.started_at; _rpMaxIdx = 0; _rpStageKey = null; _rpScanDoneAt = 0; _rpFreeDoneAt = 0; }
+
+  if (failed && p.error_code === 'imdb_ratings_unavailable') {
+    const key = p.started_at || 'imdb';
+    if (!_imdbHelpAlreadyShown(key)) {
+      _markImdbHelpShown(key);
+      showImdbHelpModal();
+    }
+  }
+
+  const pill = document.getElementById('rp-pill');
+  pill.classList.remove('is-done', 'is-idle', 'is-error', 'is-warn', 'is-live');
+  // Active run: a simulation stays blue and reads "Simulating"; a Live
+  // (deleting) run turns red and reads "Running". No dot or fade here.
+  if (active) {
+    if (isSim) { pill.textContent = 'Simulating'; }
+    else if (isInfo) { pill.textContent = 'Running'; }
+    else { pill.textContent = 'Running'; pill.classList.add('is-live'); }
+  }
+  // Failed = the run ABORTED (nothing or only part completed) — it must not
+  // read "Done". "Done · errors" is reserved for runs that finished but
+  // skipped some files; both route to the errors report section.
+  else if (failed) { pill.textContent = 'Failed'; pill.classList.add('is-error'); }
+  else if (withErrors) { pill.textContent = 'Done · errors'; pill.classList.add('is-warn'); }
+  else if (stopped) { pill.textContent = 'Stopped'; pill.classList.add('is-error'); }
+  else { pill.textContent = 'Done'; pill.classList.add('is-done'); }
+  _rpErrorsClickable = !active && (failed || stopped || withErrors);
+  _applyLogJumpAffordance();
+
+  document.getElementById('rp-trigger').textContent = (active && p.trigger) ? ('· ' + _rpTriggerLabel(p.trigger)) : '';
+  document.getElementById('rp-msg').textContent = p.message || '';
+  document.getElementById('rp-step-cleanup-label').textContent = isInfo ? 'Summary' : (isSim ? 'Simulating' : 'Deleting');
+
+  let activeIdx = _RP_STEP_INDEX[phase];
+  if (activeIdx === undefined) activeIdx = 0;
+  _rpMaxIdx = Math.max(_rpMaxIdx, activeIdx);
+  const terminal = !active;
+
+  document.querySelectorAll('#rp-steps .rp-step').forEach((el, i) => {
+    el.classList.remove('is-active', 'is-done', 'is-failed', 'is-failed-line', 'is-success-line', 'is-success-end', 'is-warn-line', 'is-warn-end');
+    const dot = el.querySelector('.rp-dot');
+    if (interrupted) {
+      // When a run stops or fails, show every connector up to the interrupted
+      // phase in red so the failure path is visually distinct from normal
+      // completed progress. Keep completed phase dots as check marks and mark
+      // only the interrupted phase itself with a red ×.
+      if (i > 0 && i <= activeIdx) el.classList.add('is-failed-line');
+      if (i < activeIdx) { el.classList.add('is-done'); dot.textContent = '✓'; }
+      else if (i === activeIdx) { el.classList.add('is-failed'); dot.textContent = '×'; }
+      else { dot.textContent = String(i + 1); }
+    } else if (terminal) {
+      if (success) {
+        // Successful runs get a completion path; runs with skipped/error items
+        // use warning yellow instead of the normal green success accent.
+        if (i > 0) el.classList.add(withErrors ? 'is-warn-line' : 'is-success-line');
+        if (i === 4) el.classList.add(withErrors ? 'is-warn-end' : 'is-success-end');
+      }
+      if (i <= _rpMaxIdx || i === 4) { el.classList.add('is-done'); dot.textContent = '✓'; }
+      else { dot.textContent = String(i + 1); }
+    } else if (i < activeIdx) { el.classList.add('is-done'); dot.textContent = '✓'; }
+    else if (i === activeIdx) { el.classList.add('is-active'); dot.textContent = String(i + 1); }
+    else { dot.textContent = String(i + 1); }
+  });
+
+  // The bar fills 0→100% PER STEP (the dots above say which one), resetting
+  // between steps — each stage reads at a glance instead of one blended
+  // overall percentage. Stages with a real denominator progress on it;
+  // the rest ease forward on a clock (_rpStageCreep). The denominator's
+  // presence is part of the stage key: when a stage's total/target arrives
+  // mid-stage, the bar snaps to the real fraction instead of animating
+  // backward from the creep.
+  const hasDenominator = (phase === 'scanning' && (Number(p.total) || 0) > 0)
+    || ((phase === 'deleting' || phase === 'simulating') && (Number(p.target_bytes) || 0) > 0);
+  const stageKey = active ? `${phase}:${hasDenominator ? 'n' : 'c'}` : status;
+  if (stageKey !== _rpStageKey) { _rpStageKey = stageKey; _rpStageStart = Date.now(); }
+
+  let pct = 0, label = '', pctText = '';
+  if (active) {
+    if (phase === 'scanning') {
+      const total = Number(p.total) || 0, scanned = Number(p.scanned) || 0;
+      label = 'Scanning and scoring';
+      pctText = total ? (scanned.toLocaleString() + ' / ' + total.toLocaleString()) : '';
+      if (total && scanned >= total) {
+        // Counted scan done; scoring/sorting the candidates emits nothing.
+        if (!_rpScanDoneAt) _rpScanDoneAt = Date.now();
+        pct = _rpFinalizeEase(_rpScanDoneAt);
+      } else {
+        _rpScanDoneAt = 0;
+        pct = total ? (scanned / total) * 92 : _rpStageCreep();
+      }
+    } else if (phase === 'deleting' || phase === 'simulating') {
+      const tgt = Number(p.target_bytes) || 0, freed = Number(p.bytes_freed) || 0;
+      label = isSim ? 'Simulating cleanup' : 'Freeing space';
+      pctText = tgt ? (_formatReclaimedBytes(freed) + ' / ' + _formatReclaimedBytes(tgt)) : _formatReclaimedBytes(freed);
+      if (tgt && freed >= tgt) {
+        // Target met; the run summary + Radarr cleanup emit nothing.
+        if (!_rpFreeDoneAt) _rpFreeDoneAt = Date.now();
+        pct = _rpFinalizeEase(_rpFreeDoneAt);
+      } else {
+        _rpFreeDoneAt = 0;
+        pct = tgt ? Math.min(1, freed / tgt) * 92 : _rpStageCreep();
+      }
+    } else if (phase === 'checking') { pct = _rpStageCreep(); label = 'Checking connections'; }
+    else if (phase === 'library') { pct = _rpStageCreep(); label = 'Reading library size'; }
+    else { pct = _rpStageCreep(); label = 'Working'; }
+  } else if (interrupted) {
+    pct = 0;
+    label = failed ? 'Run failed' : 'Run stopped';
+  } else {
+    pct = 100;
+    label = withErrors ? 'Complete — with errors' : 'Complete';
+  }
+  const bar = document.getElementById('rp-bar');
+  if (bar.dataset.stage !== stageKey) {
+    // New step: snap to empty instantly — animating the width backward would
+    // read as the run losing progress.
+    bar.dataset.stage = stageKey;
+    bar.style.transition = 'none';
+    bar.style.width = '0%';
+    void bar.offsetWidth;
+    bar.style.transition = '';
+  }
+  const shownPct = Math.max(0, Math.min(100, Math.round(pct)));
+  bar.style.width = shownPct + '%';
+  bar.classList.toggle('is-running', active && !terminal);
+  bar.classList.toggle('is-done', terminal && success);
+  // Keep the progressbar role's value in sync for screen readers.
+  const track = bar.parentElement;
+  if (track) track.setAttribute('aria-valuenow', String(shownPct));
+  document.getElementById('rp-bar-label').textContent = label;
+  document.getElementById('rp-bar-pct').textContent = pctText;
+
+  let current = '';
+  if (active) {
+    if ((phase === 'deleting' || phase === 'simulating') && p.current_title) {
+      current = (isSim ? 'Would remove: ' : 'Removing: ') + p.current_title;
+    } else if (phase === 'scanning') current = 'Checking ratings, watch history and protection';
+    else if (phase === 'library') current = 'Summing monitored movie files from disk…';
+    else if (phase === 'checking') current = 'Checking APIs, paths, disk and thresholds';
+  }
+  document.getElementById('rp-current').textContent = current;
+
+  document.getElementById('rp-stat-scanned').textContent = (Number(p.scanned) || 0).toLocaleString();
+  document.getElementById('rp-stat-eligible').textContent = (Number(p.eligible) || 0).toLocaleString();
+  document.getElementById('rp-stat-deleted-label').textContent = isSim ? 'Would delete' : 'Deleted';
+  document.getElementById('rp-stat-deleted').textContent = (Number(p.deleted) || 0).toLocaleString();
+  document.getElementById('rp-stat-freed-label').textContent = isSim ? 'Would free' : 'Freed';
+  document.getElementById('rp-stat-freed').textContent = _formatReclaimedBytes(p.bytes_freed);
+}
+
+let _progressFetchSeq = 0;
+async function refreshProgress() {
+  // Fired by both the 750ms log poll and the 3s status poll with a 5s
+  // timeout: on a slow server several requests overlap, and without an
+  // ordering guard a LATE older snapshot would render after a newer one —
+  // the progress bar and scanned counters visibly jump backward mid-run.
+  const seq = ++_progressFetchSeq;
+  try {
+    const d = await _fetchJson(`/api/run/progress?_=${Date.now()}`, { cache: 'no-store' }, 5000);
+    if (seq === _progressFetchSeq) renderProgress(d);
+  } catch (_) { /* keep last rendered state on a transient failure */ }
+}
+
+function _isMobileLogView() {
+  return window.matchMedia('(max-width: 640px)').matches;
+}
+
+function openLogWindow({ load = true } = {}) {
+  const win = document.getElementById('log-window');
+  if (!win) return;
+  if (win.hidden) win.style.animation = '';
+  win.hidden = false;
+  if (!_isMobileLogView() && win.dataset.placed !== '1') {
+    // First desktop open: convert the CSS-centered position to fixed pixels so
+    // dragging and resizing have a concrete starting point. Layout geometry
+    // (offset*) is used instead of getBoundingClientRect() because the
+    // entrance animation is mid-flight at this point and would skew the rect.
+    win.style.transform = 'none';
+    win.style.left = Math.max(12, Math.round((window.innerWidth - win.offsetWidth) / 2)) + 'px';
+    win.style.top = Math.max(12, win.offsetTop) + 'px';
+    win.dataset.placed = '1';
+  }
+  if (load) {
+    // "Show detailed log" always shows the complete log: full file for a
+    // finished run, live tail while a run is streaming.
+    showFullLog();
+    _logJumpToBottom();
+  }
+  document.getElementById('log-window-close')?.focus();
+}
+
+function closeLogWindow() {
+  const win = document.getElementById('log-window');
+  if (win) win.hidden = true;
+  document.getElementById('btn-log-toggle')?.focus();
+}
+
+let _logWinDrag = null;
+function _logDragStart(e) {
+  if (_isMobileLogView()) return;
+  // Header BUTTONS are click targets, not drag handles — the drag's
+  // preventDefault() would otherwise swallow their clicks entirely
+  // (this is what broke "Show full log").
+  if (e.target.closest('button')) return;
+  const win = document.getElementById('log-window');
+  if (!win) return;
+  // Cancel the entrance animation so the measured rect is the settled
+  // position; openLogWindow restores it for the next open.
+  win.style.animation = 'none';
+  const rect = win.getBoundingClientRect();
+  win.style.transform = 'none';
+  win.style.left = rect.left + 'px';
+  win.style.top = rect.top + 'px';
+  win.dataset.placed = '1';
+  _logWinDrag = { sx: e.clientX, sy: e.clientY, ox: rect.left, oy: rect.top, win };
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+  window.addEventListener('pointermove', _logDragMove);
+  window.addEventListener('pointerup', _logDragEnd);
+  e.preventDefault();
+}
+function _logDragMove(e) {
+  if (!_logWinDrag) return;
+  const { sx, sy, ox, oy, win } = _logWinDrag;
+  const w = win.offsetWidth, h = win.offsetHeight;
+  // Keep a grabbable strip on screen in every direction.
+  let nl = Math.min(Math.max(ox + (e.clientX - sx), 60 - w), window.innerWidth - 60);
+  let nt = Math.min(Math.max(oy + (e.clientY - sy), 8), window.innerHeight - 40);
+  win.style.left = nl + 'px';
+  win.style.top = nt + 'px';
+}
+function _logDragEnd() {
+  _logWinDrag = null;
+  window.removeEventListener('pointermove', _logDragMove);
+  window.removeEventListener('pointerup', _logDragEnd);
+}
+
+function _stopLogWatch() {
+  if (_logPollTimer) {
+    clearInterval(_logPollTimer);
+    _logPollTimer = null;
+  }
+}
+
+function _fetchJson(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal })
+    .then(r => r.json())
+    .finally(() => clearTimeout(timer));
+}
+
+
+function _updateLastRunDisplay(ts, fallback) {
+  const el = document.getElementById('last-run-value');
+  if (!el) return;
+  if (ts !== null && ts !== undefined && ts !== '') {
+    el.dataset.lastRunTs = ts;
+    el.textContent = prFormatEpoch(ts, false);
+  } else {
+    el.textContent = fallback || '—';
+  }
+}
+
+function _formatInitialTimestamps() {
+  const el = document.getElementById('last-run-value');
+  if (el && el.dataset.lastRunTs) el.textContent = prFormatEpoch(el.dataset.lastRunTs, false);
+}
+
+function _formatReclaimedBytes(bytes, fallbackLabel = '') {
+  if (typeof fallbackLabel === 'string' && fallbackLabel.trim()) return fallbackLabel.trim();
+  const n = Number(bytes);
+  const safe = Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  const gb = safe / 1000000000;
+  if (gb >= 1000) return `${(gb / 1000).toFixed(1)} TB`;
+  if (gb >= 10) return `${gb.toFixed(1)} GB`;
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  const mb = safe / 1000000;
+  if (mb >= 1) return `${mb.toFixed(0)} MB`;
+  return '0 GB';
+}
+
+function _splitReclaimedLabel(label) {
+  const cleaned = String(label || '0 GB').trim().toUpperCase();
+  const match = cleaned.match(/^(.+?)\s+([A-Z]+)$/);
+  if (match) return { number: match[1], unit: match[2] };
+  return { number: cleaned || '0', unit: 'GB' };
+}
+
+function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', markedCount = null) {
+  const n = Number(count);
+  const safe = Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  const value = document.getElementById('pruned-count-value');
+  const unit = document.getElementById('pruned-count-unit');
+  const space = document.getElementById('pruned-space-value');
+  const spaceNumber = document.getElementById('pruned-space-number');
+  const spaceUnit = document.getElementById('pruned-space-unit');
+  if (value) value.textContent = prCommaNum(safe, 0);
+  if (unit) unit.textContent = safe === 1 ? 'MOVIE' : 'MOVIES';
+  if (markedCount !== null) {
+    const strip = document.getElementById('pruned-marked');
+    const countEl = document.getElementById('pruned-marked-count');
+    const m = Math.max(0, Math.trunc(Number(markedCount) || 0));
+    if (countEl) countEl.textContent = prCommaNum(m, 0);
+    if (strip) strip.hidden = m <= 0;
+  }
+  if (space) {
+    const formatted = _formatReclaimedBytes(reclaimedBytes, reclaimedLabel);
+    const parts = _splitReclaimedLabel(formatted);
+    space.dataset.reclaimedBytes = String(Number.isFinite(Number(reclaimedBytes)) ? Math.max(0, Math.trunc(Number(reclaimedBytes))) : 0);
+    if (spaceNumber && spaceUnit) {
+      spaceNumber.textContent = _groupThousands(parts.number);
+      spaceUnit.textContent = parts.unit;
+    } else {
+      space.textContent = `${_groupThousands(parts.number)} ${parts.unit}`;
+    }
+  }
+}
+
+// Deleted Movie History table: marked-for-deletion rows pinned on top, then
+// the deleted history newest→oldest, paginated 100 per page in-memory.
+const _DH_PAGE = 100;
+let _dhRows = [];       // combined marked + deleted, in display order
+let _dhPageIdx = 0;
+
+function _dhCap(s) { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
+
+function _dhRenderRow(r) {
+  const path = prHtmlEsc(r.path || '');
+  if (r._kind === 'marked') {
+    const bits = [];
+    if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + prHtmlEsc(r.score));
+    if (r.when) bits.push(prHtmlEsc(_dhCap(r.when)));
+    return `<tr class="dh-marked">`
+      + `<td><span class="dh-badge marked">Marked</span></td>`
+      + `<td class="dh-title">${prHtmlEsc(r.title || '—')}</td>`
+      + `<td class="dh-num">${prHtmlEsc(r.size || '—')}</td>`
+      + `<td class="dh-num">${prHtmlEsc(r.time || '—')}</td>`
+      + `<td class="dh-details">${bits.join(' · ') || '—'}</td>`
+      + `<td class="dh-path" title="${path}">${path}</td></tr>`;
+  }
+  // A deleted line the server couldn't parse into fields: show it whole.
+  if (!r.title && r.line) {
+    return `<tr><td><span class="dh-badge deleted">Deleted</span></td>`
+      + `<td class="dh-details" colspan="5">${prHtmlEsc(r.line)}</td></tr>`;
+  }
+  return `<tr>`
+    + `<td><span class="dh-badge deleted">Deleted</span></td>`
+    + `<td class="dh-title">${prHtmlEsc(r.title || '—')}</td>`
+    + `<td class="dh-num">${prHtmlEsc(r.size || '—')}</td>`
+    + `<td class="dh-num">${prHtmlEsc(r.time || '—')}</td>`
+    + `<td class="dh-details">${prHtmlEsc(r.why || '—')}</td>`
+    + `<td class="dh-path" title="${path}">${path}</td></tr>`;
+}
+
+function _dhRenderPage() {
+  const tbody = document.getElementById('deleted-history-tbody');
+  const wrap = document.getElementById('deleted-history-wrap');
+  const empty = document.getElementById('deleted-history-empty');
+  const pager = document.getElementById('deleted-history-pager');
+  const total = _dhRows.length;
+  const pages = Math.max(1, Math.ceil(total / _DH_PAGE));
+  _dhPageIdx = Math.min(Math.max(0, _dhPageIdx), pages - 1);
+  if (!total) {
+    if (tbody) tbody.innerHTML = '';
+    if (wrap) wrap.hidden = true;
+    if (empty) { empty.hidden = false; empty.textContent = 'No movies have been pruned yet.'; }
+    if (pager) pager.hidden = true;
+    return;
+  }
+  const start = _dhPageIdx * _DH_PAGE;
+  if (tbody) tbody.innerHTML = _dhRows.slice(start, start + _DH_PAGE).map(_dhRenderRow).join('');
+  if (wrap) { wrap.hidden = false; wrap.scrollTop = 0; }
+  if (empty) empty.hidden = true;
+  if (pager) {
+    pager.hidden = pages <= 1;
+    document.getElementById('dh-prev').disabled = _dhPageIdx <= 0;
+    document.getElementById('dh-next').disabled = _dhPageIdx >= pages - 1;
+    document.getElementById('dh-page-label').textContent =
+      `${(start + 1).toLocaleString()}–${Math.min(start + _DH_PAGE, total).toLocaleString()} of ${total.toLocaleString()}`;
+  }
+}
+
+function _dhPage(delta) { _dhPageIdx += delta; _dhRenderPage(); }
+
+function _dhRowText(r) {
+  const dash = '—';
+  if (r._kind === 'marked') {
+    const bits = [];
+    if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + r.score);
+    if (r.when) bits.push(_dhCap(r.when));
+    return ['Marked', r.title || dash, r.size || dash, r.time || dash, bits.join(' · ') || dash, r.path || dash];
+  }
+  if (!r.title && r.line) return ['Deleted', r.line, '', '', '', ''];
+  return ['Deleted', r.title || dash, r.size || dash, r.time || dash, r.why || dash, r.path || dash];
+}
+
+function downloadDeletedHistory(btn) {
+  if (_active) {
+    showToast('A run is active. You can download the log when it finishes.', 'warning');
+    return;
+  }
+  const label = btn ? btn.textContent : '';
+  if (!_dhRows.length) {
+    if (btn) { btn.textContent = 'Nothing to save'; setTimeout(() => { btn.textContent = label; }, 1600); }
+    return;
+  }
+  const header = ['Status', 'Title', 'Size', 'Date', 'Details', 'Path'];
+  const lines = [header.join('\t')].concat(
+    _dhRows.map(r => _dhRowText(r).map(c => String(c ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t'))
+  );
+  const text = prNormalizeDisplayedTimestamps(lines.join('\n') + '\n');
+  if (!prDownloadText(`mediareducer-deleted-log-${prFileStamp()}.txt`, text)) {
+    if (btn) { btn.textContent = 'Nothing to save'; setTimeout(() => { btn.textContent = label; }, 1600); }
+  }
+}
+
+async function loadDeletedHistory() {
+  const summary = document.getElementById('deleted-history-summary');
+  const wrap = document.getElementById('deleted-history-wrap');
+  const empty = document.getElementById('deleted-history-empty');
+  const pager = document.getElementById('deleted-history-pager');
+  const eraseBtn = document.getElementById('btn-clear-deleted-log');
+  if (summary) summary.textContent = 'Loading deleted.log…';
+  if (wrap) wrap.hidden = true;
+  if (empty) { empty.hidden = false; empty.textContent = 'Loading deleted.log…'; }
+  if (pager) pager.hidden = true;
+  try {
+    const d = await _fetchJson(`/api/logs/deleted?limit=all&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 12000);
+    const count = Number(d.count || 0);
+    const marked = Array.isArray(d.marked) ? d.marked : [];
+    const deleted = Array.isArray(d.entries) ? d.entries : [];
+    _updateDeletedCounter(count, d.reclaimed_bytes || 0, d.reclaimed_label || '',
+                          d.marked_count !== undefined ? d.marked_count : marked.length);
+    const reclaimed = _formatReclaimedBytes(d.reclaimed_bytes || 0, d.reclaimed_label || '');
+    let summaryText = `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
+    if (marked.length) summaryText += ` ${marked.length} marked for deletion.`;
+    if (summary) summary.textContent = summaryText;
+    // Marked pinned on top (both already newest-first from the server), deleted
+    // below newest→oldest.
+    _dhRows = marked.map(e => Object.assign({ _kind: 'marked' }, e))
+                    .concat(deleted.map(e => Object.assign({ _kind: 'deleted' }, e)));
+    _dhPageIdx = 0;
+    _dhRenderPage();
+    if (eraseBtn) eraseBtn.disabled = _active || count <= 0;
+    const dlBtn = document.getElementById('btn-download-deleted-log');
+    if (dlBtn) {
+      dlBtn.disabled = _active || !_dhRows.length;
+      dlBtn.title = _active ? 'Available when the run finishes' : '';
+    }
+  } catch (err) {
+    if (summary) summary.textContent = 'Could not load deleted.log.';
+    _dhRows = [];
+    if (wrap) wrap.hidden = true;
+    if (empty) { empty.hidden = false; empty.textContent = `Could not load deleted.log: ${err}`; }
+    if (pager) pager.hidden = true;
+  }
+}
+
+function openDeletedHistory() {
+  const modalEl = document.getElementById('deleted-history-modal');
+  if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+  loadDeletedHistory();
+}
+
+async function clearDeletedHistory() {
+  if (_active) {
+    showToast('A run is active. Try again when it finishes.', 'warning');
+    return;
+  }
+  // One-click by design: this only truncates the deleted.log history file —
+  // no movie files, run logs, or config are touched.
+  const eraseBtn = document.getElementById('btn-clear-deleted-log');
+  if (eraseBtn) { eraseBtn.disabled = true; eraseBtn.classList.add('btn-busy'); }
+  try {
+    const r = await fetch('/api/logs/deleted/clear', { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.message || 'Could not erase deleted.log.');
+    // Erase only clears the deleted history — the marked-for-deletion queue
+    // (still saveable) stays, so keep those rows in the table.
+    _dhRows = _dhRows.filter(row => row._kind === 'marked');
+    _dhPageIdx = 0;
+    _dhRenderPage();
+    _updateDeletedCounter(0, 0, '0 GB', _dhRows.length);
+    const summary = document.getElementById('deleted-history-summary');
+    if (summary) {
+      let s = '0 movies have been pruned · 0 GB reclaimed.';
+      if (_dhRows.length) s += ` ${_dhRows.length} marked for deletion.`;
+      summary.textContent = s;
+    }
+    showToast(d.message || 'Deleted history erased.', 'success');
+  } catch (err) {
+    showToast(String(err.message || err), 'danger');
+  } finally {
+    // On success too — the button used to keep its busy spinner for the rest
+    // of the session after a successful erase.
+    if (eraseBtn) { eraseBtn.disabled = false; eraseBtn.classList.remove('btn-busy'); }
+  }
+}
+
+let _dashboardTooltipEl = null;
+function _dashboardTooltip() {
+  if (_dashboardTooltipEl) return _dashboardTooltipEl;
+  _dashboardTooltipEl = document.createElement('div');
+  _dashboardTooltipEl.className = 'dashboard-run-tooltip';
+  document.body.appendChild(_dashboardTooltipEl);
+  return _dashboardTooltipEl;
+}
+
+function _applyLiveState(liveState) {
+  if (!liveState) return;
+  _summaryOk = !liveState.summary_disabled;
+  _simulateOk = !liveState.simulate_disabled;
+  _liveOk = !liveState.live_disabled;
+  _safetyBlocked = !!(liveState.space_thresholds && liveState.space_thresholds.safety_blocked);
+  _summaryDisabledMessage = liveState.summary_tooltip || 'Connect the selected media server first.';
+  _simulateDisabledMessage = liveState.simulate_tooltip || 'Fix Space Thresholds first.';
+  _liveDisabledMessage = liveState.live_tooltip || 'Fix Space Thresholds first.';
+
+  // The hover tooltip explains why a button is blocked, so it must be empty when
+  // the button is enabled. Using the *DisabledMessage fallbacks here would show a
+  // stale "Fix Space Thresholds" hint over a perfectly valid, clickable button.
+  // The fallbacks are still used for the click-toast on a disabled button below.
+  const _simulateHoverTip = liveState.simulate_disabled ? _simulateDisabledMessage : '';
+  const _liveHoverTip = liveState.live_disabled ? _liveDisabledMessage : '';
+
+  document.getElementById('btn-sim')?.closest('[data-hover-tip]')?.setAttribute('data-hover-tip', _simulateHoverTip);
+  document.getElementById('btn-live')?.closest('[data-hover-tip]')?.setAttribute('data-hover-tip', _liveHoverTip);
+  _applyButtonStates();
+}
+
+// Single source of truth for run/summary button enablement. Summary is the
+// Storage card's ↻ button. "Busy" covers both a real run and a background
+// Summary so neither can start while the other runs.
+function _applyButtonStates() {
+  const busy = _active || _summaryBusy || _runStartPending;
+  const sim = document.getElementById('btn-sim');
+  const live = document.getElementById('btn-live');
+  const stopBtn = document.getElementById('btn-stop');
+  const refresh = document.getElementById('btn-summary-refresh');
+  if (sim) sim.disabled = busy || !_simulateOk;
+  if (live) live.disabled = busy || !_liveOk;
+  if (stopBtn) stopBtn.disabled = !_active || _runStartPending;
+  if (refresh) {
+    refresh.disabled = busy || !_summaryOk;
+    refresh.classList.toggle('is-spinning', _summaryBusy);
+    refresh.title = _summaryBusy
+      ? 'Refreshing…'
+      : (!_summaryOk ? (_summaryDisabledMessage || 'Connect the selected media server first')
+                     : 'Refresh disk & library size');
+  }
+  // Downloading a log while a run is writing to it would capture a torn,
+  // half-written file — block both log downloads until the run finishes.
+  const logDl = document.getElementById('log-window-dlbtn');
+  if (logDl) {
+    logDl.disabled = _active || _logDlInFlight;
+    logDl.title = _active ? 'Available when the run finishes' : '';
+  }
+  const delDl = document.getElementById('btn-download-deleted-log');
+  if (delDl) {
+    delDl.disabled = _active || !_dhRows.length;
+    delDl.title = _active ? 'Available when the run finishes' : '';
+  }
+}
+
+function _updateStorageCard(disk, libraryGb) {
+  const libVal = document.getElementById('library-size-value');
+  const libUnit = document.getElementById('library-size-unit');
+  if (libVal) {
+    if (libraryGb !== null && libraryGb !== undefined && libraryGb !== '') {
+      libVal.textContent = Number(libraryGb).toLocaleString(undefined, { maximumFractionDigits: 0 });
+      if (libUnit) libUnit.hidden = false;
+    } else {
+      libVal.textContent = '—';
+      if (libUnit) libUnit.hidden = true;
+    }
+  }
+  if (disk) {
+    const free = document.getElementById('storage-free');
+    const sub = document.getElementById('storage-sub');
+    const bar = document.getElementById('storage-bar');
+    if (free && disk.free_gb !== undefined) free.textContent = prCommaNum(disk.free_gb, 1);
+    if (sub && disk.used_gb !== undefined) {
+      sub.innerHTML = `${prCommaNum(disk.used_gb, 1)} / ${prCommaNum(disk.total_gb, 1)} GB &nbsp;(${disk.pct_used}% USED)`;
+    }
+    if (bar && disk.pct_used !== undefined) {
+      bar.style.width = `${disk.pct_used}%`;
+    }
+  }
+  _positionStorageBar(disk, libraryGb);
+}
+
+function _finiteNum(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
+
+// prCommaNum / prGbAmount are shared with Configuration — base.html.
+// Thousands-separate an already-formatted numeric string, keeping its decimals
+// exactly (mirrors the server's group_int filter). Non-numeric passes through.
+function _groupThousands(numStr) {
+  const s = String(numStr);
+  const neg = s.startsWith('-');
+  const body = neg ? s.slice(1) : s;
+  const dot = body.indexOf('.');
+  const intPart = dot === -1 ? body : body.slice(0, dot);
+  if (!/^\d+$/.test(intPart)) return s;
+  const frac = dot === -1 ? '' : body.slice(dot);
+  return (neg ? '-' : '') + intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + frac;
+}
+
+// Lay out the storage bar's library segment and threshold markers.
+//   • The library is right-aligned inside the used fill: it's the part that
+//     gets trimmed, so its right edge IS the used edge that the Headroom /
+//     Redline lines push back on. Its left edge is the fixed non-library used.
+//   • Headroom/Redline are free-space targets, so each sits at the used
+//     position total - target (the disk hits it as it fills to that point).
+//   • The library cap is a library-size target: anchored to the library's
+//     base, it marks where the used edge lands once the library is capped.
+let _lastStorageSnapshot = null;   // last disk/library reading — feeds the Live confirm estimate
+
+// Daily-run-time helpers: the scheduler fires headroom/cap cleanups at the
+// configured time of day (24h HH:MM in the operating zone).
+function _runTimeLabel() {
+  const t = _dailyRunTime || '00:00';
+  if (prTimeFormat() === '24h') return t;
+  const [h, m] = t.split(':').map(Number);
+  return `${h % 12 || 12}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+}
+function _serverNowHHMM() {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: prResolvedTimeZone(),
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+      .format(new Date(prServerEpochNow() * 1000));
+  } catch (_) { return '00:00'; }
+}
+function _nextTickAfterRunTime() {
+  // Whether the NEXT scheduler tick lands at/after the daily run time — the
+  // red countdown must not promise a deletion a too-early tick will skip.
+  if (!_nextRunTime) return false;
+  try {
+    const hhmm = new Intl.DateTimeFormat('en-GB', { timeZone: prResolvedTimeZone(),
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(_nextRunTime));
+    return hhmm >= (_dailyRunTime || '00:00');
+  } catch (_) { return true; }
+}
+
+function _updateBreachNote() {
+  // The counterpart of the satisfied-state button ghosting: when a threshold
+  // is currently BREACHED, say so at a glance — with the ~GB a run would
+  // free — instead of leaving that knowledge to a run attempt. Lives at the
+  // bottom of the Cleanup Targets card (it's the targets being breached),
+  // and the specific crossed target's row goes red with it.
+  const el = document.getElementById('breach-note');
+  if (!el) return;
+  const d = _liveDeficits();
+  [['headroom', 'target-row-headroom'], ['redline', 'target-row-redline'], ['cap', 'target-row-cap']]
+    .forEach(([key, id]) => {
+      document.getElementById(id)?.classList.toggle('is-breached', !!(d && d[key] > 0));
+    });
+  if (d && d.max > 0) {
+    // A target past the safety percentage blocks Live entirely — promising
+    // a freed amount would be a lie. With a deletion delay, say when the
+    // marked deletions actually land instead of implying they're imminent.
+    let text;
+    // The daily run fires at the first check at/after the configured run
+    // time on an eligible day: tomorrow once today's window is used, later
+    // today if the run time hasn't arrived, else the next 15-minute check.
+    // Paused mode keeps conditional wording — nothing fires on its own.
+    const timing = _headroomWindowUsedToday
+      ? `tomorrow at ${_runTimeLabel()}`
+      : (_serverNowHHMM() < (_dailyRunTime || '00:00')
+          ? `today at ${_runTimeLabel()}` : 'at the next check');
+    const ev = _markedEvent || {};
+    const evGb = prGbAmount((ev.bytes || 0) / 1e9);
+    const evN = `${ev.count} movie${ev.count === 1 ? '' : 's'}`;
+    if (_safetyBlocked) {
+      text = 'Over space limits — but a target is past the safety percentage, so Live can\'t run.';
+    } else if (d.redline > 0) {
+      text = `Over space limits — a run would free ~${prGbAmount(d.max)} GB.`;
+    } else if (!ev.count) {
+      // Nothing marked — Simulate writes the plan, and Live (automatic OR the
+      // manual button) stays ghosted over limits until it exists.
+      text = `Over space limits — run Simulate to mark the ~${prGbAmount(d.max)} GB deletion plan.`;
+    } else if (!ev.on) {
+      // The event batch is ripe now: the next deleting run removes exactly it.
+      text = _paused
+        ? `Over space limits — a run would delete ${evN}, ${evGb} GB.`
+        : `Over space limits — ${evN} (${evGb} GB) delete${ev.count === 1 ? 's' : ''} ${timing}.`;
+    } else {
+      // Future-dated batch: eligibility starts that calendar day; an armed
+      // scheduler deletes it at the daily run time.
+      text = _paused
+        ? `Over space limits — next deletion ${ev.on}: ${evN}, ${evGb} GB.`
+        : `Over space limits — ${evN} (${evGb} GB) delete${ev.count === 1 ? 's' : ''} ${ev.on} at ${_runTimeLabel()}.`;
+    }
+    el.textContent = text;
+    el.hidden = false;
+  } else {
+    el.hidden = true;
+  }
+}
+function _positionStorageBar(disk, libraryGb) {
+  if (disk) _lastStorageSnapshot = { disk, libraryGb };
+  _updateBreachNote();
+  const track = document.getElementById('storage-bar-track');
+  if (!track) return;
+  const total = disk ? _finiteNum(disk.total_gb) : null;
+  // A poll can return no disk (cache not warmed yet) even though the page
+  // rendered with a live reading. Leave the last-known bar rather than blanking
+  // the markers/library while the neutral used fill still shows — that mismatch
+  // is the flicker we want to avoid.
+  if (total === null) return;
+  const usedPct = disk ? _finiteNum(disk.pct_used) : null;
+  const lib = _finiteNum(libraryGb);
+  const haveGeom = !!(total && total > 0 && lib !== null && lib >= 0);
+
+  // Anchor the library's right edge to the used fill's right edge so the two
+  // stay flush; clamp its width to the used fill (guards a stale library>used).
+  const usedRight = (usedPct !== null) ? usedPct : (haveGeom ? 100 : 0);
+  let libW = 0, libLeft = usedRight;
+  if (haveGeom) {
+    libW = Math.max(0, Math.min(lib / total * 100, usedRight));
+    libLeft = usedRight - libW;
+  }
+  const libShown = haveGeom && libW > 0;
+
+  const libEl = document.getElementById('storage-bar-library');
+  if (libEl) {
+    libEl.style.left = libLeft + '%';
+    libEl.style.width = libW + '%';
+    if (libShown) libEl.title = `Media library: ${Math.round(lib).toLocaleString()} GB`;
+  }
+
+  const headroomShown = _setStorageMark('headroom', _storageHeadroomGb, total,
+    'Headroom target', 'cleanup keeps at least this much free');
+  const redlineShown = _setStorageMark('redline', _storageRedlineGb, total,
+    'Redline floor', 'emergency cleanup runs when free drops below this');
+
+  // Library cap: the used edge if the library were trimmed to the cap, i.e.
+  // the library's base (non-library used) plus the cap. Hidden when the cap is
+  // unreachable — reaching it would put the used edge past the end of the disk
+  // (base + cap > total), so the line would run off the bar. The reach test is
+  // done in raw GB so it's exact; the marker itself stays anchored to the
+  // library's visual base and is clamped to the bar.
+  let capShown = false;
+  const capEl = document.getElementById('storage-mark-cap');
+  if (capEl) {
+    const cap = _finiteNum(_storageLibraryCapGb);
+    const usedGb = _finiteNum(disk.used_gb);
+    if (haveGeom && cap !== null && cap > 0 && usedGb !== null) {
+      const baseGb = Math.max(0, usedGb - lib);
+      if (baseGb + cap <= total) {
+        capEl.style.left = Math.min(100, Math.max(0, libLeft + cap / total * 100)) + '%';
+        capEl.title = `Library size cap: ${Math.round(cap).toLocaleString()} GB — cleanup keeps the media library at or under this`;
+        capShown = true;
+      }
+    }
+    capEl.hidden = !capShown;
+  }
+
+  const legendItem = (id, on) => { const e = document.getElementById(id); if (e) e.hidden = !on; };
+  legendItem('dbl-library', libShown);
+  legendItem('dbl-cap', capShown);
+  legendItem('dbl-headroom', headroomShown);
+  legendItem('dbl-redline', redlineShown);
+}
+
+function _setStorageMark(kind, targetGb, total, label, note) {
+  const el = document.getElementById(`storage-mark-${kind}`);
+  if (!el) return false;
+  const t = _finiteNum(targetGb);
+  const shown = total && total > 0 && t !== null && t > 0 && t < total;
+  el.hidden = !shown;
+  if (shown) {
+    el.style.left = ((total - t) / total * 100) + '%';
+    el.title = `${label}: ${Math.round(t).toLocaleString()} GB free — ${note}`;
+  }
+  return shown;
+}
+
+// The Storage card's ↻ button: runs a background Summary (debug_info) that
+// refreshes disk + media library size without touching lastrun.log or the
+// progress panel. Buttons are ghosted while it runs (and vice versa for real runs).
+async function refreshStorageSummary() {
+  if (_active || _summaryBusy) return;
+  if (!_summaryOk) {
+    showToast(_summaryDisabledMessage || 'Connect the selected media server first.', 'warning');
+    return;
+  }
+  _summaryBusy = true;
+  _applyButtonStates();
+  try {
+    const r = await _fetchJson('/api/summary/run', { method: 'POST', cache: 'no-store' }, 6000);
+    if (!r || !r.ok) {
+      showToast((r && r.message) || 'Could not start refresh.', 'warning');
+      _summaryBusy = false;
+      _applyButtonStates();
+      return;
+    }
+  } catch (e) {
+    showToast('Could not start refresh.', 'danger');
+    _summaryBusy = false;
+    _applyButtonStates();
+    return;
+  }
+  _pollSummaryUntilDone();
+}
+
+async function _pollSummaryUntilDone() {
+  if (_summaryPollActive) return;
+  _summaryPollActive = true;
+  let tries = 0;
+  while (tries < 60) {
+    tries++;
+    await new Promise(res => setTimeout(res, 1000));
+    try {
+      const d = await _fetchJson(`/api/status?${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 5000);
+      _updateStorageCard(d.disk, d.library_gb);
+      if (!d.summary_active) break;
+    } catch (_) { /* transient — keep polling */ }
+  }
+  _summaryBusy = false;
+  _summaryPollActive = false;
+  _applyButtonStates();
+}
+
+function _initDashboardTooltips() {
+  document.querySelectorAll('[data-hover-tip]').forEach(el => {
+    el.addEventListener('mousemove', ev => {
+      const msg = el.getAttribute('data-hover-tip') || '';
+      if (!msg) return;
+      const tip = _dashboardTooltip();
+      tip.textContent = msg;
+      tip.style.display = 'block';
+      const pad = 14;
+      let left = ev.clientX + pad;
+      let top = ev.clientY + pad;
+      const rect = tip.getBoundingClientRect();
+      if (left + rect.width > window.innerWidth - 8) left = Math.max(8, ev.clientX - rect.width - pad);
+      if (top + rect.height > window.innerHeight - 8) top = Math.max(8, ev.clientY - rect.height - pad);
+      tip.style.left = `${left}px`;
+      tip.style.top = `${top}px`;
+    });
+    el.addEventListener('mouseleave', () => {
+      if (_dashboardTooltipEl) _dashboardTooltipEl.style.display = 'none';
+    });
+  });
+}
+
+function setRunning(on, live) {
+  _active = on;
+  _resetLiveConfirm();
+  if (window.prSetHeaderRunning) window.prSetHeaderRunning(on, live);
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) stopBtn.title = on ? 'Stop the active run' : 'No active run to stop';
+  _applyButtonStates();
+  if (!on) _stopLogWatch();
+  _updateCountdown();
+}
+
+function liveRun(mode, btnId) {
+  if (_active || _runStartPending) return;
+  if (!_liveOk) {
+    showToast(_liveDisabledMessage, 'warning');
+    return;
+  }
+  if (_confirmLiveMode !== mode) {
+    _resetLiveConfirm();
+    _confirmLiveMode = mode;
+    const btn = document.getElementById(btnId);
+    // Scale the question: the user should confirm a NUMBER, not a mystery.
+    // Mirrors the engine's target math — max of the headroom deficit
+    // (used-based), the redline deficit (restore free to the Headroom floor),
+    // and the library-cap deficit.
+    const deficit = _liveDeficits()?.max ?? null;
+    const label = (deficit != null && deficit > 0)
+      ? `Are you sure? Frees ~${prGbAmount(deficit)} GB`
+      : 'Are you sure?';
+    if (btn) _morphButtonText(btn, label, { noShrink: true });
+    return;
+  }
+  _resetLiveConfirm();
+  triggerRun(mode);
+}
+
+function _liveDeficits() {
+  // What a Live run would try to free right now, per target and combined —
+  // the same max() formula the engine uses to compute its target. null =
+  // unknown (no disk reading yet); max 0 = limits satisfied.
+  const snap = _lastStorageSnapshot;
+  const dd = snap && snap.disk;
+  if (!dd) return null;
+  const total = Number(dd.total_gb), used = Number(dd.used_gb), free = Number(dd.free_gb);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const d = { headroom: 0, redline: 0, cap: 0 };
+  const head = Number(_storageHeadroomGb);
+  if (Number.isFinite(head) && head > 0 && Number.isFinite(used)) {
+    d.headroom = Math.max(0, used - (total - head));
+  }
+  const red = Number(_storageRedlineGb);
+  if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red && Number.isFinite(head)) {
+    d.redline = Math.max(0, head - free);
+  }
+  const cap = Number(_storageLibraryCapGb);
+  const lib = Number(snap.libraryGb);
+  if (Number.isFinite(cap) && cap > 0 && Number.isFinite(lib)) {
+    d.cap = Math.max(0, lib - cap);
+  }
+  d.max = Math.max(d.headroom, d.redline, d.cap);
+  return d;
+}
+
+async function refreshLastLog(lines = 500) {
+  if (_logFetchInFlight) return;
+  _logFetchInFlight = true;
+  try {
+    const d = await _fetchJson(`/api/logs/last?lines=${lines}&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 10000);
+    if (d.sections) { _logSections = d.sections; _applyLogJumpAffordance(); }
+    // In section view the window holds a static slice — keep polling for
+    // section availability above, but don't overwrite the displayed text.
+    if (d.content !== undefined && _logViewMode === 'tail') _setTerm(d.content);
+  } catch (_) {
+    // Keep the current terminal content. A transient tab/network hiccup should
+    // not blank the dashboard or mark the run as finished.
+  } finally {
+    _logFetchInFlight = false;
+  }
+}
+
+async function syncStatus({refreshLog = true} = {}) {
+  if (_statusFetchInFlight) return;
+  _statusFetchInFlight = true;
+  try {
+    const d = await _fetchJson(`/api/status?${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 5000);
+    const wasActive = _active;
+    _nextRunTime = d.next_run_time || null;
+    _autopauseReason = d.run_mode_autopause_reason || '';
+    _applyLiveState(d.live_state);
+    if (!_summaryPollActive) _summaryBusy = !!d.summary_active;
+    if (d.headroom_gb !== undefined) _storageHeadroomGb = d.headroom_gb;
+    if (d.redline_gb !== undefined) _storageRedlineGb = d.redline_gb;
+    if (d.library_cap_gb !== undefined) _storageLibraryCapGb = d.library_cap_gb;
+    if (d.headroom_window_used_today !== undefined) _headroomWindowUsedToday = d.headroom_window_used_today;
+    if (d.delete_delay_days !== undefined) _deleteDelayDays = d.delete_delay_days;
+    if (d.daily_run_time !== undefined) _dailyRunTime = d.daily_run_time;
+    if (d.marked_ripe_count !== undefined) _markedRipeCount = d.marked_ripe_count;
+    if (d.marked_event_count !== undefined) {
+      _markedEvent = { on: d.marked_event_on, count: d.marked_event_count, bytes: d.marked_event_bytes };
+    }
+    _updateStorageCard(d.disk, d.library_gb);
+    _applyButtonStates();
+    refreshProgress();
+    _updateLastRunDisplay(d.last_run_ts, d.last_run);
+    if (window.prSetConfigTabError) window.prSetConfigTabError(!!d.config_attention);
+    if (window.prHandleSampleImdbError) window.prHandleSampleImdbError(d.sample_imdb_failed_at);
+    _updateDeletedCounter(d.deleted_count || 0, d.deleted_reclaimed_bytes || 0, d.deleted_reclaimed_label || '',
+                          d.marked_count !== undefined ? d.marked_count : null);
+    if (d.run_active !== _active) setRunning(d.run_active, d.run_active && d.run_live);
+    // Keep the badge's Simulating/Running label right even when the run was
+    // already active on load (no transition to carry the live flag through).
+    else if (window.prSetHeaderRunning) window.prSetHeaderRunning(!!d.run_active, !!(d.run_active && d.run_live));
+    if (d.run_active) {
+      startStream(false);
+      if (refreshLog) await refreshLastLog(_ACTIVE_LOG_LINES);
+    } else if (wasActive && refreshLog) {
+      await refreshLastLog(_FINAL_LOG_LINES);
+    }
+    _updateCountdown();
+  } catch (_) {
+    // Do not change button state on a failed status poll. The next poll or a
+    // visibility refresh will reconcile the state.
+  } finally {
+    _statusFetchInFlight = false;
+  }
+}
+
+function startStream(clear = true) {
+  // The log view polls the file tail rather than streaming: reliable when
+  // browsers throttle background tabs, and it caps terminal text so a long
+  // run cannot freeze the page.
+  if (clear) {
+    _logViewMode = 'tail'; _logViewKind = null; _setLogViewUI();
+    _termPinned = true; _setTerm('');
+  }
+  if (!_logPollTimer) {
+    _logPollTimer = setInterval(() => {
+      if (_active) { refreshLastLog(_ACTIVE_LOG_LINES); refreshProgress(); }
+    }, _LOG_POLL_MS);
+  }
+  refreshLastLog(_active ? _ACTIVE_LOG_LINES : _FINAL_LOG_LINES);
+}
+
+async function triggerRun(mode) {
+  _resetLiveConfirm();
+  if (_active || _runStartPending) return;
+  if (mode === 'debug_sim' && !_simulateOk) {
+    showToast(_simulateDisabledMessage, 'warning');
+    return;
+  }
+  const pendingButtonId = mode === 'debug_sim' ? 'btn-sim' : (mode === 'headroom' ? 'btn-live' : null);
+  _setRunStartPending(true, pendingButtonId);
+  _setTerm('Starting run…');
+
+  try {
+    const r = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(mode ? { mode } : {}),
+      cache: 'no-store',
+    });
+    const d = await r.json();
+    if (d.ok && d.started === false) {
+      // Nothing was over a limit, so no run was launched — revert the optimistic
+      // running state and show the reason instead of streaming an empty run.
+      _setRunStartPending(false, pendingButtonId);
+      showToast(d.message, 'info');
+      await refreshLastLog(_FINAL_LOG_LINES);
+      return;
+    }
+    if (!d.ok) {
+      _setRunStartPending(false, pendingButtonId);
+      showToast(d.message, 'danger');
+      await refreshLastLog(_FINAL_LOG_LINES);
+      return;
+    }
+    _setRunStartPending(false, pendingButtonId);
+    setRunning(true, mode === 'headroom');
+    startStream(true);
+    _rpRunKey = null; _rpMaxIdx = 0;
+    refreshProgress();
+  } catch (err) {
+    _setRunStartPending(false, pendingButtonId);
+    showToast(`Run request failed: ${err}`, 'danger');
+    await refreshLastLog(_FINAL_LOG_LINES);
+  }
+}
+
+let _stopPending = false;
+async function stopRun() {
+  // Guard the in-flight window: a double-click sent a second stop that
+  // answered with a confusing "No active run." toast right after stopping.
+  if (_stopPending) return;
+  _stopPending = true;
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) { stopBtn.disabled = true; stopBtn.classList.add('btn-busy'); }
+  try {
+    const r = await fetch('/api/run/stop', { method: 'POST', cache: 'no-store' });
+    const d = await r.json();
+    showToast(d.message, d.ok ? 'success' : 'info');
+    if (d.ok) {
+      setRunning(false);
+      await refreshLastLog(_FINAL_LOG_LINES);
+    }
+  } catch (err) {
+    showToast(`Stop request failed: ${err}`, 'danger');
+  } finally {
+    _stopPending = false;
+    if (stopBtn) stopBtn.classList.remove('btn-busy');
+    _applyButtonStates();   // owns stopBtn.disabled — recompute from _active
+  }
+}
+
+_formatInitialTimestamps();
+_initDashboardTooltips();
+// Draw the storage bar's library segment and threshold markers from the
+// server-rendered values so they show before the first status poll lands.
+_positionStorageBar({{ disk|tojson }}, {{ library_gb|tojson }});
+refreshProgress();
+document.getElementById('log-window-header')?.addEventListener('pointerdown', _logDragStart);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('log-window')?.hidden) closeLogWindow();
+});
+if (_active) { setRunning(true); startStream(false); }
+if (_paused) {
+  const liveBtn = document.getElementById('btn-live');
+  if (liveBtn && _liveOk) liveBtn.title = 'Manual one-time Live Run while paused: deletes to your thresholds now (no delay, no daily window); does not enable the scheduler.';
+}
+
+// Countdown updater (every second)
+function _updateCountdown() {
+  const el = document.getElementById('next-run-sub');
+  if (!el) return;
+  // Red countdown: Live is armed, a run is actually scheduled, and the NEXT
+  // tick will genuinely DELETE — redline fires on any tick, while headroom
+  // and library-cap breaches wait out the shared once-per-day window AND the
+  // configured daily run time. With a deletion delay set, a daily run that
+  // would only MARK stays un-red: red means files are removed, so it needs
+  // ripe (aged-past-the-delay) marks.
+  const d = _liveDeficits();
+  const delayGate = (_deleteDelayDays || 0) <= 0 || (_markedRipeCount || 0) > 0;
+  const nextTickPrunes = !!d && (d.redline > 0
+    || ((d.headroom > 0 || d.cap > 0) && !_headroomWindowUsedToday && delayGate
+        && _nextTickAfterRunTime()));
+  const willPrune = !_active && !_paused && !!_nextRunTime && nextTickPrunes;
+  el.classList.toggle('will-prune', willPrune);
+  if (_active) { el.textContent = 'Run in progress — scheduler paused'; el.title = ''; return; }
+  if (_paused) {
+    el.textContent = 'Scheduler paused';
+    el.title = _autopauseReason || '';   // the why, on hover; Config shows it too
+    return;
+  }
+  el.title = willPrune ? 'Over space limits — this run will prune.' : '';
+  if (!_nextRunTime) {
+    // The server sends next_run_time=null while automatic runs are blocked
+    // (connection down, bad thresholds) — that's a real state, not a pending
+    // calculation, so don't promise one that will never finish.
+    el.textContent = _liveOk ? 'Next run: calculating…'
+      : 'No run scheduled — fix Connections / Space Thresholds first';
+    return;
+  }
+  const diff = Math.max(0, new Date(_nextRunTime).getTime() - Date.now());
+  if (diff === 0) { el.textContent = 'Starting soon…'; return; }
+  const m = Math.floor(diff / 60000);
+  const s = Math.floor((diff % 60000) / 1000);
+  el.textContent = `Next run in ${m}:${s.toString().padStart(2, '0')}`;
+}
+setInterval(_updateCountdown, 1000);
+_updateCountdown();
+
+// Status polling: keep UI state in sync even if a run started from the scheduler
+// or the browser suspended the tab and resumed later.
+_statusPollTimer = setInterval(() => syncStatus({refreshLog: _active}), 3000);
+syncStatus({refreshLog: _active});
+
+if (!_active) {
+  refreshLastLog(200);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    syncStatus({refreshLog: true});
+  }
+});
+window.addEventListener('pageshow', () => { syncStatus({refreshLog: true}); });
+</script>
+{% endblock %}

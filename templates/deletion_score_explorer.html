@@ -1,0 +1,1620 @@
+{% extends "base.html" %}
+{% block title %}Filtering & Scoring — MediaReducer{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4 gap-3 page-title-bar">
+  <span class="page-title">Filtering &amp; Scoring</span>
+  <div class="d-flex gap-2 flex-shrink-0">
+    <button class="btn btn-sm btn-outline-secondary" onclick="revertCfg()" id="btn-cfg-revert" disabled>Revert</button>
+    <button class="btn btn-sm btn-outline-secondary" onclick="saveCfgToConfig()" id="btn-cfg-save" disabled>Save</button>
+  </div>
+</div>
+
+<style>
+/* Fit this tab to the shared base layout like Dashboard and Configuration. */
+.page-shell{max-width:none!important;margin:0!important;padding:0!important;border-radius:0!important;box-shadow:none!important;background:transparent!important;}
+.page-shell>.card:last-child{margin-bottom:0}
+
+
+.card{background:var(--surface-1);border:1px solid var(--border);border-radius:12px;padding:1.25rem;margin-bottom:1rem}
+/* Run-lock ghosting — the same treatment the Configuration page gives its
+   locked sections: dim the content, keep the inline notice fully readable. */
+.section-run-ghost > :not(.config-inline-warning){opacity:.55}
+/* .config-inline-warning + the not-allowed cursor on ghosted controls come
+   from base.html (shared with Configuration). */
+.slbl{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:.75rem}
+.miniin{font-family:var(--font-mono)}
+.score-explorer-shell .filter-score-group{margin-top:14px}
+.score-explorer-shell .filter-score-subhead{margin-bottom:8px}
+.score-explorer-shell .filter-score-card{padding:10px}
+.score-explorer-shell .filter-score-help{font-size:11px}
+/* Invalid-field flag styling comes from base.html (shared with the
+   Configuration page); only the size matches this page's 11px help text. */
+.score-explorer-shell .field-error{font-size:11px}
+.score-explorer-shell{
+  /* Watch-history = teal, IMDb = amber: a warm/cool pair kept distinct for
+     common color-vision deficiencies. Light theme deepens both for contrast. */
+  --score-history:#4ec9b0;
+  --score-imdb:#e8a355;
+}
+:root[data-theme="light"] .score-explorer-shell{
+  --score-history:#0e7c6b;
+  --score-imdb:#c2610c;
+}
+.fl{display:flex;justify-content:space-between;font-size:12px;color:var(--text-secondary);margin-bottom:4px}
+.fv{font-weight:500;color:var(--text-primary)}
+.sw{display:inline-block;width:8px;height:8px;border-radius:2px;vertical-align:middle;margin-right:3px}
+.metric-swatch--rating{background:var(--score-imdb)}
+.metric-swatch--recency{background:var(--score-history)}
+.score-balance-card{padding:12px 14px}
+/* Eligibility filters and Scoring & Ordering share one 4-column grid + 12px gap
+   so their boxes line up; the balance slider spans 2 columns. */
+.score-explorer-shell .filter-score-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.score-order-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;align-items:stretch}
+.score-order-grid .score-balance-card{grid-column:span 2}
+@media (max-width:900px){
+  .score-explorer-shell .filter-score-grid,
+  .score-order-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .score-order-grid .score-balance-card{grid-column:span 2}
+}
+@media (max-width:560px){
+  .score-explorer-shell .filter-score-grid,
+  .score-order-grid{grid-template-columns:1fr}
+  .score-order-grid .score-balance-card{grid-column:auto}
+}
+.score-balance-track{position:relative}
+.score-balance-track::before{content:"";position:absolute;left:50%;top:4px;bottom:4px;width:2px;transform:translateX(-50%);background:var(--border-strong);border-radius:1px;pointer-events:none}
+.score-balance-track .form-range{position:relative;z-index:1}
+/* Match the movie-fact slider tracks: the outer card's tone
+   (--bubble-field-bg) so tracks sink into their lighter bubbles. */
+.score-balance-track .form-range::-webkit-slider-runnable-track{
+  box-shadow:inset 0 .1em .2em rgba(0,0,0,.28);
+  background:var(--bubble-field-bg)!important;
+}
+.score-balance-track .form-range::-moz-range-track{
+  box-shadow:inset 0 .1em .2em rgba(0,0,0,.28);
+  background:var(--bubble-field-bg)!important;
+}
+.score-balance-labels{display:flex;justify-content:space-between;align-items:baseline;font-size:.78rem;color:var(--text-secondary);margin-bottom:2px;gap:8px}
+.snum{font-size:44px;font-weight:500;color:var(--text-primary);font-variant-numeric:tabular-nums;line-height:1}
+input[type=range]{width:100%;margin:2px 0 6px}
+.metric-range.form-range{
+  --range-progress:0%;
+  height:1.35rem;
+  padding:0;
+  background:transparent!important;
+  -webkit-appearance:none;
+  appearance:none;
+}
+.score-explorer-shell .metric-range.form-range{--range-color:var(--text-accent);accent-color:var(--range-color)}
+.score-explorer-shell .metric-range.form-range.metric-range--rating{--range-color:var(--score-imdb);accent-color:var(--score-imdb)}
+.score-explorer-shell .metric-range.form-range.metric-range--recency{--range-color:var(--score-history);accent-color:var(--score-history)}
+.score-explorer-shell .metric-range.form-range::-webkit-slider-runnable-track{
+  height:.42rem;
+  border-radius:999px;
+  box-shadow:inset 0 .1em .2em rgba(0,0,0,.28);
+  background:linear-gradient(90deg,var(--range-color) 0 var(--range-progress),var(--bubble-field-bg) var(--range-progress) 100%)!important;
+}
+.score-explorer-shell .metric-range.form-range::-webkit-slider-thumb{
+  margin-top:-.34rem;
+  background:var(--range-color)!important;
+  border:2px solid var(--surface-2);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--range-color) 55%,transparent),0 2px 8px rgba(0,0,0,.24);
+}
+.score-explorer-shell .metric-range.form-range:focus::-webkit-slider-thumb{
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--range-color) 28%,transparent),0 2px 8px rgba(0,0,0,.24);
+}
+.score-explorer-shell .metric-range.form-range::-moz-range-track{
+  height:.42rem;
+  border:0;
+  border-radius:999px;
+  box-shadow:inset 0 .1em .2em rgba(0,0,0,.28);
+  background:var(--bubble-field-bg)!important;
+}
+.score-explorer-shell .metric-range.form-range::-moz-range-progress{
+  height:.42rem;
+  border-radius:999px;
+  background:var(--range-color)!important;
+}
+.score-explorer-shell .metric-range.form-range::-moz-range-thumb{
+  width:1rem;
+  height:1rem;
+  border-radius:50%;
+  background:var(--range-color);
+  border:2px solid var(--surface-2);
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--range-color) 55%,transparent),0 2px 8px rgba(0,0,0,.24);
+}
+.score-explorer-shell .metric-range.form-range:focus::-moz-range-thumb{
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--range-color) 28%,transparent),0 2px 8px rgba(0,0,0,.24);
+}
+.scorefootnote{font-size:11px;color:var(--text-muted);margin-top:6px}
+input[type=checkbox]{cursor:pointer}
+.ttop{display:grid;gap:8px;margin-bottom:.85rem}
+.ttoprow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ttopmain{padding-bottom:8px;border-bottom:1px solid var(--border)}
+.ttopsub{justify-content:space-between;gap:12px}
+.fieldrow{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text-secondary);white-space:nowrap}
+.fieldrow .form-select{min-width:78px}
+.overctl{margin-left:8px}
+.score-gb-input{width:128px}
+.toolbarstat{font-size:11px;color:var(--text-muted);margin-left:auto;white-space:nowrap}
+@media (max-width:680px){.overctl{margin-left:0}.toolbarstat{margin-left:0;width:100%}.ttopsub{align-items:flex-start;flex-direction:column}}
+.twrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:7px 8px;font-size:11px;font-weight:500;color:var(--text-muted);border-bottom:1px solid var(--border-strong);cursor:pointer;user-select:none;white-space:nowrap}
+th:hover,th.sc{color:var(--text-primary)}
+td{padding:5px 8px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+tr.fx td{opacity:.32}
+.ordcell{color:var(--text-muted);font-variant-numeric:tabular-nums;font-size:11.5px;text-align:right;padding-right:4px}
+/* Brackets around the boundary tie group — cells 10/11 are Size and Retention.
+   tie-* classes are only set while sorted by # with an Over headroom target. */
+.twrap{--tie-bracket:color-mix(in srgb,var(--border-accent) 62%,transparent)}
+tr.tie-start td:nth-child(10),tr.tie-mid td:nth-child(10),tr.tie-end td:nth-child(10),
+tr.tie-start td:nth-child(11),tr.tie-mid td:nth-child(11),tr.tie-end td:nth-child(11){position:relative}
+/* vertical rails */
+tr.tie-start td:nth-child(10)::before,tr.tie-mid td:nth-child(10)::before,tr.tie-end td:nth-child(10)::before{
+  content:'';position:absolute;left:2px;top:0;bottom:0;width:2px;background:var(--tie-bracket)}
+tr.tie-start td:nth-child(11)::before,tr.tie-mid td:nth-child(11)::before,tr.tie-end td:nth-child(11)::before{
+  content:'';position:absolute;right:2px;top:0;bottom:0;width:2px;background:var(--tie-bracket)}
+/* rounded rail ends where a group opens and closes */
+tr.tie-start td:nth-child(10)::before{top:4px;border-top-left-radius:3px}
+tr.tie-start td:nth-child(11)::before{top:4px;border-top-right-radius:3px}
+tr.tie-end td:nth-child(10)::before{bottom:4px;border-bottom-left-radius:3px}
+tr.tie-end td:nth-child(11)::before{bottom:4px;border-bottom-right-radius:3px}
+/* short bracket caps */
+tr.tie-start td:nth-child(10)::after{content:'';position:absolute;left:2px;top:4px;width:9px;height:2px;background:var(--tie-bracket)}
+tr.tie-end td:nth-child(10)::after{content:'';position:absolute;left:2px;bottom:4px;width:9px;height:2px;background:var(--tie-bracket)}
+tr.tie-start td:nth-child(11)::after{content:'';position:absolute;right:2px;top:4px;width:9px;height:2px;background:var(--tie-bracket)}
+tr.tie-end td:nth-child(11)::after{content:'';position:absolute;right:2px;bottom:4px;width:9px;height:2px;background:var(--tie-bracket)}
+tr.tie-start td:nth-child(11) .scbar,tr.tie-mid td:nth-child(11) .scbar,tr.tie-end td:nth-child(11) .scbar{
+  background:color-mix(in srgb,var(--bg-accent) 35%,var(--bubble-field-bg))}
+.tbl-footnote{margin-top:7px;font-size:11px;line-height:1.5;color:var(--text-muted)}
+.scbar{position:relative;height:18px;border-radius:3px;overflow:hidden;width:68px;background:var(--bubble-field-bg)}
+.scfill{position:absolute;left:0;top:0;height:100%}
+.sctxt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500}
+.table-status{font-size:12px;font-weight:600;line-height:1.2;white-space:nowrap;color:var(--text-secondary)}
+/* Empty/scanning message pinned to the scroll viewport: it must wrap (the td
+   sets nowrap) and shrink a step on phones so long guidance fits the box. */
+.tbl-msg{position:sticky;left:0;display:inline-block;text-align:center;color:var(--text-muted);white-space:normal;line-height:1.5;padding:0 12px;box-sizing:border-box}
+.table-status.ok{color:var(--text-accent)}
+.table-status.pruned{color:var(--text-danger)}
+tr.prune td{background:var(--bg-danger)}
+tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
+.movie-row{cursor:pointer}
+.movie-row td{transition:background-color .15s,color .15s,box-shadow .15s}
+.movie-row:hover td,.movie-row:focus-visible td{background:color-mix(in srgb,var(--text-accent) 8%,transparent)}
+.movie-row:focus-visible{outline:none}
+.movie-row:focus-visible td:first-child{box-shadow:inset 3px 0 0 var(--border-accent)}
+.movie-row.selected td{background:var(--bg-accent)}
+.movie-row.selected td:first-child{box-shadow:inset 3px 0 0 var(--border-accent)}
+.weightbadge{font-size:10px;font-weight:600;color:var(--text-muted);border:1px solid var(--border);border-radius:999px;padding:1px 7px;margin-left:6px;vertical-align:1px;white-space:nowrap}
+.prunestat{font-size:11px;color:var(--text-muted)}
+.prunestat.active{color:var(--text-warning)}
+.sample-imdb-note{margin:0 0 8px;padding:9px 12px;border:1px solid var(--border);border-left:3px solid var(--text-warning);border-radius:6px;background:var(--bg-warning,color-mix(in srgb,var(--text-warning) 12%,transparent));color:var(--text-secondary);font-size:12px;line-height:1.4}
+.stackctl{font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:5px;white-space:nowrap}
+
+/* Single movie explorer: organized as inputs -> score breakdown */
+.explainer{font-size:12px;color:var(--text-secondary);line-height:1.45;margin:-.25rem 0 1rem;max-width:760px}
+.explorer-grid{display:grid;grid-template-columns:minmax(280px,.95fr) minmax(320px,1.05fr);gap:1rem;align-items:stretch}
+.subcard{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:1rem;box-sizing:border-box}
+.panelhead{display:flex;align-items:flex-start;gap:10px;margin-bottom:.9rem}
+.stepbubble{width:22px;height:22px;border-radius:999px;background:var(--bg-accent);border:1px solid var(--border-accent);color:var(--text-accent);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.paneltitle{font-size:13px;font-weight:700;color:var(--text-primary);line-height:1.2;margin-bottom:3px}
+.paneldesc{font-size:11px;color:var(--text-muted);line-height:1.35}
+.sliderstack{display:grid;gap:.8rem}
+.sliderblock{padding-bottom:.75rem;border-bottom:1px solid var(--border)}
+.sliderblock:last-child{border-bottom:none;padding-bottom:0}
+.inputhint{font-size:11px;color:var(--text-muted);line-height:1.35;margin-top:2px}
+.breakstack{display:grid;gap:.8rem}
+.subcard--breakdown{display:flex;flex-direction:column}
+.breakstack--pie{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;gap:.8rem}
+.piewrap{position:relative;flex:1 1 0;min-height:110px}
+.piewrap svg{position:absolute;inset:0;width:100%;height:100%;display:block}
+.pie-blank{fill:var(--bubble-field-bg);stroke:var(--border);stroke-width:1}
+.pie-hist{fill:var(--score-history)}
+.pie-imdb{fill:var(--score-imdb)}
+.pielegend{display:grid;gap:.15rem}
+.pielegend-row{display:flex;align-items:center;gap:8px;font-size:.85rem;color:var(--text-secondary)}
+.pielegend-row strong{margin-left:auto;font-variant-numeric:tabular-nums;color:var(--text-primary)}
+.pielegend-label{display:flex;align-items:center;gap:4px}
+.pielegend .scoreformula{margin:0 0 .35rem 20px}
+.sw-blank{background:var(--bubble-field-bg);border:1px solid var(--border)}
+.finalscoreblock{margin-top:auto}
+.scoreblock{background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:.85rem}
+.scorehead{display:flex;justify-content:space-between;gap:12px;align-items:baseline;margin-bottom:.5rem;font-size:12px;color:var(--text-secondary)}
+.scorehead strong{color:var(--text-primary);font-size:13px;font-variant-numeric:tabular-nums}
+.scorelabel{font-weight:700;color:var(--text-primary)}
+.scoreformula{font-size:11px;color:var(--text-muted);line-height:1.35;margin:.45rem 0 .6rem}
+.finalscoreblock{border-color:var(--border-accent);background:linear-gradient(180deg,var(--bg-accent),var(--surface-2))}
+.finalscoreblock .scorewrap{margin-top:.9rem}
+
+
+/* Responsive shell + mobile ergonomics */
+.scorewrap{display:flex;align-items:center;gap:14px}
+.twrap{border-radius:10px;border:1px solid var(--border);-webkit-overflow-scrolling:touch}
+.twrap table{min-width:720px}
+.twrap::after{content:'Swipe table →';display:none;padding:7px 9px;border-top:1px solid var(--border);font-size:10px;color:var(--text-muted);text-align:right;background:var(--surface-0)}
+
+@media (max-width:760px){
+
+  .explainer{font-size:12px;margin-bottom:.8rem}
+  .explorer-grid{grid-template-columns:1fr;gap:.85rem}
+  .subcard{padding:.85rem}
+  .panelhead{margin-bottom:.75rem}
+  .sliderstack{gap:.7rem}
+  .breakstack{gap:.7rem}
+  .scoreblock{padding:.75rem}
+
+  .card{padding:1rem;border-radius:14px;margin-bottom:12px}
+  input[type=range]{min-height:34px;margin:0 0 10px}
+  .scorewrap{align-items:flex-start;gap:10px;flex-wrap:wrap}
+  .snum{font-size:38px}
+  .ttop{gap:10px}
+  .ttoprow{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:stretch;gap:8px}
+  .ttopmain{padding-bottom:10px}
+  .ttop .form-select,.ttop .btn,.miniin{min-height:40px;box-sizing:border-box}
+  .ttop .btn{justify-content:center;width:100%}
+  .fieldrow{width:100%;min-width:0;justify-content:space-between;gap:8px}
+  .fieldrow .form-select,.fieldrow .score-gb-input{flex:1;min-width:0;width:auto}
+  .overctl{grid-column:auto;margin-left:0}
+  #prunestat{grid-column:1 / -1;line-height:1.35}
+  .ttopsub{grid-template-columns:1fr;justify-items:start;align-items:start}
+  .toolbarstat{margin-left:0;width:100%;white-space:normal;line-height:1.35}
+  .stackctl{min-height:34px}
+  .twrap{margin:0 -2px}
+  .twrap::after{display:block}
+  table{font-size:11px}
+  th{padding:8px 7px;font-size:10px}
+  td{padding:7px 7px}
+  .scbar{width:64px;height:20px}
+}
+
+@media (max-width:520px){
+  .card{padding:.85rem}
+  .slbl{font-size:10px;margin-bottom:.65rem}
+  .miniin{font-size:16px}
+  .tbl-msg{font-size:11px}
+  .ttoprow{grid-template-columns:minmax(0,1fr) auto}
+  .ttopmain{grid-template-columns:minmax(0,1fr) auto}
+  .ttopsub{grid-template-columns:1fr}
+  .overctl{grid-column:auto}
+  #prunestat{grid-column:1 / -1}
+  .fieldrow{white-space:normal}
+  .ttopmain .fieldrow{white-space:nowrap;gap:6px}
+  .ttopmain .fieldrow span:first-child{font-size:11px}
+  .ttopmain .fieldrow .form-select{max-width:90px}
+  .ttopmain .btn{min-width:82px;padding-left:8px;padding-right:8px}
+  .scorewrap{display:grid;grid-template-columns:auto 1fr;align-items:center;width:100%}
+  .snum{font-size:34px}
+  .scorewrap > div{min-width:0}
+  .twrap table{min-width:660px}
+}
+
+@media (max-width:380px){
+  .card{padding:.75rem}
+  .snum{font-size:30px}
+  .ttopmain{gap:6px}
+  .ttopmain .fieldrow{gap:5px}
+  .ttopmain .fieldrow span:first-child{font-size:10px}
+  .ttopmain .fieldrow .form-select{max-width:78px}
+  .ttopmain .btn{min-width:74px;font-size:11px;padding-left:6px;padding-right:6px}
+  .twrap table{min-width:620px}
+}
+
+
+/* Desktop/table fit and refined phone toolbar layout */
+.ttop-actions{display:inline-flex;gap:8px;align-items:center}
+@media (min-width:761px){
+  .twrap table{min-width:0}
+}
+
+@media (max-width:760px){
+  .ttopmain{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    gap:10px;
+    align-items:end;
+  }
+  .ttopmain > .fieldrow:first-child{grid-column:1;grid-row:1}
+  .ttopmain > .ttop-actions{grid-column:2;grid-row:1}
+  .ttopmain > .overctl{grid-column:1 / -1;grid-row:2;margin-left:0}
+  .ttopmain > #prunestat{grid-column:1 / -1;grid-row:3}
+  .ttopmain .ttop-actions{display:flex;gap:8px;align-items:end;width:100%}
+  .ttopmain .ttop-actions .btn{flex:1 1 auto;min-width:0!important;width:auto}
+  .ttopmain .ttop-actions .pr-debug-btn{flex:0 0 auto}
+  .ttopmain .fieldrow{
+    width:auto;
+    min-width:0;
+    display:grid;
+    justify-content:stretch;
+    align-items:end;
+    gap:5px;
+    white-space:normal;
+  }
+  .ttopmain .fieldrow > span:first-child{
+    font-size:12px;
+    line-height:1.2;
+  }
+  .ttopmain .fieldrow .form-select,
+  .ttopmain .fieldrow .score-gb-input{
+    width:100%;
+    min-width:0;
+    max-width:none!important;
+    height:44px;
+  }
+  .ttopmain .overctl{
+    grid-template-columns:minmax(0,1fr);
+    grid-template-areas:"label" "input";
+    row-gap:5px;
+  }
+  .ttopmain .overctl > span:first-child{grid-area:label}
+  .ttopmain .overctl > .score-gb-input{grid-area:input}
+  .ttopmain .btn{
+    min-width:0!important;
+    width:100%;
+    height:44px;
+    align-self:end;
+    padding-left:10px;
+    padding-right:10px;
+  }
+}
+
+@media (max-width:380px){
+  .ttopmain{gap:8px}
+  .ttopmain .btn{font-size:12px;padding-left:8px;padding-right:8px}
+  .ttopmain .fieldrow .form-select,
+  .ttopmain .fieldrow .score-gb-input{height:42px}
+}
+
+</style>
+
+<div class="page-shell app-form score-explorer-shell">
+
+<div class="card" id="filter-score-card">
+  <div class="slbl">Filtering &amp; Scoring</div>
+  <div id="exp-run-lock-note" class="config-inline-warning" style="margin:0 0 .75rem" hidden>A run is active. Filtering &amp; Scoring is locked until it finishes.</div>
+  <div class="paneldesc" style="margin:.2rem 0 .6rem">The rules every scan uses to decide what can be deleted and in what order. Changes preview on this screen immediately — Save keeps them.</div>
+
+  <div class="filter-score-group">
+    <div class="filter-score-heading">Eligibility filters</div>
+    <div class="filter-score-subhead">Movies must pass these filters before scoring — filtered movies show why in the library sample below.</div>
+    <div class="filter-score-grid">
+      <div class="filter-score-card">
+        <label class="input-label" for="c-grace">Minimum age (grace period)</label>
+        <div class="filter-score-control-row">
+          <input type="number" class="form-control" id="c-grace" value="0" min="0" oninput="onExpFilterInput()">
+        </div>
+        <div class="filter-score-help">Movies added within this many days are never deleted.</div>
+      </div>
+      <div class="filter-score-card">
+        <label class="input-label" for="c-unplayed">Unplayed movies</label>
+        <label class="filter-score-toggle-row" for="c-unplayed">
+          <input class="form-check-input" type="checkbox" id="c-unplayed" onchange="onExpFilterInput()">
+          <span class="form-check-label">Don't delete unplayed movies</span>
+        </label>
+        <div class="filter-score-help">Movies with no play history are skipped.</div>
+      </div>
+      <div class="filter-score-card">
+        <label class="input-label" for="c-cutoff">Maximum IMDb rating</label>
+        <div class="input-group">
+          <div class="input-group-text">
+            <input class="form-check-input mt-0" type="checkbox" id="c-cutoff-on"
+                   onchange="onExpCutoffToggle()" aria-label="Enable maximum IMDb rating cutoff">
+          </div>
+          <input type="number" class="form-control" id="c-cutoff" value="7.5"
+                 min="0.1" max="10" step="0.1" disabled oninput="onExpFilterInput()"
+                 onblur="_expValidateField('c-cutoff')" aria-describedby="c-cutoff-error">
+        </div>
+        <div id="c-cutoff-error" class="field-error">Must be above 0, up to 10 — uncheck to turn off.</div>
+        <div class="filter-score-help">When enabled, movies rated above this on IMDb are never deleted. Unrated movies are unaffected.</div>
+      </div>
+      <div class="filter-score-card{{ '' if jellyfin_connected else ' connection-ghost' }}">
+        <label class="input-label" for="c-jf-fav">Jellyfin favorites</label>
+        <label class="filter-score-toggle-row" for="c-jf-fav">
+          <input class="form-check-input" type="checkbox" id="c-jf-fav" onchange="onExpFilterInput()" {{ '' if jellyfin_connected else 'disabled' }}>
+          <span class="form-check-label">Don't delete favorited movies</span>
+        </label>
+        <div class="filter-score-help">Movies any Jellyfin user marked favorite are skipped.</div>
+        <div class="filter-score-help connection-unlock-note" {{ 'hidden' if jellyfin_connected else '' }}>Connect Jellyfin to unlock this.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="filter-score-group">
+    <div class="filter-score-heading">Scoring &amp; Ordering</div>
+    <div class="filter-score-subhead">Movies with the lowest retention score delete first.</div>
+
+    <div class="score-order-grid">
+      <div class="filter-score-card score-balance-card">
+        <div class="score-balance-labels">
+          <span>Watch &amp; added history</span>
+          <span>IMDb rating</span>
+        </div>
+        <div class="score-balance-track" title="Center = balanced 50% / 50%">
+          <input type="range" class="form-range" id="c-bal" min="0" max="100" step="10" value="50" oninput="onExpBalanceInput()">
+        </div>
+        <div class="filter-score-help"><strong>Left (watch history):</strong> keeps what your household actually watches — more effective when your library has plenty of play history. <strong>Right (IMDb):</strong> keeps what's critically rated — more effective when watch history is thin or most of the library is unwatched, since movies still sort by quality. Same-movie copies: lowest quality deletes first.</div>
+      </div>
+
+      <div class="filter-score-card">
+        <label class="input-label" for="c-stale">Max staleness</label>
+        <div class="input-group">
+          <input type="number" class="form-control" id="c-stale" value="36"
+                 min="1" max="120" step="1" inputmode="numeric"
+                 onkeydown="if(['.',',','e','E'].includes(event.key))event.preventDefault()"
+                 oninput="onExpFilterInput()" onblur="_expValidateField('c-stale')"
+                 aria-describedby="c-stale-error">
+          <span class="input-group-text">months</span>
+        </div>
+        <div id="c-stale-error" class="field-error">Must be 1–120 months.</div>
+        <div class="filter-score-help">How long after the last watch (or added date, if never watched) a movie counts as fully stale. Recency points fade to zero over this window.</div>
+      </div>
+
+      <div class="filter-score-card">
+        <label class="input-label" for="c-tie">File size optimization</label>
+        <div class="input-group">
+          <div class="input-group-text">
+            <input class="form-check-input mt-0" type="checkbox" id="c-tie-on"
+                   onchange="onExpTieToggle()" aria-label="Enable file size optimization">
+          </div>
+          <input type="number" class="form-control" id="c-tie" value="2"
+                 min="0.5" max="25" step="0.5" disabled oninput="onExpFilterInput()"
+                 onblur="_expValidateField('c-tie')" aria-describedby="c-tie-error">
+          <span class="input-group-text">pts</span>
+        </div>
+        <div id="c-tie-error" class="field-error">Must be 0.5–25 points — uncheck to turn off.</div>
+        <div class="filter-score-help">Movies scored within this many points count as tied. Where the space target lands in a tied group, larger files go first — or one movie that covers what's left — so the target costs the fewest deletions. Off = strict score order.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="card">
+  <div class="slbl">Single movie explorer</div>
+  <div class="explainer">Adjust a hypothetical movie's facts and watch its retention score respond. Lowest score deletes first.</div>
+
+  <div class="explorer-grid">
+    <div class="subcard">
+      <div class="panelhead">
+        <span class="stepbubble">1</span>
+        <div>
+          <div class="paneltitle">Movie facts</div>
+          <div class="paneldesc">These are the inputs the engine uses for one movie.</div>
+        </div>
+      </div>
+      <div class="sliderstack">
+        <div class="sliderblock">
+          <div class="fl"><span>Plays</span><span class="fv" id="v-play">2</span></div>
+          <input class="form-range metric-range metric-range--recency" type="range" id="s-play" min="0" max="20" step="1" value="2" oninput="go()">
+        </div>
+        <div class="sliderblock">
+          <div class="fl"><span>Last watched / added</span><span class="fv" id="v-lp">watched 2 mo ago</span></div>
+          <input class="form-range metric-range metric-range--recency" type="range" id="s-lp" min="0" max="2920" step="30" value="60" oninput="go()">
+          <div class="inputhint">One recency timeline: the last watch, or the added date if never played. Points fade to zero at max staleness; past it a small age bonus favors newer additions.</div>
+        </div>
+        <div class="sliderblock">
+          <div class="fl"><span>Distinct users watched</span><span class="fv" id="v-usr">1</span></div>
+          <input class="form-range metric-range metric-range--recency" type="range" id="s-usr" min="0" max="5" step="1" value="1" oninput="go()">
+        </div>
+        <div class="sliderblock">
+          <div class="fl"><span>IMDb rating</span><span class="fv" id="v-rat">6.5</span></div>
+          <input class="form-range metric-range metric-range--rating" type="range" id="s-rat" min="0" max="10" step="0.1" value="6.5" oninput="go()">
+          <div class="inputhint">0 = unrated (no IMDb points).</div>
+        </div>
+        <div class="sliderblock">
+          <div class="fl"><span>IMDb vote count</span><span class="fv" id="v-vot">10k</span></div>
+          <input class="form-range metric-range metric-range--rating" type="range" id="s-vot" min="0" max="6.6" step="0.01" value="4" oninput="go()">
+          <div id="v-conf" class="inputhint"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="subcard subcard--breakdown">
+      <div class="panelhead">
+        <span class="stepbubble">2</span>
+        <div>
+          <div class="paneltitle">Retention score breakdown</div>
+          <div class="paneldesc">How the final 0–100 score splits between watch history and IMDb at the current scoring balance.</div>
+        </div>
+      </div>
+      <div class="breakstack breakstack--pie">
+        <div class="piewrap">
+          <svg viewBox="0 0 200 200" role="img" aria-label="Retention score composition">
+            <circle cx="100" cy="100" r="90" class="pie-blank"><title id="pie-blank-title">Unearned</title></circle>
+            <path id="pie-hist" class="pie-hist" d=""><title id="pie-hist-title">Watch history</title></path>
+            <path id="pie-imdb" class="pie-imdb" d=""><title id="pie-imdb-title">IMDb</title></path>
+          </svg>
+        </div>
+        <div class="pielegend">
+          <div class="pielegend-row"><span class="sw metric-swatch--recency"></span><span class="pielegend-label">Watch history <span id="v-hist-weight" class="weightbadge"></span></span><strong id="v-hist">+0.0</strong></div>
+          <div id="v-hist-detail" class="scoreformula"></div>
+          <div class="pielegend-row"><span class="sw metric-swatch--rating"></span><span class="pielegend-label">IMDb <span id="v-imdb-weight" class="weightbadge"></span></span><strong id="v-imdb">+0.0</strong></div>
+          <div id="v-imdb-detail" class="scoreformula"></div>
+          <div class="pielegend-row"><span class="sw sw-blank"></span><span class="pielegend-label">Unearned</span><strong id="v-blank">100.0</strong></div>
+        </div>
+
+        <div class="scoreblock finalscoreblock">
+          <div class="scorehead"><span class="scorelabel">Retention score</span><span id="v-mix">history + IMDb</span></div>
+          <div class="scorewrap">
+            <span id="v-overall" class="snum">0</span>
+            <div>
+              <div id="v-verd" class="pr-pill">–</div>
+              <div class="scorefootnote">Lowest score deletes first · file size optimization picks inside near-ties at the space target</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="slbl">Library sample</div>
+  <div class="paneldesc" style="margin:.2rem 0 .6rem">Real movies from your monitored library paths, using merged Plex/Jellyfin data. Refresh pulls a brand-new batch of the selected size from the server.</div>
+  <div class="ttop">
+    <div class="ttoprow ttopmain">
+      <label class="fieldrow" title="Applied on the next Refresh">
+        <span>Movies</span>
+        <select id="mc" class="form-select form-select-sm">
+          <option value="5">5</option>
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+      </label>
+      <span class="ttop-actions">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-sample-refresh" onclick="doRefresh()"><i class="ti ti-refresh" aria-hidden="true"></i> Refresh</button>
+        {% if debug_mode %}
+        <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-sample"
+                onclick="prRunDebug('/api/debug/sample-pool', 'Library sample state', this)"
+                title="Debug: how the current library sample was built">Debug</button>
+        {% endif %}
+      </span>
+      <label class="fieldrow overctl" title="Pretend the disk is this many GB over the Headroom target — # marks what a run would delete">
+        <span>Over headroom</span>
+        <span class="input-group input-group-sm score-gb-input">
+          <input class="form-control miniin" type="number" id="over-gb" value="0" min="0" step="25" oninput="onPruneTargetInput()">
+          <span class="input-group-text">GB</span>
+        </span>
+      </label>
+      <span id="prunestat" class="prunestat"></span>
+    </div>
+    <div class="ttoprow ttopsub">
+      <label class="stackctl" title="Keep eligible/prunable rows grouped above filtered rows while still sorting within each group">
+        <input class="form-check-input" type="checkbox" id="stack-eligible" checked onchange="renderT()">
+        <span>Eligible first</span>
+      </label>
+      <span id="tstat" class="toolbarstat"></span>
+    </div>
+  </div>
+  <div id="sample-imdb-note" class="sample-imdb-note" style="display:none"></div>
+  <div class="twrap">
+    <table>
+      <thead><tr>
+        <th id="th-o" onclick="sb('order')" class="sc" title="Deletion order — a run deletes eligible movies in this order; with an Over headroom target the bracket marks where the pick matters"># ↑</th>
+        <th id="th-t" onclick="sb('title')">Title</th>
+        <th id="th-y" onclick="sb('year')">Year</th>
+        <th id="th-r" onclick="sb('rating')">IMDB</th>
+        <th id="th-v" onclick="sb('votes')">Votes</th>
+        <th id="th-p" onclick="sb('plays')">Plays</th>
+        <th id="th-u" onclick="sb('users')">Users</th>
+        <th id="th-e" onclick="sb('eng')">Last watched</th>
+        <th id="th-a" onclick="sb('added')">Added</th>
+        <th id="th-z" onclick="sb('size')">Size</th>
+        <th id="th-s" onclick="sb('score')" title="Sort by retention score alone — see the # column for the actual deletion order">Retention</th>
+        <th id="th-x" onclick="sb('status')">Eligibility</th>
+      </tr></thead>
+      <tbody id="mtbody"></tbody>
+    </table>
+  </div>
+  <div class="tbl-footnote"><strong>#</strong> is the deletion order — lowest retention score first.
+  With an Over headroom target set, the bracket beside Size and Retention marks the tied group the
+  target lands in — the one spot where File size optimization picks.</div>
+</div>
+
+</div>
+
+<script>
+// The engine's scoring curve numbers (scoring_constants.py), injected so the
+// preview can never drift from what a run scores. Shapes are mirrored below;
+// the tunables come from this one source.
+const SCORING = {{ scoring | tojson }};
+const VOTE_LOG_MIN=0,VOTE_LOG_MAX=6.6;
+let poolState={loaded:false,message:'Loading library sample…'};
+window.addEventListener('resize',()=>{if(!poolState.loaded)renderT();});
+let raw=[],sc='order',sd=1,appliedPruneGb=0,selectedMovieId=null;
+let appliedCfg=null,savedCfg=null,cfgSaving=false;
+// Last entered values of the optional fields, kept while disabled so the
+// greyed-out inputs still show them (persisted server-side across restarts).
+let expLastCutoff=null,expLastTie=null;
+// Run lock: while a run is active the engine has already loaded its scoring,
+// so editing here would silently apply to the NEXT run. Lock the settings the
+// same way the Configuration page locks its sections (server enforces too).
+let expRunActive={{ 'true' if run_active|default(false) else 'false' }};
+const _EXP_LOCK_IDS=['c-bal','c-cutoff-on','c-cutoff','c-unplayed','c-grace','c-jf-fav','c-tie-on','c-tie','c-stale'];
+function _applyExplorerRunLock(){
+  const locked=expRunActive;
+  document.getElementById('filter-score-card')?.classList.toggle('section-run-ghost',locked);
+  const note=document.getElementById('exp-run-lock-note');
+  if(note)note.hidden=!locked;
+  _EXP_LOCK_IDS.forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el)return;
+    if(locked)el.disabled=true;
+    else if(id==='c-cutoff')el.disabled=!document.getElementById('c-cutoff-on')?.checked;
+    else if(id==='c-tie')el.disabled=!document.getElementById('c-tie-on')?.checked;
+    else el.disabled=false;
+    el.setAttribute('aria-disabled',locked?'true':'false');
+  });
+  // The sample Refresh hits the media APIs the run is using — the server
+  // declines it during a run anyway, so reflect that instead of failing.
+  const rBtn=document.getElementById('btn-sample-refresh');
+  if(rBtn&&!refreshBusy){
+    rBtn.disabled=locked;
+    rBtn.title=locked?'A run is active. Try again when it finishes.':'';
+  }
+  updateCfgButtons();
+}
+window.prOnStatusPoll=function(d){
+  const was=expRunActive;
+  expRunActive=!!(d&&d.run_active);
+  if(was!==expRunActive)_applyExplorerRunLock();
+};
+const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
+function voteFromSlider(){
+  const lv=Number(document.getElementById('s-vot').value);
+  return lv<=0?0:Math.max(1,Math.round(Math.pow(10,lv)));
+}
+function sliderValueFromVotes(v){
+  v=Number(v||0);
+  return v<=0?0:clamp(Math.log10(v),VOTE_LOG_MIN,VOTE_LOG_MAX);
+}
+const htmlEsc=prHtmlEsc;  // shared with Configuration (base.html)
+function num(id,fallback){
+  // Blank must take the fallback: Number('') is 0, which silently turned a
+  // cleared cutoff box into CUTOFF=0 (every rated movie "filtered") and saved
+  // MAX_IMDB_RATING: 0 to the server. Garbage takes the fallback too.
+  return prBlankNumber(id,fallback)??fallback;
+}
+// The full Filtering & Scoring config, one field per rule: BAL (score
+// balance), CUTOFF (max IMDb rating or null), UNPLAYED (skip unplayed),
+// GRACE (grace period days), JF_FAV (protect Jellyfin favorites), TIE
+// (near-tie window width in points, or null = file size optimization off).
+// All of them preview live; Save persists them all.
+function canonCfg(c){
+  c=c||{};
+  let cutoff=null;
+  if(c.CUTOFF!=null&&c.CUTOFF!==''){
+    const n=Number(c.CUTOFF);
+    if(Number.isFinite(n))cutoff=clamp(Math.round(n*10)/10,0,10);
+  }
+  let tie=null;
+  if(c.TIE!=null&&c.TIE!==''){
+    const n=Number(c.TIE);
+    if(Number.isFinite(n))tie=clamp(Math.round(n*10)/10,0.5,25);
+  }
+  return{
+    BAL:clamp(Math.round(Number(c.BAL ?? 50)||0),0,100),
+    CUTOFF:cutoff,
+    UNPLAYED:!!c.UNPLAYED,
+    GRACE:Math.max(0,Math.round(Number(c.GRACE)||0)),
+    JF_FAV:!!c.JF_FAV,
+    TIE:tie,
+    STALE:clamp(Math.round(Number(c.STALE ?? 36)||36),1,120),
+  };
+}
+function readCfg(){
+  const cutoffOn=!!document.getElementById('c-cutoff-on')?.checked;
+  const tieOn=!!document.getElementById('c-tie-on')?.checked;
+  const jfEl=document.getElementById('c-jf-fav'); // absent when Jellyfin is off
+  return canonCfg({
+    BAL:num('c-bal',50),
+    CUTOFF:cutoffOn?num('c-cutoff',7.5):null,
+    UNPLAYED:!!document.getElementById('c-unplayed')?.checked,
+    GRACE:num('c-grace',0),
+    JF_FAV:jfEl?jfEl.checked:!!(savedCfg&&savedCfg.JF_FAV),
+    TIE:tieOn?num('c-tie',2):null,
+    STALE:num('c-stale',36),
+  });
+}
+function cfgFromServer(cfg){
+  return canonCfg({
+    BAL:cfg.SCORE_BALANCE ?? 50,
+    CUTOFF:cfg.MAX_IMDB_RATING ?? null,
+    UNPLAYED:cfg.SKIP_UNPLAYED_MOVIES,
+    GRACE:cfg.GRACE_PERIOD_DAYS,
+    JF_FAV:cfg.PROTECT_JELLYFIN_FAVORITES,
+    TIE:cfg.NEAR_TIE_PTS===undefined?2:cfg.NEAR_TIE_PTS,
+    STALE:cfg.MAX_STALENESS_MONTHS===undefined?36:cfg.MAX_STALENESS_MONTHS,
+  });
+}
+function cfgPayload(c){
+  c=canonCfg(c);
+  return{
+    SCORE_BALANCE:c.BAL,
+    MAX_IMDB_RATING:c.CUTOFF,
+    SKIP_UNPLAYED_MOVIES:c.UNPLAYED,
+    GRACE_PERIOD_DAYS:c.GRACE,
+    PROTECT_JELLYFIN_FAVORITES:c.JF_FAV,
+    NEAR_TIE_PTS:c.TIE,
+    MAX_STALENESS_MONTHS:c.STALE,
+  };
+}
+function cfgEq(a,b){
+  a=canonCfg(a);b=canonCfg(b);
+  return a.BAL===b.BAL&&a.CUTOFF===b.CUTOFF&&a.UNPLAYED===b.UNPLAYED
+    &&a.GRACE===b.GRACE&&a.JF_FAV===b.JF_FAV&&a.TIE===b.TIE&&a.STALE===b.STALE;
+}
+function setFormFromCfg(c){
+  c=canonCfg(c);
+  const set=(id,fn)=>{const el=document.getElementById(id);if(el)fn(el);};
+  set('c-bal',el=>el.value=c.BAL);
+  set('c-cutoff-on',el=>el.checked=c.CUTOFF!=null);
+  // Disabled optional fields keep their last entered value visible. The
+  // run lock wins over per-field enablement (a load during an active run
+  // must not re-enable the inputs the lock just froze).
+  set('c-cutoff',el=>{if(c.CUTOFF!=null)el.value=c.CUTOFF;else if(expLastCutoff!=null)el.value=expLastCutoff;el.disabled=c.CUTOFF==null||expRunActive;});
+  set('c-unplayed',el=>el.checked=c.UNPLAYED);
+  set('c-grace',el=>el.value=c.GRACE);
+  set('c-jf-fav',el=>el.checked=c.JF_FAV);
+  set('c-tie-on',el=>el.checked=c.TIE!=null);
+  set('c-tie',el=>{if(c.TIE!=null)el.value=c.TIE;else if(expLastTie!=null)el.value=expLastTie;el.disabled=c.TIE==null||expRunActive;});
+  set('c-stale',el=>el.value=c.STALE);
+  _expValidateAll();
+}
+// ── Field validation: red flag on blur with a blank or out-of-range value ──
+// An enabled field needs a real value — blank is invalid, not a silent
+// default, so a cleared cutoff can never save as 7.5. A disabled field is
+// never flagged (unchecking is the off switch).
+const _expFieldRules={
+  'c-cutoff':{on:()=>!!document.getElementById('c-cutoff-on')?.checked&&!document.getElementById('c-cutoff')?.disabled,ok:v=>v>0&&v<=10},
+  'c-tie':{on:()=>!!document.getElementById('c-tie-on')?.checked&&!document.getElementById('c-tie')?.disabled,ok:v=>v>=0.5&&v<=25},
+  'c-stale':{on:()=>!document.getElementById('c-stale')?.disabled,ok:v=>v>=1&&v<=120},
+};
+function _expFieldInvalid(id){
+  const rule=_expFieldRules[id];
+  if(!rule||!rule.on())return false;
+  const v=prNumOrNull(prFieldRaw(id));
+  return v===null||!rule.ok(v);
+}
+function _expValidateField(id){
+  const invalid=_expFieldInvalid(id);
+  const el=document.getElementById(id);
+  const card=el?.closest('.filter-score-card');
+  // Always armed; focus only suppresses NEW flags (see prInvalidVisible).
+  const visible=prInvalidVisible(invalid,true,el,card);
+  prApplyFieldFlag(card,document.getElementById(id+'-error'),el,visible);
+  return !invalid;
+}
+function _expValidateAll(){
+  return ['c-cutoff','c-tie','c-stale'].map(_expValidateField).every(Boolean);
+}
+function _expAnyFieldInvalid(){
+  return ['c-cutoff','c-tie','c-stale'].some(_expFieldInvalid);
+}
+let _filterTableTimer=null;
+function onExpFilterInput(){
+  // Live preview: the ~100-row table is debounced. The single-movie panel
+  // recomputes immediately — Max staleness feeds the score, so a stale panel
+  // would show a different Retention than the freshly re-scored rows.
+  appliedCfg=readCfg();
+  _expValidateAll();
+  updateCfgButtons();
+  go();
+  clearTimeout(_filterTableTimer);
+  _filterTableTimer=setTimeout(renderT,90);
+}
+function onExpCutoffToggle(){
+  const on=!!document.getElementById('c-cutoff-on')?.checked;
+  const inp=document.getElementById('c-cutoff');
+  if(inp)inp.disabled=!on;
+  onExpFilterInput();
+}
+function onExpTieToggle(){
+  const on=!!document.getElementById('c-tie-on')?.checked;
+  const inp=document.getElementById('c-tie');
+  if(inp)inp.disabled=!on;
+  onExpFilterInput();
+}
+function onExpBalanceInput(){
+  // Live preview, nothing saved until Save. Single-movie breakdown is cheap
+  // (tracks the drag); the ~100-row table is debounced to the drag's end.
+  appliedCfg=readCfg();
+  updateCfgButtons();
+  go();
+  clearTimeout(_liveTableTimer);
+  _liveTableTimer=setTimeout(renderT,90);
+}
+let _liveTableTimer=null;
+function updateCfgButtons(){
+  const cur=readCfg();
+  const dirty=savedCfg?!cfgEq(cur,savedCfg):false;
+  const invalid=_expAnyFieldInvalid();
+  const saveBtn=document.getElementById('btn-cfg-save');
+  const revertBtn=document.getElementById('btn-cfg-revert');
+  if(saveBtn){
+    saveBtn.disabled=cfgSaving||!dirty||expRunActive||invalid;
+    saveBtn.textContent=cfgSaving?'Saving…':'Save';
+    saveBtn.classList.toggle('btn-busy',cfgSaving);
+    saveBtn.title=expRunActive?'A run is active. Try again when it finishes.':(invalid?'Fix the highlighted fields first.':'');
+  }
+  if(revertBtn){
+    // An invalid value may canonicalize back to the saved one (not "dirty"),
+    // but Revert must still be able to restore the field.
+    revertBtn.disabled=cfgSaving||(!dirty&&!invalid)||expRunActive;
+    revertBtn.classList.toggle('btn-revert-active',(dirty||invalid)&&!cfgSaving&&!expRunActive);
+    revertBtn.title=expRunActive?'A run is active. Try again when it finishes.':'';
+  }
+}
+function revertCfg(){
+  if(cfgSaving||!savedCfg)return;
+  setFormFromCfg(savedCfg);
+  appliedCfg=canonCfg(savedCfg);
+  all();
+  updateCfgButtons();
+}
+async function saveCfgToConfig(){
+  // Returns true when the saved config now matches the form (including the
+  // no-op case where nothing was dirty), false when the save failed — callers
+  // like doRefresh() use it to decide whether to proceed.
+  const cur=readCfg();
+  if(cfgSaving)return false;
+  if(expRunActive){
+    if(typeof showToast==='function')showToast('A run is active — save again when it finishes.','warning');
+    return false;
+  }
+  if(!_expValidateAll()){
+    if(typeof showToast==='function')showToast('Fix the highlighted fields first.','warning');
+    return false;
+  }
+  if(savedCfg&&cfgEq(cur,savedCfg))return true;
+  appliedCfg=cur;
+  all();
+  cfgSaving=true;
+  updateCfgButtons();
+  let ok=false;
+  try{
+    // Text still sitting in a disabled optional field rides along so the
+    // server remembers it (shown greyed out; survives restarts).
+    const payload=cfgPayload(cur);
+    if(cur.CUTOFF==null){
+      const v=num('c-cutoff',null);
+      if(v!=null&&v>0&&v<=10)payload._MAX_IMDB_RATING_LAST=v;
+    }
+    if(cur.TIE==null){
+      const v=num('c-tie',null);
+      if(v!=null&&v>=0.5&&v<=25)payload._NEAR_TIE_PTS_LAST=v;
+    }
+    const r=await fetch('/api/score-config',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok||!data.ok)throw new Error(data.error||'Could not save scoring config.');
+    if(data.config){
+      // The response is authoritative: null means an enabled save cleared
+      // the memory, so mirror it rather than keeping a stale value.
+      expLastCutoff=data.config._MAX_IMDB_RATING_LAST??null;
+      expLastTie=data.config._NEAR_TIE_PTS_LAST??null;
+    }
+    savedCfg=cfgFromServer(data.config||cfgPayload(cur));
+    setFormFromCfg(savedCfg);
+    appliedCfg=canonCfg(savedCfg);
+    all();
+    ok=true;
+    if(typeof showToast==='function')showToast('Filtering & Scoring saved','success');
+  }catch(err){
+    if(typeof showToast==='function')showToast(err.message||String(err),'danger');
+  }finally{
+    cfgSaving=false;
+    updateCfgButtons();
+  }
+  return ok;
+}
+
+function readPruneGb(){
+  const v=Number(document.getElementById('over-gb').value);
+  return Number.isFinite(v)?Math.max(0,v):0;
+}
+let _pruneTimer=null;
+function onPruneTargetInput(){
+  // Live: the prune plan follows the typed target (debounced so each
+  // keystroke doesn't rebuild the table). Simulation only — never saved.
+  clearTimeout(_pruneTimer);
+  _pruneTimer=setTimeout(()=>{appliedPruneGb=readPruneGb();renderT();},180);
+}
+function gcfg(){
+  if(!appliedCfg)appliedCfg=readCfg();
+  return appliedCfg;
+}
+// ── Retention scoring — EXACT mirror of the engine's compute_retention_score ──
+function voteConfidence(votes){
+  if(votes===null||votes===undefined)return SCORING.VOTE_CONF_UNKNOWN;
+  const v=Math.floor(Number(votes)||0);
+  const floor=SCORING.VOTE_CONF_FLOOR;
+  if(v<=0)return floor;
+  return Math.min(1,floor+(1-floor)*(Math.log10(v)/SCORING.VOTE_CONF_FULL_LOG10));
+}
+function balanceWeights(bal){
+  // Mirror of the engine's score_balance_weights(): linear, weights sum to 1.
+  // Center (50) = even 50/50; ends = pure history / pure IMDb.
+  const t=clamp(Number(bal??50),0,100)/100;
+  const q=t;  // linear: quality = balance/100
+  return{h:1-q,q};
+}
+function imdbInUse(cfg){
+  // Mirror of engine.imdb_dataset_needed(): IMDb has a say only when the dial
+  // gives it weight or a rating cutoff is set. At 100% watch history with no
+  // cutoff, no-IMDb-data is not a skip reason and the rating tiebreak is off.
+  cfg=cfg||gcfg();
+  return balanceWeights(cfg.BAL).q>0 || cfg.CUTOFF!=null;
+}
+function retentionBreakdown(m,cfg){
+  // Both sides are normalized 0–100, then blended by the balance weights.
+  // Breakdown values are already weighted, so they sum to the 0–100 score.
+  const w=balanceWeights(cfg.BAL);
+  const b={};
+  const plays=Math.max(0,Math.floor(m.playCount||0));
+  b.usage=SCORING.USAGE_MAX_PTS*Math.min(1,Math.log1p(plays)/Math.log1p(SCORING.USAGE_FULL_PLAYS))*w.h;
+  // Mirror of the engine: recency uses last-played, falling back to added when
+  // never watched — so a recently-added-but-unwatched movie still earns recency.
+  const users=Math.max(0,Math.floor(m.users||0));
+  const lpd=(m.lastPlayedDays!=null)?m.lastPlayedDays:null;
+  const recDays=(lpd!=null)?lpd:((m.addedDays!=null)?m.addedDays:null);
+  const staleScale=(Number(gcfg().STALE)||SCORING.RECENCY_DEFAULT_MONTHS)/SCORING.RECENCY_DEFAULT_MONTHS;
+  // Distinct watchers slow the decay (mirror of the engine): each unique user
+  // stretches the effective staleness window (recency tiers + shelf tail).
+  const decayMult=Math.min(SCORING.USER_DECAY_MAX_MULT,1+SCORING.USER_DECAY_PER_USER*users);
+  const effScale=staleScale*decayMult;
+  let rec=0;
+  if(recDays!=null){
+    for(const [maxDays,pts] of SCORING.RECENCY_TIERS){ if(recDays<=maxDays*effScale){rec=pts;break;} }
+  }
+  b.recency=rec*w.h;
+  b.multi_user=Math.min(SCORING.MULTI_USER_PTS*users,SCORING.MULTI_USER_MAX_PTS)*w.h;
+  b.imdb=(Number.isFinite(m.rating)&&m.rating>0)
+    ?Math.min(m.rating*10*voteConfidence(m.votes>0?m.votes:0),100)*w.q:0;
+  // Soft shelf (mirror of the engine): continues the recency curve past its last
+  // tier (the staleness cliff), reading the SAME recDays as the tiers above.
+  // Tent weight (w.h * ramp): 0 at both dial ends, peaks mid-blend.
+  let shelfPts=0;
+  if(recDays!=null){
+    const cliffDays=SCORING.RECENCY_TIERS[SCORING.RECENCY_TIERS.length-1][0]*effScale;
+    const spanDays=cliffDays*SCORING.SHELF_SPAN_MULT;
+    if(recDays>cliffDays&&spanDays>0){
+      const frac=1-(recDays-cliffDays)/spanDays;
+      shelfPts=SCORING.SHELF_MAX_PTS*Math.max(0,Math.min(1,frac));
+    }
+  }
+  const shelfRamp=SCORING.SHELF_RAMP_FULL_Q>0?Math.min(1,w.q/SCORING.SHELF_RAMP_FULL_Q):1;
+  b.shelf=shelfPts*w.h*shelfRamp;
+  const retention=b.usage+b.recency+b.multi_user+b.imdb+b.shelf;
+  return{breakdown:b,retention};
+}
+// Near-tie window width in points — the File size optimization setting
+// (TIE; null when disabled). Mirrors the engine's NEAR_TIE_PTS.
+function tieWindow(){
+  const w=Number(gcfg().TIE);
+  return Number.isFinite(w)&&w>0?w:null;
+}
+function scoreOne(m,cfg){
+  // Score AND eligibility both follow the preview config, so the table shows
+  // exactly what a run with these settings would skip. Checks mirror the
+  // engine's skip order: protected collection → Jellyfin favorite → no IMDb
+  // data → IMDb rating cutoff → grace period → unplayed.
+  const sc={...m,...retentionBreakdown(m,cfg)};
+  if(m.protected)sc.status='protected';
+  else if(cfg.JF_FAV&&m.favorite)sc.status='favorite';
+  else if(imdbInUse(cfg)&&(m.rating==null||!(m.votes>0)))sc.status='nodata';
+  else if(cfg.CUTOFF!=null&&m.rating>cfg.CUTOFF)sc.status='cutoff';
+  else if(cfg.GRACE>0&&m.addedDays!=null&&m.addedDays<cfg.GRACE)sc.status='grace';
+  else if(cfg.UNPLAYED&&!(m.playCount>0||m.lastPlayedDays!=null))sc.status='unplayed';
+  else sc.status='ok';
+  return sc;
+}
+const FILTER_LABELS={protected:'protected',favorite:'favorite',nodata:'no IMDb data',cutoff:'rating cutoff',grace:'grace period',unplayed:'unplayed'};
+const FILTER_REASONS={
+  protected:'In a protected collection — never deleted',
+  favorite:'A Jellyfin user favorited this movie',
+  nodata:'No IMDb rating or votes found — not enough data to judge it',
+  cutoff:'Above the IMDb rating cutoff',
+  grace:'Within the grace period',
+  unplayed:'Unplayed movies are skipped',
+};
+function fmtV(n){return n>=1e6?(n/1e6).toFixed(1)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':n.toLocaleString();}
+function fmtE(m){return m<1?'< 1 mo':m<2?'1 mo ago':m<12?Math.round(m)+' mo ago':m<24?'1 yr ago':Math.floor(m/12)+'+ yr ago';}
+function scC(s){return s<10?'var(--text-danger)':s<40?'var(--text-warning)':s<80?'var(--text-secondary)':'var(--text-accent)';}
+function scF(s){return s<10?'var(--bg-danger)':s<40?'var(--bg-warning)':s<80?'var(--bg-neutral)':'var(--bg-accent)';}
+function retBarPct(s){return clamp(s,2,100);}
+function deletionCompare(a,b){
+  // Engine's _deletion_sort_key: score ascending; exact ties break
+  // never-watched first, then (only when IMDb is in use) lowest IMDb rating
+  // first, oldest added, larger files first, title.
+  if(a.retention!==b.retention)return a.retention-b.retention;
+  // Watched = any play evidence, count OR timestamp — same as the engine.
+  const wa=(a.playCount>0||a.lastPlayedDays!=null)?1:0, wb=(b.playCount>0||b.lastPlayedDays!=null)?1:0;
+  if(wa!==wb)return wa-wb;
+  // Lowest IMDb rating deletes first; missing rating ranks highest (kept).
+  // Disabled at 100% watch history (no cutoff) so ties stay pure oldest-first.
+  if(imdbInUse()){
+    const ra=(a.rating==null)?10:a.rating, rb=(b.rating==null)?10:b.rating;
+    if(ra!==rb)return ra-rb;
+  }
+  // days-since-added: larger = older = deletes first (missing = oldest)
+  const aa=(a.addedDays==null)?1e9:a.addedDays, ab=(b.addedDays==null)?1e9:b.addedDays;
+  if(aa!==ab)return ab-aa;
+  if((a.sizeGb||0)!==(b.sizeGb||0))return (b.sizeGb||0)-(a.sizeGb||0);
+  return a.title.localeCompare(b.title);
+}
+function keyLess(a,b){
+  for(let i=0;i<a.length;i++){
+    const d=typeof a[i]==='string'?a[i].localeCompare(b[i]):a[i]-b[i];
+    if(d)return d<0;
+  }
+  return false;
+}
+// Engine's _pop_from_tie_group: if any single member covers the remaining
+// target, the lowest-scoring one that covers it goes; else largest first.
+function pickFromTieGroup(group,remainingGb){
+  let bestI=-1,best=null;
+  for(let i=0;i<group.length;i++){
+    const c=group[i];
+    if((c.sizeGb||0)>=remainingGb){
+      const key=[c.retention,c.sizeGb||0,c.title];
+      if(!best||keyLess(key,best)){best=key;bestI=i;}
+    }
+  }
+  if(bestI<0){
+    for(let i=0;i<group.length;i++){
+      const c=group[i];
+      const key=[-(c.sizeGb||0),c.retention,c.title];
+      if(!best||keyLess(key,best)){best=key;bestI=i;}
+    }
+  }
+  return group.splice(bestI,1)[0];
+}
+// Engine's _pop_next_deletion: strict score order until the movies near-tied
+// with the head hold more space than what is left to free — only some of that
+// group needs to go, so it activates and pickFromTieGroup takes over.
+function popNextDeletion(pending,tieGroup,remainingGb){
+  if(tieGroup.length){
+    if(!(remainingGb>0))return tieGroup.shift();
+    return pickFromTieGroup(tieGroup,remainingGb);
+  }
+  const win=tieWindow();
+  if(win!=null&&remainingGb>0&&pending.length>1){
+    const hs=pending[0].retention;
+    let j=0,total=0;
+    while(j<pending.length&&pending[j].retention-hs<=win){total+=pending[j].sizeGb||0;j++;}
+    if(j>=2&&total>remainingGb){
+      tieGroup.push(...pending.splice(0,j));
+      return pickFromTieGroup(tieGroup,remainingGb);
+    }
+  }
+  return pending.shift();
+}
+function deletionSequence(rows,targetGb){
+  // Replay the engine's deletion loop over all eligible rows — the order a
+  // run with this target would delete in. `boundary` is the one tie group
+  // the target lands inside (the table's only bracket); the prune plan is
+  // the prefix that covers the target.
+  const pending=rows.filter(m=>m.status==='ok').slice().sort(deletionCompare);
+  const tieGroup=[];
+  const order=[];
+  const boundary=new Set();
+  const plan={ids:new Set(),freed:0,count:0,complete:targetGb<=0};
+  let freed=0;
+  while(pending.length||tieGroup.length){
+    const groupWasEmpty=tieGroup.length===0;
+    const m=popNextDeletion(pending,tieGroup,targetGb-freed);
+    if(groupWasEmpty&&tieGroup.length){
+      boundary.add(m.id);
+      tieGroup.forEach(x=>boundary.add(x.id));
+    }
+    const pruned=targetGb>0&&freed<targetGb;
+    freed+=m.sizeGb||0;
+    order.push(m);
+    if(pruned){plan.ids.add(m.id);plan.count++;plan.freed=freed;}
+  }
+  if(targetGb>0)plan.complete=plan.freed>=targetGb;
+  return {order,plan,boundary};
+}
+function stackEligibleOn(){
+  const el=document.getElementById('stack-eligible');
+  return !!(el&&el.checked);
+}
+function eligibleGroupCompare(a,b){
+  if(!stackEligibleOn())return 0;
+  const ea=a.status==='ok',eb=b.status==='ok';
+  if(ea!==eb)return ea?-1:1;
+  return 0;
+}
+function statusSortText(m,plan){
+  if(plan&&plan.ids&&plan.ids.has(m.id))return '0-pruned';
+  if(m.status==='ok')return '1-eligible';
+  return '2-filtered-'+m.status;
+}
+function columnCompare(a,b,col,plan,rank){
+  if(col==='title')return a.title.localeCompare(b.title);
+  // '#' = the real deletion order (strict score order plus the target-aware
+  // pick where the over-headroom target lands in a near-tie group);
+  // 'Retention' = the raw score alone.
+  if(col==='order'){
+    const ra=rank&&rank.get(a.id),rb=rank&&rank.get(b.id);
+    if(ra!=null&&rb!=null)return ra-rb;
+    if(ra!=null||rb!=null)return ra!=null?-1:1;
+    return deletionCompare(a,b);
+  }
+  if(col==='score')return (a.retention-b.retention)||a.title.localeCompare(b.title);
+  if(col==='status')return statusSortText(a,plan).localeCompare(statusSortText(b,plan));
+  let va,vb;
+  // Missing years are stored as the display string '—'; comparing that against
+  // numbers is inconsistent (both orders return 1) and scrambles the sort.
+  if(col==='year'){va=Number(a.year)||0;vb=Number(b.year)||0;}
+  else if(col==='rating'){va=Number.isFinite(a.rating)?a.rating:-1;vb=Number.isFinite(b.rating)?b.rating:-1;}
+  else if(col==='votes'){va=a.votes||0;vb=b.votes||0;}
+  else if(col==='plays'){va=a.playCount||0;vb=b.playCount||0;}
+  else if(col==='users'){va=a.users||0;vb=b.users||0;}
+  else if(col==='size'){va=a.sizeGb;vb=b.sizeGb;}
+  else if(col==='added'){va=a.addedDays??1e9;vb=b.addedDays??1e9;}
+  else{va=(a.lastPlayedDays!=null)?a.lastPlayedDays:1e9;vb=(b.lastPlayedDays!=null)?b.lastPlayedDays:1e9;}
+  return va===vb?0:va<vb?-1:1;
+}
+function renderT(){
+  const cfg=gcfg();
+  if(!poolState.loaded){
+    const msg=htmlEsc(poolState.message||'Loading library sample…');
+    // The table is wider than the phone screen, so a plain centered cell would
+    // center across the swipe width. Pin the message to the scroll viewport
+    // instead: a sticky span sized to the wrapper stays centered in view.
+    const tbody=document.getElementById('mtbody');
+    const wrapW=Math.max(0,(tbody.closest('.twrap')?.clientWidth||0)-2);
+    const inner=poolState.scanning?`<span class="pending-ellipsis">${msg}</span>`:msg;
+    tbody.innerHTML=
+      `<tr><td colspan="12" style="text-align:left;padding:1.1rem 0"><span class="tbl-msg" style="width:${wrapW}px">${inner}</span></td></tr>`;
+    document.getElementById('tstat').textContent='';
+    const ps0=document.getElementById('prunestat');
+    if(ps0){ps0.textContent='';ps0.className='prunestat';}
+    return;
+  }
+  // Render everything the last Refresh pulled — the Movies dropdown picks the
+  // batch size for the NEXT Refresh, it never trims the current table.
+  let rows=raw.map(m=>scoreOne(m,cfg));
+  // # rank = the exact order a run with the current over-headroom target
+  // would delete in.
+  const seq=deletionSequence(rows,appliedPruneGb);
+  const plan=seq.plan;
+  const rank=new Map();
+  seq.order.forEach((m,i)=>rank.set(m.id,i+1));
+  rows.sort((a,b)=>{
+    const groupCmp=eligibleGroupCompare(a,b);
+    if(groupCmp)return groupCmp;
+    const cmp=columnCompare(a,b,sc,plan,rank);
+    return sd*cmp;
+  });
+  const elig=rows.filter(m=>m.status==='ok').length;
+  const filtered=rows.length-elig;
+  const tstat=document.getElementById('tstat');
+  tstat.textContent=elig+' eligible · '+filtered+' filtered';
+  // An unrated sample previewed against IMDb-weighted scoring filters every row
+  // as "no IMDb data" — reads as broken. If the dataset is on disk, silently
+  // rebuild to annotate ratings; the banner is only for the never-downloaded case.
+  const note=document.getElementById('sample-imdb-note');
+  if(note){
+    const unrated=raw.length>0&&raw.every(m=>!(Number.isFinite(m.rating)&&m.rating>0));
+    if(_imdbHoldActive){
+      // Standing state, not a one-shot toast: automatic rebuilds silently
+      // decline while the hold is latched, and a user in another browser (or
+      // who missed the toast) had no page that said so.
+      note.style.display='';
+      note.textContent='Sample rebuilds are on hold — the IMDb dataset could not be downloaded. '
+        +'Add title.ratings.tsv.gz to the config folder, or press Refresh to retry.';
+    }else if(unrated&&imdbInUse(cfg)&&poolImdbOnDisk&&!_autoRatingsTried&&!refreshBusy&&!expRunActive){
+      // !refreshBusy: renderT also runs inside doRefresh (via loadPool); a
+      // reload there would no-op against the busy guard while burning the
+      // one-shot flag. doRefresh re-renders when done, so an unrated pool
+      // still gets its shot.
+      _autoRatingsTried=true;   // one-shot: a pool that stays unrated after the reload won't loop
+      note.style.display='';
+      note.textContent='IMDb dataset found on the server — reloading the library sample with ratings…';
+      doRefresh(false);
+    }else if(unrated&&imdbInUse(cfg)&&!poolImdbOnDisk){
+      note.style.display='';
+      // Only claim "your scoring skips the download" when that is actually
+      // the SAVED state — after a failed download with IMDb-weighted saved
+      // scoring, the right move is Refresh (retries the download), not the
+      // balance slider.
+      note.textContent='This sample has no IMDb ratings — the dataset has never been downloaded'
+        +(savedCfg&&!imdbInUse(savedCfg)
+          ?' (100% watch-history scoring skips it). Raise the IMDb balance or set a cutoff, then Save to download and re-score.'
+          :'. Press Refresh to retry, or add the dataset to the config folder.');
+    }else{
+      note.style.display='none';
+    }
+  }
+  const ps=document.getElementById('prunestat');
+  if(ps){
+    if(appliedPruneGb>0){
+      ps.textContent=plan.count+' row'+(plan.count===1?'':'s')+' pruned · '+plan.freed.toFixed(1)+' / '+appliedPruneGb.toFixed(1)+' GB'+(plan.complete?'':' · not enough eligible space');
+      ps.className='prunestat active';
+    }else{
+      ps.textContent='No prune target';ps.className='prunestat';
+    }
+  }
+  // One bracket: the tie group the target lands inside, drawn only while
+  // sorted by # (its members are contiguous in that order).
+  const tieMarks=new Array(rows.length).fill('');
+  if(sc==='order'&&seq.boundary.size>=2){
+    let i0=-1,i1=-1;
+    rows.forEach((m,i)=>{if(seq.boundary.has(m.id)){if(i0<0)i0=i;i1=i;}});
+    if(i1>i0){
+      tieMarks[i0]='tie-start';
+      for(let k=i0+1;k<i1;k++)tieMarks[k]='tie-mid';
+      tieMarks[i1]='tie-end';
+    }
+  }
+  document.getElementById('mtbody').innerHTML=rows.map((m,i)=>{
+    const pruned=plan.ids.has(m.id);
+    const bh=pruned
+      ?`<span class="table-status pruned">pruned</span>`
+      :(m.status==='ok'
+        ?`<span class="table-status ok">eligible</span>`
+        :`<span class="table-status filtered" title="${htmlEsc(FILTER_REASONS[m.status]||'Filtered')}">filtered — ${htmlEsc(FILTER_LABELS[m.status]||'')}</span>`);
+    return`<tr class="movie-row ${selectedMovieId===m.id?'selected ':''}${m.status!=='ok'?'fx ':''}${pruned?'prune ':''}${tieMarks[i]}" data-mid="${htmlEsc(m.id)}" tabindex="0" role="button" aria-label="Load movie facts for ${htmlEsc(m.title)}" onclick="selectMovieById(this.dataset.mid)" onkeydown="selectMovieOnKey(event,this.dataset.mid)">
+<td class="ordcell">${m.status==='ok'?rank.get(m.id):'—'}</td>
+<td style="max-width:175px;overflow:hidden;text-overflow:ellipsis">${htmlEsc(m.title)}</td>
+<td style="color:var(--text-secondary)">${m.year}</td>
+<td>${Number.isFinite(m.rating)?m.rating.toFixed(1):'—'}</td>
+<td style="color:var(--text-secondary)">${m.votes>0?fmtV(m.votes):'—'}</td>
+<td style="color:var(--text-secondary)">${m.playCount||0}</td>
+<td style="color:var(--text-secondary)">${m.users||0}</td>
+<td style="color:var(--text-secondary)">${m.lastPlayedDays!=null?fmtE(m.lastPlayedDays/30):'never'}</td>
+<td style="color:var(--text-secondary)">${m.addedDays!=null?fmtE(m.addedDays/30):'—'}</td>
+<td style="color:var(--text-secondary)">${m.sizeGb.toFixed(1)} GB</td>
+<td><div class="scbar"><div class="scfill" style="width:${retBarPct(m.retention).toFixed(0)}%;background:${scF(m.retention)}"></div><div class="sctxt" style="color:${scC(m.retention)}">${m.retention.toFixed(1)}</div></div></td>
+<td>${bh}</td></tr>`;
+  }).join('');
+}
+function setSingleMovieFromMovie(m){
+  if(!m)return;
+  const set=(id,val)=>{
+    const el=document.getElementById(id);
+    if(el)el.value=val;
+  };
+  set('s-rat',Number.isFinite(m.rating)?clamp(m.rating,0,10):0);
+  set('s-vot',sliderValueFromVotes(m.votes));
+  set('s-play',clamp(m.playCount||0,0,20));
+  // Slider = the movie's recency age on one timeline: last-watched if played,
+  // else its added date — so a clicked movie reproduces its real recency + shelf.
+  set('s-lp',clamp(Math.round(m.lastPlayedDays!=null?m.lastPlayedDays:(m.addedDays!=null?m.addedDays:60)),0,2920));
+  set('s-usr',clamp(m.users||0,0,5));
+  go();
+}
+function selectMovieById(id){
+  const m=raw.find(x=>x.id===id);
+  if(!m)return;
+  // renderT() rebuilds tbody.innerHTML, which drops keyboard focus to <body>
+  // — a keyboard user would have to Tab back through the whole page after
+  // every selection. Restore focus to the same row in the fresh DOM.
+  const hadFocus=!!(document.activeElement&&document.activeElement.classList
+    &&document.activeElement.classList.contains('movie-row'));
+  selectedMovieId=id;
+  setSingleMovieFromMovie(m);
+  renderT();
+  if(hadFocus)document.querySelector(`.movie-row[data-mid="${CSS.escape(id)}"]`)?.focus();
+}
+function selectMovieOnKey(e,id){
+  if(e.key==='Enter'||e.key===' '){
+    e.preventDefault();
+    selectMovieById(id);
+  }
+}
+function sb(col){
+  if(sc===col)sd*=-1;else{sc=col;sd=1;}
+  const map={order:'th-o',title:'th-t',year:'th-y',rating:'th-r',votes:'th-v',plays:'th-p',users:'th-u',eng:'th-e',added:'th-a',size:'th-z',score:'th-s',status:'th-x'};
+  const nm={order:'#',title:'Title',year:'Year',rating:'IMDB',votes:'Votes',plays:'Plays',users:'Users',eng:'Last watched',added:'Added',size:'Size',score:'Retention',status:'Eligibility'};
+  Object.keys(map).forEach(k=>{
+    const el=document.getElementById(map[k]);
+    el.className=sc===k?'sc':'';
+    el.textContent=nm[k]+(sc===k?(sd===1?' ↑':' ↓'):'');
+  });
+  renderT();
+}
+function syncMetricRangeFill(el){
+  const min=Number(el.min||0),max=Number(el.max||100),val=Number(el.value||0);
+  const pct=max>min?clamp(((val-min)/(max-min))*100,0,100):0;
+  el.style.setProperty('--range-progress',pct+'%');
+}
+function syncMetricRangeFills(){
+  document.querySelectorAll('.metric-range').forEach(syncMetricRangeFill);
+}
+// ── Score composition pie ────────────────────────────────────────────────────
+// One 0–100 circle in three parts: earned watch-history, earned IMDb, and the
+// unearned remainder (the blank circle underneath). Wedges run clockwise from
+// 12 o'clock; the viewBox lets the pie scale with its container.
+function _pieWedgePath(cx,cy,r,startFrac,endFrac){
+  const f0=Math.min(startFrac,endFrac), f1=Math.max(startFrac,endFrac);
+  const span=f1-f0;
+  if(span<=0.0005)return '';
+  if(span>=0.9995){ // full circle: two half-arcs (a single 360° arc collapses)
+    return `M ${cx} ${cy-r} A ${r} ${r} 0 1 1 ${cx} ${cy+r} A ${r} ${r} 0 1 1 ${cx} ${cy-r} Z`;
+  }
+  const a0=(f0*360-90)*Math.PI/180, a1=(f1*360-90)*Math.PI/180;
+  const x0=cx+r*Math.cos(a0), y0=cy+r*Math.sin(a0);
+  const x1=cx+r*Math.cos(a1), y1=cy+r*Math.sin(a1);
+  const large=span>0.5?1:0;
+  return `M ${cx} ${cy} L ${x0.toFixed(3)} ${y0.toFixed(3)} A ${r} ${r} 0 ${large} 1 ${x1.toFixed(3)} ${y1.toFixed(3)} Z`;
+}
+function _renderScorePie(histPts,imdbPts){
+  const h=clamp(histPts,0,100)/100, q=clamp(imdbPts,0,100)/100;
+  const earned=Math.min(1,h+q);
+  // Center the earned (colored) wedges on the LEFT (9 o'clock = 0.75), so the
+  // unearned gap sits symmetrically on the right.
+  const start=0.75-earned/2;
+  const hp=document.getElementById('pie-hist'), qp=document.getElementById('pie-imdb');
+  if(hp)hp.setAttribute('d',_pieWedgePath(100,100,90,start,start+h));
+  if(qp)qp.setAttribute('d',_pieWedgePath(100,100,90,start+h,start+earned));
+  const t=(id,txt)=>{const el=document.getElementById(id);if(el)el.textContent=txt;};
+  t('pie-hist-title','Watch history: +'+histPts.toFixed(1)+' of 100');
+  t('pie-imdb-title','IMDb: +'+imdbPts.toFixed(1)+' of 100');
+  t('pie-blank-title','Unearned: '+Math.max(0,100-histPts-imdbPts).toFixed(1)+' of 100');
+}
+
+function go(){
+  syncMetricRangeFills();
+  const cfg=gcfg();
+  const plays=+document.getElementById('s-play').value;
+  const lpDays=+document.getElementById('s-lp').value;
+  const users=+document.getElementById('s-usr').value;
+  const rat=+document.getElementById('s-rat').value;
+  const votes=voteFromSlider();
+
+  document.getElementById('v-play').textContent=plays;
+  document.getElementById('v-lp').textContent=(plays>0?'watched ':'added ')+(lpDays===0?'today':fmtE(lpDays/30));
+  document.getElementById('v-usr').textContent=users;
+  document.getElementById('v-rat').textContent=rat>0?rat.toFixed(1):'unrated';
+  document.getElementById('v-vot').textContent=votes?fmtV(votes):'0';
+  const conf=voteConfidence(votes>0?votes:0);
+  document.getElementById('v-conf').textContent=rat>0
+    ?'Vote confidence: '+(conf*100).toFixed(0)+'% — votes back up the rating, they never protect on their own'
+    :'Unrated movies earn no IMDb points.';
+
+  // One recency timeline: the slider is last-watched when played, or the added
+  // date when never played (added_at and last_played are the same input here).
+  const m={playCount:plays,lastPlayedDays:plays>0?lpDays:null,addedDays:lpDays,users,
+           rating:rat>0?rat:null,votes};
+  const{breakdown:b,retention}=retentionBreakdown(m,cfg);
+  const w=balanceWeights(cfg.BAL);
+  const hPct=Math.round(w.h*100),qPct=Math.round(w.q*100);
+
+  const hist=b.usage+b.recency+b.multi_user+b.shelf;
+  document.getElementById('v-hist').textContent='+'+hist.toFixed(1);
+  document.getElementById('v-hist-weight').textContent=hPct+'% of the score';
+  document.getElementById('v-hist-detail').textContent=
+    'frequency '+b.usage.toFixed(1)+' · recency '+b.recency.toFixed(1)+' · users '+b.multi_user.toFixed(1)
+    +(b.shelf>0.05?' · soft shelf '+b.shelf.toFixed(1):'')
+    +' — out of '+hPct+' max at this balance';
+
+  document.getElementById('v-imdb').textContent='+'+b.imdb.toFixed(1);
+  document.getElementById('v-imdb-weight').textContent=qPct+'% of the score';
+  document.getElementById('v-imdb-detail').textContent=
+    rat>0?('rating '+rat.toFixed(1)+' × 10 × confidence '+(conf*100).toFixed(0)+'% × weight '+qPct+'% — out of '+qPct+' max at this balance')
+         :'unrated — no IMDb points';
+
+  const blank=Math.max(0,100-retention);
+  document.getElementById('v-blank').textContent=blank.toFixed(1);
+  _renderScorePie(hist,b.imdb);
+
+  document.getElementById('v-mix').textContent='history '+hPct+'% + IMDb '+qPct+'%';
+
+  document.getElementById('v-overall').textContent=retention.toFixed(1);
+  const ve=document.getElementById('v-verd');
+  const V=retention<10?['First to go','var(--text-danger)','var(--bg-danger)','var(--border-danger)']:
+           retention<40?['Deletion target','var(--text-warning)','var(--bg-warning)','var(--border-warning)']:
+           retention<80?['Mid-range','var(--text-secondary)','var(--surface-0)','var(--border)']:
+           ['Kept longest','var(--text-accent)','var(--bg-accent)','var(--border-accent)'];
+  ve.textContent=V[0];ve.style.color=V[1];ve.style.background=V[2];ve.style.borderColor=V[3];
+}
+function all(){go();renderT();}
+async function _sampleBuildStatus(){
+  try{
+    return await fetch('/api/score-sample/refresh/status?_='+Date.now(),{cache:'no-store'}).then(r=>r.json());
+  }catch(e){
+    return null;
+  }
+}
+function _showScanning(){
+  poolState={loaded:false,scanning:true,message:'Scanning library'};
+  renderT();
+}
+// Wait for an in-flight sample build to finish — by default with an animated
+// "Scanning library…" row while it works (pass show=false to keep the current
+// table visible instead). Returns the final status, or null on timeout/error.
+async function _waitForSampleBuild(show=true){
+  if(show)_showScanning();
+  let misses=0;
+  for(let i=0;i<600;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    const st=await _sampleBuildStatus();
+    if(!st){
+      // One dropped poll must not abandon a build that's still running —
+      // the caller would present the OLD pool as if it were the fresh one.
+      if(++misses>=5)return null;
+      continue;
+    }
+    misses=0;
+    if(!st.active)return st;
+  }
+  return null;
+}
+async function loadPool(){
+  selectedMovieId=null;
+  poolState={loaded:false,message:'Loading library sample…'};
+  renderT();
+  try{
+    const d=await fetch('/api/score-sample?n=100&_='+Date.now(),{cache:'no-store'}).then(r=>r.json());
+    if(!d||!d.ok){
+      // No pool yet, but a build may already be running (e.g. a monitored
+      // path was just saved) — show the scanning state and load the sample
+      // automatically the moment the build lands.
+      if(d&&d.reason==='no_pool'){
+        const st=await _sampleBuildStatus();
+        if(st&&st.active){
+          await _waitForSampleBuild();
+          return loadPool();
+        }
+      }
+      raw=[];
+      poolState={loaded:false,message:(d&&d.message)||'No library sample available.'};
+      renderT();
+      return;
+    }
+    const now=Date.now()/1000;
+    raw=(d.movies||[]).map((m,i)=>({
+      id:'m'+i+'-'+String(m.title||''),
+      title:m.title||'—',
+      year:m.year||'—',
+      rating:(Number.isFinite(m.rating)&&m.rating>0)?m.rating:null,
+      votes:m.votes||0,
+      playCount:m.plays||0,
+      users:m.users||0,
+      lastPlayedDays:(m.last_played>0)?Math.max(0,(now-m.last_played)/86400):null,
+      addedDays:(m.added_at>0)?Math.max(0,(now-m.added_at)/86400):null,
+      sizeGb:+(m.size_gb||0),
+      protected:!!m.protected,
+      favorite:!!m.favorite,
+    }));
+    poolImdbOnDisk=!!d.imdb_dataset_on_disk;
+    poolState={loaded:true,message:''};
+  }catch(e){
+    raw=[];
+    poolState={loaded:false,message:'Could not load the library sample.'};
+  }
+  renderT();
+}
+// Refresh rebuilds the sample server-side (fresh random batch from the media
+// APIs), then reloads the table; if the rebuild can't start, redraw the
+// existing pool. poolImdbOnDisk: an IMDb dataset exists server-side, so an
+// unrated pool can be annotated by a plain rebuild with no download.
+let refreshBusy=false,poolImdbOnDisk=false,_autoRatingsTried=false,_imdbHoldActive=false;
+async function doRefresh(commitCfg=true){
+  if(refreshBusy)return;
+  if(expRunActive){
+    // The server declines sample builds during a run; say so up front.
+    if(typeof showToast==='function')showToast('A run is active — try refreshing the library sample again when it finishes.','warning');
+    return;
+  }
+  refreshBusy=true;
+  const _rBtn=document.getElementById('btn-sample-refresh');
+  if(_rBtn){_rBtn.disabled=true;_rBtn.classList.add('btn-busy');}
+  selectedMovieId=null;
+  let failMsg=null,imdbFail=false;
+  // The rebuild uses the SAVED config, so commit any pending change first or
+  // Refresh would build with the old balance. Automatic reloads (commitCfg=false)
+  // never save behind the user's back — the dial stays a preview.
+  const _cur=readCfg();
+  if(commitCfg&&savedCfg&&!cfgEq(_cur,savedCfg)){
+    const _saved=await saveCfgToConfig();
+    if(_saved===false){   // save failed or still in flight — don't rebuild
+      // saveCfgToConfig only toasts on a real failure; when it declined
+      // because another save is mid-flight, say so instead of doing nothing.
+      if(cfgSaving&&typeof showToast==='function')showToast('Settings are still saving — press Refresh again in a moment.','info');
+      refreshBusy=false;
+      if(_rBtn){_rBtn.disabled=false;_rBtn.classList.remove('btn-busy');}
+      return;
+    }
+  }
+  try{
+    const n=+document.getElementById('mc').value||10;
+    const start=await fetch('/api/score-sample/refresh',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({n}),
+      cache:'no-store'
+    }).then(r=>r.json());
+    if(start&&(start.active||start.ok)){
+      const st=await _waitForSampleBuild();
+      _imdbHoldActive=!!(st&&st.error_code==='imdb_ratings_unavailable');
+      if(st&&st.ok===false){
+        if(st.error_code==='imdb_ratings_unavailable')imdbFail=true;
+        else if(st.message)failMsg=st.message;
+      }
+    }else if(start&&start.message){
+      failMsg=start.message;
+    }
+  }catch(e){
+    // Network failure: the redraw below shows the OLD batch — without a toast
+    // it looks exactly like a successful refresh.
+    failMsg='Could not reach the server to refresh the sample — showing the previous batch.';
+  }
+  try{await loadPool();}finally{
+    refreshBusy=false;
+    if(_rBtn){_rBtn.disabled=false;_rBtn.classList.remove('btn-busy');}
+  }
+  if(imdbFail){
+    // An explicit Refresh that fails on the IMDb dataset gets the full
+    // setup-steps popup (same as a failed run); the table message above
+    // already explains the state, so no toast on top.
+    if(typeof showImdbHelpModal==='function')showImdbHelpModal();
+  }else if(failMsg){
+    // The rebuild failed; whatever loaded above is the previous batch (or nothing).
+    if(typeof showToast==='function')showToast(failMsg,'warning');
+    if(!poolState.loaded){poolState={loaded:false,message:failMsg};renderT();}
+  }
+  // Re-render once with the busy flag cleared: the auto-annotate branch in
+  // renderT deliberately skips while a refresh is in flight, so give it one
+  // evaluation against the final pool state.
+  renderT();
+}
+async function initPool(){
+  await loadPool();
+  // A rebuild may already be running while an older batch is on screen (e.g.
+  // Refresh pressed in another tab) — swap in the new batch when it lands.
+  // The same status read also reveals a latched IMDb-download hold, which
+  // renders as a standing note instead of relying on a one-shot toast.
+  const st=await _sampleBuildStatus();
+  if(st&&!st.active&&st.error_code==='imdb_ratings_unavailable'){
+    _imdbHoldActive=true;
+    renderT();
+  }
+  if(poolState.loaded&&st&&st.active){
+    await _waitForSampleBuild(false);
+    await loadPool();
+  }
+}
+appliedCfg=readCfg();
+initPool();go();
+updateCfgButtons();
+_applyExplorerRunLock();   // server-rendered run state; the status poll keeps it live
+// Sortable column headers are click-only in the markup — make them reachable
+// and operable from the keyboard too.
+document.querySelectorAll('thead th[onclick]').forEach(th=>{
+  th.tabIndex=0;
+  th.setAttribute('role','button');
+  th.addEventListener('keydown',e=>{
+    if(e.key==='Enter'||e.key===' '){e.preventDefault();th.click();}
+  });
+});
+</script>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Sync saved config values into the explorer inputs, then render with the current config.
+(function() {
+  const cfg = {{ config | tojson }};
+  expLastCutoff = cfg._MAX_IMDB_RATING_LAST ?? null;
+  expLastTie = cfg._NEAR_TIE_PTS_LAST ?? null;
+  savedCfg = cfgFromServer(cfg);
+  setFormFromCfg(savedCfg);
+  appliedCfg = canonCfg(savedCfg);
+  if (typeof all === 'function') all();
+  updateCfgButtons();
+})();
+</script>
+{% endblock %}

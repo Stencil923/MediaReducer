@@ -1,0 +1,2044 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#171a1f" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#e7e4de" media="(prefers-color-scheme: light)">
+  <title>{% block title %}MediaReducer{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <style>
+    /* ════════════════════════════════════════════════════════════════
+       THEME TOKENS
+       Dark is the default; light applies via :root[data-theme="light"].
+       Every surface/border/text color reads from these, so the toggle
+       re-skins the whole app from one place.
+       ════════════════════════════════════════════════════════════════ */
+    :root {
+      color-scheme: dark;
+      /* Shared motion tokens so same-purpose animations don't drift page by page. */
+      --pr-anim-in: .22s ease-out;
+      --pr-anim-out: .18s ease;
+      --pr-pulse-period: 1.5s;
+      --pr-spin-period: .8s;
+      /* Muted glass palette, paired to the light reference theme. */
+      --surface-0:     #12161d;  /* deepest inset surfaces */
+      --surface-1:     rgba(30,35,43,.88);  /* glass cards */
+      --surface-2:     rgba(39,45,55,.82);  /* headers, inputs, sub-panels */
+      --surface-3:     rgba(53,61,74,.78);  /* hover / raised */
+      --border:        rgba(124,119,108,.34);
+      --border-strong: rgba(160,153,139,.48);
+      --border-accent: #8ea3ce;  /* steel blue */
+      --border-danger: #b36a6f;
+      --border-warning:#b98968;   /* clay */
+      --text-primary:  #ece8df;
+      --text-secondary:#c9c3b8;
+      --text-muted:    #938d82;
+      --text-accent:   #a8b8dc;   /* muted steel blue */
+      --text-warning:  #d2a77f;
+      --text-danger:   #e7a0a3;
+      --accent:        #8ea3ce;
+      --bg-accent:        rgba(110,132,183,.16);
+      --bg-accent-strong: rgba(110,132,183,.26);
+      --bg-warning:       rgba(185,137,104,.16);
+      --bg-danger:        rgba(179,106,111,.16);
+      --bg-neutral:       rgba(201,195,184,.10);
+      --bg-sage:          rgba(126,155,132,.16);
+      --popup-bg:         #20262f;
+      --popup-bg-2:       #29313b;
+      --toast-info-bg:    color-mix(in srgb, var(--popup-bg) 88%, var(--text-accent) 12%);
+      --toast-success-bg: color-mix(in srgb, var(--popup-bg) 84%, var(--accent) 16%);
+      --toast-warning-bg: color-mix(in srgb, var(--popup-bg) 82%, var(--text-warning) 18%);
+      --toast-danger-bg:  color-mix(in srgb, var(--popup-bg) 82%, var(--text-danger) 18%);
+      /* Single shared tinted control surface (outline buttons, neutral/accent
+         pills, mode badge, input add-ons, focused fields) so the tint can't
+         drift; color-mix resolves per-theme at use time, like the toasts above. */
+      --surface-tint: color-mix(in srgb, var(--surface-2) 82%, var(--bg-accent) 18%);
+
+      --page-bg:   #171a1f;
+      /* Fields/tracks inside a raised sub-panel ("bubble") take the outer
+         card's tone so bubble contents read as windows back to the main card. */
+      --bubble-field-bg: var(--surface-1);
+      --term-bg:   #151922;
+      --term-text: #d7d1c7;
+      --shadow:    0 18px 42px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.04);
+      --glass-blur: blur(16px) saturate(118%);
+
+      --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+      --font-mono: ui-monospace, 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+      /* Dimmed-stone counterpart of the dark palette: same hues (steel blue /
+         clay / sage) and tonal ladder — page darkest, cards raised, insets sunk —
+         luminance pulled down so nothing glares. */
+      --surface-0:     #cdc8bd;  /* deepest inset surfaces */
+      --surface-1:     rgba(233,230,222,.88);  /* glass cards */
+      --surface-2:     rgba(225,221,212,.85);  /* headers, inputs, sub-panels */
+      --surface-3:     rgba(214,209,198,.85);  /* hover / raised */
+      --border:        rgba(148,141,129,.50);
+      --border-strong: rgba(120,113,101,.62);
+      --border-accent: #5f75a7;  /* steel blue */
+      --border-danger: #b3706c;
+      --border-warning:#a8794f;  /* clay */
+      --text-primary:  #242c35;  /* deep slate */
+      --text-secondary:#4c565f;
+      --text-muted:    #67665e;
+      --text-accent:   #54689a;  /* steel blue */
+      --text-warning:  #8f6244;
+      --text-danger:   #a25458;
+      --accent:        #5f75a7;
+      --bg-accent:        rgba(95,117,167,.16);
+      --bg-accent-strong: rgba(95,117,167,.26);
+      --bg-warning:       rgba(168,121,79,.16);
+      --bg-danger:        rgba(162,84,88,.14);
+      --bg-neutral:       rgba(90,86,78,.12);
+      --bg-sage:          rgba(106,135,112,.18);
+      --popup-bg:         #e9e6df;
+      --popup-bg-2:       #ded9d0;
+      --toast-info-bg:    color-mix(in srgb, var(--popup-bg) 88%, var(--text-accent) 12%);
+      --toast-success-bg: color-mix(in srgb, var(--popup-bg) 84%, var(--accent) 16%);
+      --toast-warning-bg: color-mix(in srgb, var(--popup-bg) 82%, var(--text-warning) 18%);
+      --toast-danger-bg:  color-mix(in srgb, var(--popup-bg) 82%, var(--text-danger) 18%);
+
+      --page-bg:   #d8d4ca;
+      --bubble-field-bg: var(--surface-1);
+      --term-bg:   rgba(233,230,222,.92);
+      --term-text: #242c35;
+      --shadow:    0 18px 42px rgba(60,54,44,.18), 0 1px 0 rgba(255,255,255,.5) inset;
+      --glass-blur: blur(16px) saturate(112%);
+    }
+    /* Gentle lift and glass treatment so panels feel tactile without changing layout. */
+    :root[data-theme="light"] .card,
+    :root[data-theme="light"] .accordion-item,
+    :root[data-theme="light"] .config-status-box,
+    :root[data-theme="light"] .subcard,
+    :root[data-theme="light"] .scoreblock {
+      box-shadow: var(--shadow);
+    }
+
+    /* clip, not hidden — hidden would break position:sticky — so full-bleed
+       strips (e.g. the Config save bar) can span 100vw without a horizontal
+       scrollbar. */
+    html { overflow-x: clip; }
+    /* Theme scrollbars site-wide so every page matches (terminals override). */
+    * { scrollbar-color: var(--border-strong) var(--surface-0); }
+    /* Light glow mirrors dark's — same three hue washes (steel blue / clay /
+       sage) in the same corners, a touch stronger so they read on stone. */
+    html, body {
+      background:
+        radial-gradient(circle at 18% 0%, rgba(110,132,183,.16), transparent 28%),
+        radial-gradient(circle at 80% 0%, rgba(185,137,104,.12), transparent 30%),
+        radial-gradient(circle at 78% 92%, rgba(126,155,132,.12), transparent 32%),
+        var(--page-bg);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      min-height: 100vh;
+    }
+    :root:not([data-theme="light"]) html,
+    :root:not([data-theme="light"]) body {
+      background:
+        radial-gradient(circle at 18% 0%, rgba(110,132,183,.10), transparent 28%),
+        radial-gradient(circle at 80% 0%, rgba(185,137,104,.08), transparent 30%),
+        radial-gradient(circle at 78% 92%, rgba(126,155,132,.08), transparent 32%),
+        var(--page-bg);
+    }
+    /* Re-skin smoothly when the theme flips, but never animate layout. */
+    body, .site-header, .card, .card-header, .form-control, .form-select,
+    .accordion-item, .accordion-button, .log-term {
+      transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+    }
+
+    /* ════════════════════════════════════════
+       HEADER — mobile: two rows, desktop: one
+       ════════════════════════════════════════ */
+    .site-header {
+      background: color-mix(in srgb, var(--surface-1) 88%, transparent);
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; z-index: 100;
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      box-shadow: 0 1px 0 rgba(255,255,255,.06) inset;
+    }
+    .header-inner { display: flex; flex-direction: column; }
+
+    /* Row 1 — brand */
+    .header-brand { padding: 10px 20px 8px; flex-shrink: 0; display: flex; align-items: center; }
+    .header-brand a { text-decoration: none; display: inline-flex; flex-direction: row; align-items: center; gap: 9px; }
+    .brand-text { display: inline-flex; flex-direction: column; line-height: 1.2; }
+    .brand-mark { width: 26px; height: 26px; flex-shrink: 0; color: var(--text-warning); }
+    .brand-name { font-size: 1.05rem; font-weight: 700; color: var(--text-warning); letter-spacing: -.01em; }
+    .brand-sub  { font-size: .58rem; font-weight: 500; color: var(--text-muted);
+                  letter-spacing: .08em; text-transform: uppercase; margin-top: 1px; }
+
+    /* Header running badge — geometry/color come from .pr-pill; here we add only
+       the fade and default-hide. Hide is scoped to .site-header so it beats the
+       base .pr-pill display. */
+    .header-run-badge { animation: pr-pulse var(--pr-pulse-period) ease-in-out infinite; }
+    .site-header .header-run-badge { display: none; }
+    a.header-run-badge { text-decoration: none; }
+    a.header-run-badge:hover, a.header-run-badge:focus { color: var(--text-accent); border-color: var(--border-accent); }
+    /* A Live (deleting) run turns the badge red; a simulation keeps the blue accent. */
+    .site-header.is-live-run .header-run-badge {
+      border-color: var(--border-danger); color: var(--text-danger);
+      background: color-mix(in srgb, var(--surface-2) 82%, var(--bg-danger) 18%);
+    }
+    .site-header.is-live-run a.header-run-badge:hover,
+    .site-header.is-live-run a.header-run-badge:focus { color: var(--text-danger); border-color: var(--border-danger); }
+    @keyframes pr-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+    /* Mobile: badge sits next to the brand instead of competing with the theme toggle. */
+    .run-badge-mobile { margin-left: 12px; margin-right: 56px; }
+    .site-header.is-running .run-badge-mobile { display: inline-flex; }
+
+    /* Row 2 — tabs (compact) */
+    .header-tabs {
+      position: relative;
+      display: flex; gap: 2px; padding: 0 16px;
+      border-top: 1px solid var(--surface-2);
+    }
+    /* JS-added sliding underline (hover-capable pointers only): one bar glides
+       to whichever tab is hovered and returns on leave. The static per-tab
+       underline is the fallback everywhere else. */
+    .header-tab-indicator {
+      position: absolute; height: 2px; border-radius: 2px;
+      background: var(--text-accent); pointer-events: none;
+      transition: left .22s cubic-bezier(.4, 0, .2, 1), width .22s cubic-bezier(.4, 0, .2, 1),
+                  top .22s ease, background-color .15s ease, opacity .15s ease;
+    }
+    /* Beat the per-theme underline colors, which carry :root specificity. */
+    .header-tabs.has-indicator a.active,
+    :root[data-theme="light"] .header-tabs.has-indicator a.active,
+    :root:not([data-theme="light"]) .header-tabs.has-indicator a.active,
+    :root[data-theme="light"] .header-tabs.has-indicator a.active.config-needs-onboarding,
+    :root:not([data-theme="light"]) .header-tabs.has-indicator a.active.config-needs-onboarding {
+      border-bottom-color: transparent;
+    }
+    .header-tabs a {
+      font-size: .78rem; font-weight: 500; color: var(--text-muted);
+      text-decoration: none; padding: 7px 14px; white-space: nowrap;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+    }
+    .header-tabs a:hover  { color: var(--text-secondary); }
+    .header-tabs a.active { color: var(--text-accent); border-bottom-color: var(--text-accent); }
+    @keyframes pr-config-tab-pulse {
+      0%, 100% {
+        color: var(--text-danger);
+        background: color-mix(in srgb, var(--bg-danger) 42%, transparent);
+        box-shadow: 0 0 0 0 color-mix(in srgb, var(--text-danger) 24%, transparent);
+      }
+      50% {
+        color: var(--text-danger);
+        background: color-mix(in srgb, var(--bg-danger) 64%, transparent);
+        box-shadow: 0 0 0 6px color-mix(in srgb, var(--text-danger) 0%, transparent);
+      }
+    }
+    .header-tabs a.config-needs-onboarding {
+      color: var(--text-danger);
+      border-bottom-color: var(--text-danger);
+      border-radius: 9px 9px 0 0;
+      animation: pr-config-tab-pulse var(--pr-pulse-period) ease-in-out infinite;
+    }
+    .header-tabs a.config-needs-onboarding:hover {
+      color: var(--text-danger);
+      background: color-mix(in srgb, var(--bg-danger) 70%, transparent);
+    }
+
+    /* Desktop: collapse into one row */
+    @media (min-width: 768px) {
+      .header-inner {
+        flex-direction: row; align-items: stretch; height: 52px;
+        max-width: 1280px; margin: 0 auto; width: 100%;  /* align with #main */
+      }
+      .header-brand {
+        padding: 0 20px 0 24px; display: flex; align-items: center;
+        border-right: 1px solid var(--border); border-bottom: none;
+      }
+      .header-tabs {
+        border-top: none; padding: 0 12px;
+        align-items: stretch;
+      }
+      .header-tabs a { display: flex; align-items: center; padding: 0 16px; }
+      .run-badge-mobile { display: none !important; }
+      .run-badge-desktop { align-self: center; margin-left: 4px; }
+      .site-header.is-running .run-badge-desktop { display: inline-flex; }
+    }
+
+    /* ═══════ Content ═══════ */
+    #main { max-width: 1280px; margin: 0 auto; padding: 28px 24px; }
+
+    /* ═══════ Cards ═══════ */
+    .card {
+      background: var(--surface-1); border: 1px solid var(--border); border-radius: 16px;
+      box-shadow: var(--shadow); backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+      overflow: hidden; background-clip: padding-box; isolation: isolate;
+    }
+    .card-header {
+      background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 86%, white 6%), var(--surface-2));
+      border-bottom: 1px solid var(--border);
+      border-radius: 16px 16px 0 0 !important; font-size: .88rem; font-weight: 600; padding: 12px 16px;
+    }
+
+    /* ═══════ Stat cards ═══════ */
+    .stat-card {
+      padding: 18px 22px;
+      min-height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(145deg, var(--surface-1), color-mix(in srgb, var(--surface-2) 70%, transparent));
+      background-clip: padding-box;
+    }
+    .stat-card .label { font-size: .68rem; font-weight: 500; color: var(--text-muted);
+                        text-transform: uppercase; letter-spacing: .07em; margin-bottom: 4px; }
+    .stat-card .value { font-size: 1.55rem; font-weight: 700; line-height: 1.15; }
+    .stat-card .value .unit { font-size: 1rem; font-weight: 400; color: var(--text-muted); }
+    .stat-card .sub   { font-size: .78rem; color: var(--text-muted); margin-top: 3px; }
+    /* Storage bar: media library is the brand-colored segment of the used fill
+       (rest of used neutral, free is the track), right-aligned by JS to the used
+       edge. Markers show the Headroom/Redline free targets and the used edge if
+       the library is trimmed to its cap. left/width are set per frame in
+       _positionStorageBar; values here are just the start state. */
+    .disk-bar { position: relative; height: 8px; margin-top: 10px; overflow: visible; }
+    .disk-bar-clip { position: absolute; inset: 0; border-radius: 3px; overflow: hidden;
+                     background: var(--surface-3); }
+    .disk-bar-fill { position: absolute; left: 0; top: 0; height: 100%;
+                     background: color-mix(in srgb, var(--text-muted) 42%, var(--surface-3));
+                     transition: width .5s; }
+    .disk-bar-library { position: absolute; left: 0; top: 0; height: 100%;
+                        background: linear-gradient(90deg, var(--text-accent), #7e9b84);
+                        transition: width .5s, left .5s; }
+    .disk-bar-mark { position: absolute; top: -3px; bottom: -3px; width: 2px;
+                     transform: translateX(-50%); border-radius: 1px; z-index: 2; }
+    .disk-bar-mark[hidden] { display: none; }
+    .disk-bar-mark--headroom { background: var(--text-warning); }
+    .disk-bar-mark--redline  { background: var(--text-danger); }
+    /* Cap marker is accent blue like the library it measures, so it would blend
+       into the gradient's blue end; a hairline keeps it legible. */
+    .disk-bar-mark--cap      { background: var(--text-accent);
+                               box-shadow: 0 0 0 1px color-mix(in srgb, var(--page-bg) 78%, transparent); }
+    .disk-bar-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 8px;
+                       font-size: .6rem; letter-spacing: .04em; text-transform: uppercase;
+                       color: var(--text-muted); }
+    .disk-bar-legend .dbl-item { display: inline-flex; align-items: center; gap: 5px; }
+    .disk-bar-legend .dbl-item[hidden] { display: none; }
+    .dbl-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
+    .dbl-key--library  { background: linear-gradient(90deg, var(--text-accent), #7e9b84); }
+    .dbl-key--used     { background: color-mix(in srgb, var(--text-muted) 42%, var(--surface-3)); }
+    .dbl-key--headroom { width: 2px; height: 11px; border-radius: 1px; background: var(--text-warning); }
+    .dbl-key--redline  { width: 2px; height: 11px; border-radius: 1px; background: var(--text-danger); }
+    .dbl-key--cap      { width: 2px; height: 11px; border-radius: 1px; background: var(--text-accent); }
+
+    /* ═══════ Pills / badges — one shared family ═══════
+       Buttons, pills, and badges share the theme-toggle geometry; color
+       variants still mark meaningful states. */
+    .pr-pill {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px; vertical-align: middle;
+      height: 32px; min-height: 32px; padding: 0 12px; border-radius: 10px; white-space: nowrap;
+      font-family: inherit; font-size: .74rem; font-weight: 600; line-height: 1;
+      letter-spacing: .01em; text-transform: none;
+      border: 1px solid transparent;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    .pr-pill[hidden] { display: none; }
+    /* Phones: pills shrink to label size, but interactive ones (links, jump
+       targets) keep a finger-sized tap area via an invisible ::after, without
+       growing visually. */
+    @media (max-width: 640px) {
+      .pr-pill {
+        height: 24px; min-height: 24px; padding: 0 9px;
+        font-size: .68rem; border-radius: 8px; gap: 5px;
+      }
+      a.pr-pill, .pr-pill[onclick], .pr-pill[role="button"] { position: relative; }
+      a.pr-pill::after, .pr-pill[onclick]::after, .pr-pill[role="button"]::after {
+        content: ""; position: absolute; left: -4px; right: -4px; top: -9px; bottom: -9px;
+      }
+    }
+    .pr-pill--neutral {
+      border-color: var(--border);
+      color: var(--text-secondary);
+      background: var(--surface-tint);
+    }
+    .pr-pill--accent  { border-color: var(--border-accent);  color: var(--text-accent);    background: var(--surface-tint); }
+    .pr-pill--warning { border-color: var(--border-warning); color: var(--text-warning);   background: var(--bg-warning); }
+
+    /* Run-mode badge keeps these semantic names so dashboard.html's sage "Live"
+       tint can override the accent variant. */
+    .mode-debug { border-color: var(--border); color: var(--text-secondary); background: var(--surface-tint); }
+    .mode-live  { border-color: var(--border-accent); color: var(--text-accent); background: var(--bg-accent); }
+
+
+    /* ═══════ Log terminal ═══════ */
+    .log-term {
+      background: var(--term-bg); color: var(--term-text);
+      font-family: var(--font-mono);
+      font-size: .76rem; line-height: 1.6; min-height: 200px; height: 440px; overflow-y: auto;
+      padding: 14px 16px; margin: 0; border-radius: 0 0 16px 16px;
+      white-space: pre-wrap; word-break: break-all;
+      border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+      scrollbar-color: var(--border-strong) var(--term-bg);
+    }
+
+    /* ═══════ Accordion ═══════ */
+    .accordion-button {
+      background: linear-gradient(135deg, color-mix(in srgb, var(--surface-2) 88%, var(--bg-accent) 12%), var(--surface-2));
+      color: var(--text-primary); font-weight: 600; font-size: .88rem;
+    }
+    .accordion-button:not(.collapsed) {
+      background: linear-gradient(135deg, color-mix(in srgb, var(--surface-3) 78%, var(--bg-accent-strong) 22%), var(--surface-3));
+      color: var(--text-primary); box-shadow: none;
+    }
+    .accordion-button::after { filter: saturate(.75) opacity(.7); }
+    .accordion-item {
+      background: var(--surface-1); border-color: var(--border); border-radius: 16px;
+      box-shadow: var(--shadow); overflow: hidden; backdrop-filter: var(--glass-blur); -webkit-backdrop-filter: var(--glass-blur);
+    }
+    .accordion-body  { padding-top: 20px; }
+
+    /* Config accordion: one connected tab stack instead of separate rounded pills. */
+    #cfg-accordion {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      background: var(--surface-1);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      isolation: isolate;
+    }
+    #cfg-accordion .accordion-item {
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      border-radius: 0 !important;
+      box-shadow: none;
+      overflow: visible;
+      background: transparent;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    #cfg-accordion .accordion-item:last-child { border-bottom: 0; }
+    #cfg-accordion .accordion-header,
+    #cfg-accordion .accordion-button,
+    #cfg-accordion .accordion-collapse,
+    #cfg-accordion .accordion-body {
+      border-radius: 0 !important;
+    }
+    #cfg-accordion .accordion-button {
+      margin: 0;
+      border: 0;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+    }
+    #cfg-accordion .accordion-item:first-child .accordion-button {
+      box-shadow: none;
+    }
+    #cfg-accordion .accordion-button:not(.collapsed) {
+      border-bottom: 1px solid var(--border);
+    }
+    #cfg-accordion .accordion-body {
+      background: color-mix(in srgb, var(--surface-1) 82%, var(--surface-0) 18%);
+    }
+    :root[data-theme="light"] #cfg-accordion .accordion-body {
+      background: color-mix(in srgb, var(--surface-1) 84%, white 5%);
+    }
+
+    /* ═══════ Form controls ═══════ */
+    /* Fields use the raised tone (--surface-3) — a step lighter than surrounding
+       panels in dark (darker in light), matching slider tracks — for contrast
+       inside sub-panels. */
+    .form-control, .form-select {
+      background: color-mix(in srgb, var(--surface-3) 92%, transparent); border-color: var(--border);
+      color: var(--text-primary); font-size: .85rem; border-radius: 10px;
+    }
+    .form-control:focus, .form-select:focus {
+      background: var(--surface-3); border-color: var(--border-accent);
+      color: var(--text-primary); box-shadow: 0 0 0 2px var(--bg-accent);
+    }
+    /* Dropdown matched to the text fields with a custom caret. Self-contained
+       (no Bootstrap .form-select) so the caret shorthand can't override theming. */
+    .app-select {
+      display: block; width: 100%;
+      appearance: none; -webkit-appearance: none; -moz-appearance: none;
+      font-size: .85rem; line-height: 1.5;
+      padding: .375rem 2.1rem .375rem .75rem;
+      color: var(--text-primary);
+      background-color: var(--surface-2);
+      border: 1px solid var(--border-strong); border-radius: 10px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%238b93a1' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right .7rem center; background-size: 14px 14px;
+      cursor: pointer;
+      text-overflow: ellipsis; white-space: nowrap; overflow: hidden;
+    }
+    .app-select:focus {
+      outline: none; border-color: var(--border-accent);
+      box-shadow: 0 0 0 2px var(--bg-accent);
+    }
+    .app-select:disabled { color: var(--text-muted); opacity: .72; cursor: default; }
+    .input-group-text { background: color-mix(in srgb, var(--surface-3) 92%, transparent); border-color: var(--border); color: var(--text-muted); border-radius: 10px; }
+    .input-group-text .form-check-input {
+      margin: 0;
+      flex: 0 0 auto;
+      align-self: center;
+    }
+
+    .app-form .form-control,
+    .app-form .form-select {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+      color: var(--text-primary);
+    }
+    .app-form .form-control::placeholder {
+      color: var(--text-muted);
+      opacity: .88;
+    }
+    .app-form .form-control:focus,
+    .app-form .form-select:focus {
+      background: var(--surface-2);
+      border-color: var(--border-accent);
+      color: var(--text-primary);
+      box-shadow: 0 0 0 2px var(--bg-accent);
+    }
+    .app-form .form-control:disabled,
+    .app-form .form-select:disabled {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+      color: var(--text-muted);
+      opacity: .72;
+    }
+    .app-form .input-group-text {
+      background: var(--surface-2);
+      border-color: var(--border-strong);
+      color: var(--text-muted);
+    }
+    /* Fields inside a lighter bubble (filter cards, sub-panels, score blocks,
+       config cards) sink to the outer card's tone — see --bubble-field-bg. */
+    .app-form .filter-score-card .form-control,
+    .app-form .filter-score-card .form-select,
+    .app-form .filter-score-card .input-group-text,
+    .app-form .subcard .form-control,
+    .app-form .subcard .form-select,
+    .app-form .subcard .input-group-text,
+    .app-form .scoreblock .form-control,
+    .app-form .scoreblock .form-select,
+    .app-form .scoreblock .input-group-text,
+    .app-form .config-card .form-control,
+    .app-form .config-card .form-select,
+    .app-form .config-card .input-group-text {
+      background: var(--bubble-field-bg);
+    }
+    .app-form .filter-score-card .form-control:focus,
+    .app-form .subcard .form-control:focus,
+    .app-form .scoreblock .form-control:focus,
+    .app-form .config-card .form-control:focus {
+      background: var(--bubble-field-bg);
+    }
+    .app-form .filter-score-card .form-control:disabled,
+    .app-form .subcard .form-control:disabled,
+    .app-form .scoreblock .form-control:disabled,
+    .app-form .config-card .form-control:disabled {
+      background: var(--surface-2);
+    }
+    .app-form .input-group .btn-outline-secondary {
+      background: var(--surface-tint);
+      border-color: var(--border);
+      color: var(--text-secondary);
+    }
+    .app-form .input-group .btn-outline-secondary:hover,
+    .app-form .input-group .btn-outline-secondary:focus {
+      background: var(--surface-3);
+      border-color: var(--border-strong);
+      color: var(--text-primary);
+    }
+    .app-form .input-group .btn-outline-secondary:disabled {
+      background: var(--surface-tint);
+      border-color: var(--border);
+      color: var(--text-muted);
+      opacity: .72;
+    }
+    .form-check-input:checked { background-color: var(--text-accent); border-color: var(--text-accent); }
+    .form-range::-webkit-slider-thumb { background: var(--text-accent); }
+    .form-text  { color: var(--text-muted); font-size: .78rem; }
+
+    /* ═══════ Buttons ═══════ */
+    /* Inherit the page font; touch-action lets controls act on every tap — no
+       double-tap-zoom eating the second tap of two-click confirmations. */
+    button, input, select { font: inherit; }
+    button, .btn, input[type=range], input[type=checkbox], select { touch-action: manipulation; }
+    /* Shared dirty-state affordance for Revert buttons (Config + Filtering). */
+    .btn-revert-active {
+      border-color: var(--border-warning) !important;
+      color: var(--text-warning) !important;
+      background: var(--bg-warning) !important;
+    }
+    .btn:not(.btn-close) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 32px;
+      padding: 0 12px;
+      border-radius: 10px;
+      font-family: inherit;
+      font-size: .74rem;
+      font-weight: 600;
+      line-height: 1;
+      letter-spacing: .01em;
+      text-transform: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+    }
+    .btn-sm:not(.btn-close) {
+      min-height: 32px;
+      padding: 0 12px;
+      border-radius: 10px;
+      font-size: .74rem;
+    }
+    .btn-success {
+      --bs-btn-color: var(--text-accent);
+      --bs-btn-bg: var(--bg-accent);
+      --bs-btn-border-color: var(--border-accent);
+      --bs-btn-hover-color: var(--text-accent);
+      --bs-btn-hover-bg: var(--bg-accent-strong);
+      --bs-btn-hover-border-color: var(--border-accent);
+      --bs-btn-focus-shadow-rgb: 110, 132, 183;
+      --bs-btn-active-color: #f8fbff;
+      --bs-btn-active-bg: var(--accent);
+      --bs-btn-active-border-color: var(--accent);
+      --bs-btn-disabled-color: var(--text-muted);
+      --bs-btn-disabled-bg: var(--surface-2);
+      --bs-btn-disabled-border-color: var(--border-strong);
+      background: var(--bg-accent);
+      border-color: var(--border-accent);
+      color: var(--text-accent);
+    }
+    .btn-success:hover,
+    .btn-success:focus {
+      background: var(--bg-accent-strong);
+      border-color: var(--border-accent);
+      color: var(--text-accent);
+    }
+    .btn-success:active,
+    .btn-success.active,
+    .btn-success.show,
+    .btn-success:first-child:active {
+      background: var(--accent) !important;
+      border-color: var(--accent) !important;
+      color: #f8fbff !important;
+    }
+    .btn-outline-primary { border-color: var(--border-accent); color: var(--text-accent); background: var(--surface-tint); }
+    .btn-outline-primary:hover { background: var(--bg-accent); border-color: var(--border-accent); color: var(--text-accent); }
+    .btn-outline-warning {
+      border-color: var(--border-warning);
+      color: var(--text-warning);
+      background: color-mix(in srgb, var(--surface-2) 82%, var(--bg-warning) 18%);
+    }
+    .btn-outline-warning:hover,
+    .btn-outline-warning:focus {
+      border-color: var(--border-warning);
+      color: var(--text-warning);
+      background: var(--bg-warning);
+    }
+    .btn-danger-action {
+      --bs-btn-color: var(--text-danger);
+      --bs-btn-bg: var(--bg-danger);
+      --bs-btn-border-color: var(--text-danger);
+      --bs-btn-hover-color: var(--text-danger);
+      --bs-btn-hover-bg: var(--bg-danger);
+      --bs-btn-hover-border-color: var(--text-danger);
+      --bs-btn-focus-shadow-rgb: 179, 106, 111;
+      --bs-btn-active-color: #fff7f7;
+      --bs-btn-active-bg: var(--text-danger);
+      --bs-btn-active-border-color: var(--text-danger);
+      background: var(--bg-danger) !important;
+      border-color: var(--text-danger) !important;
+      color: var(--text-danger) !important;
+      font-weight: 700;
+    }
+    /* Hover fills solid red as an "armed and dangerous" cue; press darkens it. */
+    .btn-danger-action:hover,
+    .btn-danger-action:focus {
+      background: var(--text-danger) !important;
+      border-color: var(--text-danger) !important;
+      color: #fff7f7 !important;
+      filter: none;
+    }
+    .btn-danger-action:active,
+    .btn-danger-action.active,
+    .btn-danger-action:first-child:active {
+      background: var(--text-danger) !important;
+      border-color: var(--text-danger) !important;
+      color: #fff7f7 !important;
+      filter: brightness(.88);
+    }
+    .btn-danger-action:disabled {
+      opacity: .38;
+      filter: grayscale(.35);
+      cursor: not-allowed;
+    }
+    .btn-icon {
+      box-sizing: border-box;
+      width: 32px;
+      height: 32px;
+      min-width: 32px;
+      min-height: 32px;
+      padding: 0 !important;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface-tint);
+      color: var(--text-secondary);
+      line-height: 1;
+      cursor: pointer;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
+      transition: color .15s ease, border-color .15s ease, background .15s ease, opacity .15s ease, filter .15s ease;
+    }
+    .btn-icon:hover:not(:disabled),
+    .btn-icon:focus:not(:disabled) {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      background: var(--surface-3);
+    }
+    .btn-icon.is-active {
+      color: var(--accent);
+      border-color: var(--accent);
+      background: var(--surface-2);
+    }
+    .btn-icon:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+    a.btn-icon { text-decoration: none; }
+
+    .btn-morph {
+      position: relative;
+      overflow: hidden;
+      white-space: nowrap;
+      transition:
+        width .18s cubic-bezier(.2, .8, .2, 1),
+        min-width .18s cubic-bezier(.2, .8, .2, 1),
+        background-color .16s ease,
+        border-color .16s ease,
+        color .16s ease,
+        box-shadow .16s ease;
+    }
+    .btn-morph .btn-morph-label {
+      display: inline-block;
+    }
+    /* Dependent blocks (protected collections, Radarr cleanup, Jellyfin favorites
+       filter) stay visible but ghosted when their API isn't connected; the
+       "Connect … to unlock" note stays fully readable. */
+    .connection-ghost > :not(.connection-unlock-note) {
+      opacity: .55;
+    }
+    .connection-ghost .btn,
+    .connection-ghost input,
+    .connection-ghost .form-check-input {
+      cursor: not-allowed;
+    }
+    /* A queued/in-flight button drops to the disabled ghost look until it
+       resolves, overriding any lit accent state it carried when clicked. */
+    .btn.btn-busy,
+    .btn.btn-pending-ellipsis,
+    .dashboard-refresh-btn.is-spinning {
+      background: var(--surface-tint) !important;
+      border-color: var(--border) !important;
+      color: var(--text-muted) !important;
+      opacity: .65 !important;
+      cursor: progress !important;
+    }
+    .dashboard-refresh-btn.is-spinning .dashboard-refresh-icon {
+      animation: pr-spin var(--pr-spin-period) linear infinite;
+    }
+    @keyframes pr-spin { to { transform: rotate(360deg); } }
+    .btn-pending-ellipsis .btn-morph-label::after,
+    .pending-ellipsis::after {
+      content: "";
+      display: inline-block;
+      width: 1.15em;
+      text-align: left;
+      animation: pr-ellipsis 1.1s steps(4, end) infinite;
+    }
+    /* ═══════ Debug output popup ═══════ */
+    .pr-debug-overlay {
+      position: fixed; inset: 0; z-index: 1090; display: none;
+      background: rgba(0, 0, 0, .55);
+      align-items: center; justify-content: center; padding: 22px;
+    }
+    .pr-debug-overlay.show { display: flex; animation: pr-fade-in var(--pr-anim-in); }
+    .pr-debug-overlay.show .pr-debug-box { animation: pr-rise-in var(--pr-anim-in); }
+    @keyframes pr-fade-in { from { opacity: 0; } to { opacity: 1; } }
+    /* Fade in while rising into place. `translate` (not transform) so it
+       composes with transform-positioned elements. */
+    @keyframes pr-rise-in {
+      from { opacity: 0; translate: 0 -14px; }
+      to   { opacity: 1; translate: 0 0; }
+    }
+    .pr-debug-box {
+      background: var(--surface-0); color: var(--text-primary);
+      border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+      width: min(980px, 100%); max-height: 86vh; display: flex; flex-direction: column;
+    }
+    .pr-debug-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+    }
+    .pr-debug-title { font-weight: 600; font-size: .9rem; margin-right: auto; }
+    .pr-debug-box pre {
+      margin: 0; padding: 12px 14px; overflow: auto; flex: 1 1 auto;
+      font-size: .76rem; line-height: 1.5;
+      white-space: pre-wrap; word-break: break-word;
+      color: var(--text-secondary);
+    }
+    /* Every debug trigger shares one look (small amber outline button). */
+    .pr-debug-btn { white-space: nowrap; }
+    /* Phones: true fullscreen — a centered box taller than the viewport would
+       push its header (and the Copy/Close buttons) off-screen. */
+    @media (max-width: 640px) {
+      .pr-debug-overlay { padding: 0; }
+      .pr-debug-box {
+        width: 100%; height: 100%; max-height: none;
+        border: none; border-radius: 0;
+      }
+      .pr-debug-box pre { font-size: .68rem; padding: 10px 12px; }
+      .pr-debug-head { padding: 8px 12px; }
+    }
+
+    @keyframes pr-ellipsis {
+      0%   { content: ""; }
+      25%  { content: "."; }
+      50%  { content: ".."; }
+      75%,
+      100% { content: "..."; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      /* The dots must still READ as pending when their animation is killed. */
+      .btn-pending-ellipsis .btn-morph-label::after,
+      .pending-ellipsis::after { content: "..."; }
+    }
+
+    /* ═══════ Misc ═══════ */
+    .section-desc { font-size: .83rem; color: var(--text-muted); margin-bottom: 18px; }
+    .input-label  { font-size: .81rem; color: var(--text-secondary); margin-bottom: 4px; display: block; }
+    .filter-score-group {
+      margin-top: 18px;
+    }
+    .filter-score-group:first-child {
+      margin-top: 0;
+    }
+    .filter-score-heading {
+      font-size: .9rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .filter-score-subhead {
+      font-size: .8rem;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      max-width: 780px;
+    }
+    .filter-score-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+    .filter-score-card {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface-2);
+    }
+    .filter-score-card > .input-label {
+      margin-bottom: 8px;
+    }
+    .filter-score-card .input-group,
+    .filter-score-card .form-control {
+      max-width: 100%;
+    }
+    .filter-score-card .input-group,
+    .filter-score-control-row,
+    .filter-score-toggle-row {
+      min-height: 42px;
+    }
+    .filter-score-card .input-group > .form-control,
+    .filter-score-card .input-group > .input-group-text {
+      min-height: 42px;
+    }
+    .filter-score-control-row {
+      display: flex;
+      align-items: center;
+      width: 100%;
+    }
+    .filter-score-control-row .form-control {
+      width: 100%;
+      min-height: 42px;
+    }
+    .filter-score-card .form-range {
+      margin: 0;
+      min-height: 30px;
+    }
+    .filter-score-toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      padding: 0;
+      margin: 0;
+      border: 0;
+      background: transparent;
+      color: var(--text-primary);
+      cursor: pointer;
+    }
+    .filter-score-toggle-row:hover .form-check-label {
+      color: var(--text-accent);
+    }
+    .filter-score-toggle-row .form-check-input {
+      flex: 0 0 auto;
+      margin: 0;
+    }
+    .filter-score-toggle-row .form-check-label {
+      color: var(--text-primary);
+      font-size: .95rem;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .filter-score-help {
+      font-size: .76rem;
+      color: var(--text-muted);
+      line-height: 1.35;
+      margin-top: 8px;
+    }
+    /* Checkbox/radio labels get the same hover affordance as the Filtering &
+       Scoring toggle rows (disabled inputs stay inert). */
+    .form-check-input:not(:disabled) + .form-check-label {
+      cursor: pointer;
+      transition: color .15s ease;
+    }
+    .form-check-input:not(:disabled) + .form-check-label:hover {
+      color: var(--text-accent);
+    }
+    /* Run-mode cards carry whole card bodies inside their labels — they keep
+       their own hover treatment instead of recoloring all that text. */
+    .run-mode-card .form-check-input + .form-check-label,
+    .run-mode-card .form-check-input + .form-check-label:hover {
+      color: inherit;
+    }
+    @media (max-width: 575.98px) {
+      .filter-score-grid {
+        grid-template-columns: 1fr;
+      }
+      .filter-score-card {
+        padding: 11px;
+      }
+    }
+    .page-title   { font-size: 1.3rem; font-weight: 700; color: var(--text-primary); }
+    /* Title row sticks below the variable-height site header (JS keeps
+       --pr-header-h in sync with the real height). While stuck, a full-bleed
+       ::before backdrop makes it read as a strip popping out of the header,
+       keeping any row actions (e.g. Config's Revert/Save) reachable at any
+       scroll depth. */
+    .page-title-bar {
+      position: sticky;
+      top: var(--pr-header-h, 58px);
+      z-index: 60;
+      padding: 10px 0;
+    }
+    .page-title-bar::before {
+      content: "";
+      position: absolute;
+      top: 0; bottom: 0; left: 50%;
+      width: 100vw;
+      transform: translateX(-50%);
+      z-index: -1;
+      background: color-mix(in srgb, var(--surface-1) 92%, transparent);
+      border-bottom: 1px solid var(--border);
+      box-shadow: 0 8px 20px rgba(0, 0, 0, .22);
+      backdrop-filter: var(--glass-blur);
+      -webkit-backdrop-filter: var(--glass-blur);
+      opacity: 0;
+      transition: opacity .15s ease;
+      pointer-events: none;
+    }
+    .page-title-bar.is-stuck::before { opacity: 1; }
+    /* Toasts stack bottom-right on desktop; on phones every toast spans the
+       same full-width footprint so mixed-length messages stay uniform. */
+    .toast-wrap   { position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+                    display: flex; flex-direction: column; align-items: flex-end; }
+    @media (max-width: 640px) {
+      .toast-wrap { left: 12px; right: 12px; bottom: 14px; align-items: stretch; }
+    }
+
+    /* ═══════ Theme toggle ═══════ */
+    .theme-toggle {
+      margin-left: auto;            /* push to the far right of the header row */
+      align-self: center;
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 7px; height: 32px; padding: 0 12px;
+      background: var(--surface-tint); color: var(--text-secondary);
+      border: 1px solid var(--border); border-radius: 10px;
+      font-size: .74rem; font-weight: 600; letter-spacing: .01em;
+      cursor: pointer; transition: background-color .15s, color .15s, border-color .15s;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.20);
+    }
+    .theme-toggle:hover { background: var(--surface-3); color: var(--text-primary); border-color: var(--border-strong); }
+    .theme-toggle:focus-visible { outline: 2px solid var(--border-accent); outline-offset: 2px; }
+    .theme-toggle svg { width: 15px; height: 15px; display: block; }
+    .theme-toggle .tt-label { display: none; }
+    /* Show the icon for the theme you'd switch TO. */
+    :root[data-theme="light"] .theme-toggle .icon-to-dark  { display: block; }
+    :root[data-theme="light"] .theme-toggle .icon-to-light { display: none; }
+    :root:not([data-theme="light"]) .theme-toggle .icon-to-dark  { display: none; }
+    :root:not([data-theme="light"]) .theme-toggle .icon-to-light { display: block; }
+
+    @media (min-width: 768px) {
+      .theme-toggle { margin-right: 24px; }   /* line up with the page content's right edge */
+      .theme-toggle .tt-label { display: inline; }
+      .about-toggle { margin-right: 8px; }    /* sits just left of the theme toggle */
+    }
+    @media (max-width: 767px) {
+      /* Top row only has the brand; pin the toggles to the brand row's right edge. */
+      .site-header .theme-toggle { position: absolute; top: 9px; right: 24px; }
+      .site-header .about-toggle { position: absolute; top: 9px; right: 70px; }
+    }
+    /* "About & quick start" reuses the theme-toggle skin so the header controls match. */
+    .about-toggle { margin-left: auto; width: 32px; padding: 0; font-size: .85rem; }
+    .about-toggle + .theme-toggle { margin-left: 0; }
+
+
+    /* ═══════ Muted glass color polish ═══════ */
+    :root[data-theme="light"] .brand-name { color: #8f5f3e; }
+    :root:not([data-theme="light"]) .brand-name { color: #d0a178; }
+    :root[data-theme="light"] .brand-mark { color: #8f5f3e; }
+    :root:not([data-theme="light"]) .brand-mark { color: #d0a178; }
+    :root[data-theme="light"] .header-tabs a.active { color: #54689a; border-bottom-color: #5f75a7; }
+    :root:not([data-theme="light"]) .header-tabs a.active { color: #a8b8dc; border-bottom-color: #8ea3ce; }
+    /* The API-error state outranks the active-tab tint: the tab stays red
+       while the user is ON Configuration until the connections check out. */
+    :root[data-theme="light"] .header-tabs a.active.config-needs-onboarding,
+    :root:not([data-theme="light"]) .header-tabs a.active.config-needs-onboarding {
+      color: var(--text-danger);
+      border-bottom-color: var(--text-danger);
+    }
+    :root[data-theme="light"] .card-header,
+    :root[data-theme="light"] .accordion-button {
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.42);
+    }
+    :root[data-theme="light"] .card:nth-of-type(3n+1) .card-header,
+    :root[data-theme="light"] .accordion-item:nth-of-type(3n+1) .accordion-button {
+      background: linear-gradient(135deg, rgba(110,132,183,.15), var(--surface-2));
+    }
+    :root[data-theme="light"] .card:nth-of-type(3n+2) .card-header,
+    :root[data-theme="light"] .accordion-item:nth-of-type(3n+2) .accordion-button {
+      background: linear-gradient(135deg, rgba(126,155,132,.15), var(--surface-2));
+    }
+    :root[data-theme="light"] .card:nth-of-type(3n+3) .card-header,
+    :root[data-theme="light"] .accordion-item:nth-of-type(3n+3) .accordion-button {
+      background: linear-gradient(135deg, rgba(185,137,104,.14), var(--surface-2));
+    }
+    :root:not([data-theme="light"]) .card:nth-of-type(3n+1) .card-header,
+    :root:not([data-theme="light"]) .accordion-item:nth-of-type(3n+1) .accordion-button {
+      background: linear-gradient(135deg, rgba(110,132,183,.16), var(--surface-2));
+    }
+    :root:not([data-theme="light"]) .card:nth-of-type(3n+2) .card-header,
+    :root:not([data-theme="light"]) .accordion-item:nth-of-type(3n+2) .accordion-button {
+      background: linear-gradient(135deg, rgba(126,155,132,.13), var(--surface-2));
+    }
+    :root:not([data-theme="light"]) .card:nth-of-type(3n+3) .card-header,
+    :root:not([data-theme="light"]) .accordion-item:nth-of-type(3n+3) .accordion-button {
+      background: linear-gradient(135deg, rgba(185,137,104,.14), var(--surface-2));
+    }
+    .btn-outline-secondary {
+      border-color: var(--border); color: var(--text-secondary);
+      background: var(--surface-tint);
+    }
+    .btn-outline-secondary:not(:disabled):not(.disabled):hover,
+    .btn-outline-secondary:not(:disabled):not(.disabled):focus {
+      border-color: var(--border-strong); color: var(--text-primary);
+      background: var(--surface-3);
+    }
+    .btn-outline-secondary:disabled,
+    .btn-outline-secondary.disabled {
+      border-color: var(--border); color: var(--text-muted);
+      background: var(--surface-tint);
+      opacity: .65;
+    }
+
+    /* Opaque overlay surfaces. Cards can stay glassy; popups should not show
+       clashing page content through them. */
+    .modal-content {
+      background: var(--popup-bg) !important;
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      box-shadow: var(--shadow);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    .modal-header,
+    .modal-footer {
+      background: var(--popup-bg-2);
+      border-color: var(--border);
+    }
+
+    /* Shared popup geometry: every dialog uses .pr-popup +
+       .modal-dialog-centered + .modal-dialog-scrollable for one width/position.
+       Add .pr-popup--fill for a fixed-height body so the file browser and
+       history windows stay the same size regardless of content. */
+    .pr-popup .modal-dialog { max-width: min(860px, calc(100vw - 24px)); }
+    .pr-popup .modal-content { border-radius: 14px; }
+    .pr-popup--fill .modal-content { height: min(680px, calc(100vh - 96px)); }
+    .pr-popup--fill .modal-body { display: flex; flex-direction: column; min-height: 0; }
+    /* Modals use .btn-close-white for the dark theme; in light theme that
+       renders a white × on a light popup, so drop the invert filter. */
+    :root[data-theme="light"] .btn-close-white { filter: none; }
+
+    /* ═══════ Toast ═══════ */
+    .pr-toast {
+      box-sizing: border-box;
+      color: var(--text-primary);
+      padding: 10px 16px; border-radius: 8px; margin-top: 8px;
+      font-size: .84rem; box-shadow: var(--shadow); min-width: 220px;
+      max-width: min(420px, calc(100vw - 48px));
+      border: 1px solid var(--border-strong);
+      background: var(--toast-info-bg);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+    @media (max-width: 640px) {
+      .pr-toast { min-width: 0; max-width: none; width: 100%; }
+    }
+    /* Entrance pop / exit fade. Slide uses standalone translate so it can't
+       fight a transform. */
+    .pr-toast { animation: pr-toast-in .24s cubic-bezier(.21, 1.02, .55, 1.2); }
+    @keyframes pr-toast-in {
+      from { opacity: 0; translate: 0 14px; scale: .96; }
+      to   { opacity: 1; translate: 0 0;    scale: 1; }
+    }
+    .pr-toast--out { animation: pr-toast-out var(--pr-anim-out) forwards; }
+    @keyframes pr-toast-out {
+      to { opacity: 0; translate: 0 8px; }
+    }
+    .pr-toast--success { background: var(--toast-success-bg); border-color: var(--border-accent); }
+    .pr-toast--danger  { background: var(--toast-danger-bg);  border-color: var(--text-danger); }
+    .pr-toast--warning { background: var(--toast-warning-bg); border-color: var(--border-warning); }
+    .pr-toast--info    { background: var(--toast-info-bg);    border-color: var(--border-strong); }
+
+    /* ── Form validation, shared by Configuration and Filtering & Scoring:
+       .field-invalid on the field's wrapper paints the inputs red; the
+       .field-error line under it shows while .show is set. ──────────────── */
+    .field-invalid .form-control,
+    .field-invalid .input-group-text {
+      border-color: var(--text-danger) !important;
+    }
+    .field-invalid .form-control {
+      box-shadow: 0 0 0 2px var(--bg-danger);
+    }
+    .field-invalid .input-label {
+      color: var(--text-danger);
+    }
+    .field-error {
+      display: none;
+      color: var(--text-danger);
+      font-size: .78rem;
+      margin-top: 4px;
+    }
+    .field-error.show { display: block; }
+
+    /* Inline lock/warning notice, shared by Configuration and Filtering &
+       Scoring ("A run is active…", autopause reasons). */
+    .config-inline-warning {
+      border: 1px solid var(--border-warning);
+      background: var(--bg-warning);
+      color: var(--text-warning);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: .8rem;
+    }
+
+    /* Locked-section ghosting: the pages decide what dims; the not-allowed
+       cursor on the controls is common to both. */
+    .section-run-ghost .form-control,
+    .section-run-ghost .form-range,
+    .section-run-ghost .form-check-input,
+    .section-run-ghost .form-select,
+    .section-run-ghost .secret-toggle,
+    .section-run-ghost .btn {
+      cursor: not-allowed;
+    }
+  </style>
+  <script>
+    /* Set the theme before first paint to avoid a flash of the wrong palette. */
+    (function () {
+      try {
+        var saved = localStorage.getItem('pr-theme');
+        if (!saved) {
+          saved = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        }
+        document.documentElement.setAttribute('data-theme', saved);
+        document.documentElement.setAttribute('data-bs-theme', saved);
+      } catch (e) {}
+    })();
+    /* Every mutating request carries X-MediaReducer; the server rejects writes
+       without it, blocking cross-origin drive-by POSTs (another origin can't add
+       a custom header without a CORS preflight this server never approves).
+       Wrapping fetch covers every call site. */
+    (function () {
+      var origFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        init = init || {};
+        var method = String((init.method || (input && input.method) || 'GET')).toUpperCase();
+        if (method !== 'GET' && method !== 'HEAD') {
+          var headers = new Headers(init.headers || (input && input.headers) || undefined);
+          if (!headers.has('X-MediaReducer')) headers.set('X-MediaReducer', '1');
+          init.headers = headers;
+        }
+        return origFetch(input, init);
+      };
+    })();
+  </script>
+  <script>
+    /* ── Form field helpers, shared by Configuration and Filtering & Scoring.
+       Defined in <head> because the pages' inline scripts call them at parse
+       time (initial validation/populate), before the footer script runs. ── */
+
+    /* Trimmed text of an input, '' when the element is missing. */
+    function prFieldRaw(id) {
+      return document.getElementById(id)?.value?.trim() ?? '';
+    }
+
+    /* Finite number from raw text, else null (blank is null, not 0). */
+    function prNumOrNull(raw) {
+      const n = Number(raw);
+      return raw !== '' && Number.isFinite(n) ? n : null;
+    }
+
+    function prPositiveNumber(raw) {
+      const n = prNumOrNull(raw);
+      return n !== null && n > 0;
+    }
+
+    /* A field's value as a number: blank takes blankValue (0 where blank
+       means zero, a default where blank means "use the default", null where
+       a value is required), anything non-numeric is null. */
+    function prBlankNumber(id, blankValue = null) {
+      const raw = prFieldRaw(id);
+      return raw === '' ? blankValue : prNumOrNull(raw);
+    }
+
+    /* Invalid flags show only once armed (first blur or save attempt). Focus
+       suppresses NEW flags so a retype never flashes red mid-edit, but an
+       already-visible flag stays up while focused until the value is fixed (a
+       failed save jumping to the field must not clear it). Pass the
+       .field-invalid element as flagEl for that stickiness. */
+    function prInvalidVisible(invalid, armed, input, flagEl) {
+      if (!invalid || !armed) return false;
+      if (input && document.activeElement === input) {
+        return !!flagEl?.classList.contains('field-invalid');
+      }
+      return true;
+    }
+
+    /* Blur-armed validation: focus re-runs quietly (no new flag mid-edit),
+       clicking off an enabled field validates and shows the result. */
+    function prWireBlurValidation(inputId, validateFn) {
+      const input = document.getElementById(inputId);
+      if (!input) return;
+      input.addEventListener('focus', () => validateFn({ show: false, focus: false }));
+      input.addEventListener('blur', () => {
+        if (!input.disabled) validateFn({ show: true, focus: false });
+      });
+    }
+
+    /* Download text as a file through the browser (a client-side Blob), so
+       logs and reports save to the user's machine instead of the container
+       filesystem. Returns false when there is nothing to download. */
+    function prDownloadText(filename, text) {
+      const body = String(text ?? '');
+      if (!body.trim()) return false;
+      let url = null;
+      try {
+        const blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
+        url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return true;
+      } catch (_) {
+        return false;
+      } finally {
+        // Revoke on every path — including an exception after createObjectURL —
+        // so the object URL never leaks for the page's lifetime.
+        if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+    }
+
+    /* Timestamp suffix for downloaded filenames, e.g. 2026-07-15_09-42-11. */
+    function prFileStamp() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+    }
+
+    /* Apply/clear the red field style, its .field-error line, and the aria
+       state in one place. */
+    function prApplyFieldFlag(flagEl, errEl, inputEl, visible) {
+      flagEl?.classList.toggle('field-invalid', !!visible);
+      errEl?.classList.toggle('show', !!visible);
+      inputEl?.setAttribute('aria-invalid', visible ? 'true' : 'false');
+    }
+
+    /* Escape text for interpolation into HTML (element text or a
+       double/single-quoted attribute). */
+    function prHtmlEsc(s) {
+      return String(s ?? '').replace(/[&<>"']/g,
+        ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    /* Thousands-separated number (up to maxFrac decimals); mirrors the
+       server's commafy filter so live updates match the initial render.
+       Non-numeric passes through so a partial entry isn't mangled. */
+    function prCommaNum(v, maxFrac = 1) {
+      const n = Number(String(v).replace(/,/g, ''));
+      return Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: maxFrac }) : String(v);
+    }
+
+    /* Compact GB amount for messages ("a run would free ~X GB"): whole GB
+       with separators from 100 up, one decimal below. */
+    function prGbAmount(gb) {
+      const n = Number(gb);
+      return n >= 100 ? Math.round(n).toLocaleString() : n.toFixed(1);
+    }
+
+    /* Scroll an element into view; scroll-margin CSS on the target clears
+       the sticky bars. delayMs (after a paint) lets layout/animation settle
+       first — and staggers competing on-load scrolls so the later caller
+       decides the final position. */
+    function prScrollTo(el, { delayMs = 0, smooth = true } = {}) {
+      if (!el) return;
+      const go = () => el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+      if (delayMs > 0) window.requestAnimationFrame(() => window.setTimeout(go, delayMs));
+      else go();
+    }
+  </script>
+</head>
+<body class="{% block body_class %}{% endblock %}">
+
+<header class="site-header">
+  <div class="header-inner">
+    <div class="header-brand">
+      <a href="/">
+        <svg class="brand-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="3" width="18" height="18" rx="5"/>
+          <line x1="7" y1="9"  x2="17" y2="9"/>
+          <line x1="7" y1="13" x2="14" y2="13"/>
+          <line x1="7" y1="17" x2="11" y2="17"/>
+        </svg>
+        <span class="brand-text">
+          <span class="brand-name">MediaReducer</span>
+          <span class="brand-sub">Media Library Manager</span>
+        </span>
+      </a>
+      <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-mobile" aria-live="polite"><span aria-hidden="true">●</span> <span class="run-badge-label">Simulating</span></a>
+    </div>
+    <div class="header-tabs">
+      <a href="/"         class="{{ 'active' if request.path == '/'         else '' }}">Dashboard</a>
+      <a href="/config"   class="{{ 'active' if request.path == '/config'   else '' }} {{ 'config-needs-onboarding' if connection_onboarding_needed or api_connection_error else '' }}" {{ 'title="Fix the API connection settings"' if api_connection_error and not connection_onboarding_needed else ('title="Set up your media server connection (Plex via Tautulli, or Jellyfin)"' if connection_onboarding_needed else '') }}>Configuration</a>
+      <a href="/explorer" class="{{ 'active' if request.path == '/explorer' else '' }}">Filtering &amp; Scoring</a>
+    </div>
+    <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-desktop" aria-live="polite"><span aria-hidden="true">●</span> <span class="run-badge-label">Simulating</span></a>
+    <button type="button" id="about-toggle" class="theme-toggle about-toggle" onclick="prShowWelcome()"
+            aria-label="About MediaReducer and quick start guide" title="About &amp; quick start"
+            aria-haspopup="dialog">?</button>
+    <button type="button" id="theme-toggle" class="theme-toggle" onclick="prToggleTheme()"
+            aria-label="Switch between light and dark theme" title="Switch theme">
+      <!-- moon: shown in light mode (click → dark) -->
+      <svg class="icon-to-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+      <!-- sun: shown in dark mode (click → light) -->
+      <svg class="icon-to-light" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+      </svg>
+      <span class="tt-label" id="theme-toggle-label">Light</span>
+    </button>
+  </div>
+</header>
+
+<div id="main">
+  {% block content %}{% endblock %}
+</div>
+
+<div class="toast-wrap" id="toast-wrap"></div>
+
+<!-- First-run welcome / About & quick start. Auto-opens once per install (until
+     a config reset) and can be reopened any time from the "?" header button. -->
+<div class="modal fade pr-popup" id="welcome-modal" tabindex="-1" aria-hidden="true" aria-labelledby="welcome-modal-title">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="welcome-modal-title">Welcome to MediaReducer</h5>
+          <div style="font-size:.78rem;color:var(--text-muted);">Automatic movie library cleanup for Plex and Jellyfin</div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="welcome-warning welcome-warning--danger">
+          <strong>This app deletes movie files — there is no recycle bin.</strong>
+          Stay on <strong>Paused</strong> and use <strong>Simulate</strong> until the
+          output matches exactly what you expect before ever using Live.
+        </div>
+        <div class="welcome-warning welcome-warning--caution">
+          <strong>Do not expose this app to the internet.</strong> There is no login —
+          anyone who can reach the web UI can delete your media. Keep port 7474 on your
+          LAN or behind a VPN.
+        </div>
+
+        <h6 class="welcome-heading">Quick start</h6>
+        <ol class="welcome-steps">
+          <li>Open <strong>Configuration</strong>; leave Run Mode on <strong>Paused</strong>.</li>
+          <li><strong>Connections</strong>: pick your servers, use <strong>Auto Detect</strong>, then <strong>Check for Errors</strong>.</li>
+          <li><strong>Movie Library Paths</strong>: add the folders MediaReducer may manage and protect any collections.</li>
+          <li>Set <strong>Space Thresholds</strong>, then tune scoring on the <strong>Filtering &amp; Scoring</strong> tab.</li>
+          <li>Run <strong>Simulate</strong> from the Dashboard and read the log. Enable Live only when
+              it deletes exactly what you'd delete yourself.</li>
+        </ol>
+
+        <h6 class="welcome-heading">About</h6>
+        <p class="welcome-about">
+          MediaReducer scores every movie from watch history and IMDb rating, and frees
+          space by deleting the lowest-value files first when your storage thresholds are
+          crossed. Protected collections, filtered movies, and anything it can't safely
+          identify are always skipped. Reopen this guide any time with the <strong>?</strong>
+          button in the header; full documentation is in the README.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Get started</button>
+        <button type="button" class="btn btn-outline-primary" onclick="prWelcomeOpenConfig()">Open Configuration</button>
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  .welcome-warning {
+    border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
+    font-size: .84rem; line-height: 1.55;
+  }
+  .welcome-warning--danger {
+    background: var(--bg-danger); color: var(--text-danger);
+    border: 1px solid var(--border-danger);
+  }
+  .welcome-warning--caution {
+    background: var(--bg-warning); color: var(--text-warning);
+    border: 1px solid var(--border-warning);
+  }
+  .welcome-heading {
+    margin: 18px 0 8px; font-size: .78rem; font-weight: 700;
+    letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted);
+  }
+  .welcome-steps { margin: 0 0 4px; padding-left: 20px; line-height: 1.75; font-size: .88rem; }
+  .welcome-steps li + li { margin-top: 2px; }
+  .welcome-about { margin: 0; font-size: .86rem; line-height: 1.6; color: var(--text-secondary); }
+</style>
+
+<!-- Manual IMDb-dataset setup steps. Pops when a Simulate/Live run fails on
+     the dataset (driven by the dashboard's progress polling) and when the
+     explorer's explicit sample Refresh fails on it. A failed AUTOMATIC
+     sample build only shows a toast plus the sample-table message. -->
+<div class="modal fade pr-popup" id="imdb-help-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">IMDb ratings data required</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p>IMDb ratings are required for scoring — the copy on disk was missing or older than your
+        IMDb refresh interval, and the automatic download failed. Add the file manually:</p>
+        <ol class="mb-3" style="line-height:1.7;">
+          <li>Download <code>title.ratings.tsv.gz</code> from
+              <a id="imdb-help-url" href="https://datasets.imdbws.com/title.ratings.tsv.gz" target="_blank" rel="noopener">IMDb's datasets page</a>.</li>
+          <li>Drop that file into your config folder as:<br>
+              <code id="imdb-help-gz-path">/config/title.ratings.tsv.gz</code></li>
+          <li>Run again. MediaReducer unpacks it automatically. You can also place the extracted <code id="imdb-help-tsv-path">/config/title.ratings.tsv</code>.</li>
+        </ol>
+        <div class="form-text">Runs keep the file refreshed after it exists. The library sample on
+        Filtering &amp; Scoring also needs this data — once the file is in place, press
+        <strong>Refresh</strong> there to build the sample.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+window.PR_DISPLAY_TIME_FORMAT = {{ display_time_format | default('12h') | tojson }};
+window.PR_SERVER_TIME_ZONE = {{ server_time_zone | default('UTC') | tojson }};
+window.PR_HOST_TIME_ZONE = {{ host_time_zone | default('UTC') | tojson }};
+window.PR_SERVER_EPOCH = {{ server_epoch | default(0) | tojson }};
+window.PR_CLIENT_EPOCH_AT_LOAD = Date.now() / 1000;
+
+// First launch only: tell the server the browser's time zone so a fresh install
+// runs on the user's zone instead of the container's (usually UTC). The endpoint
+// is one-shot and guarded server-side; this just hands it the detected zone.
+window.PR_TZ_NEEDS_INIT = {{ 'true' if time_zone_needs_init else 'false' }};
+(function prInitBrowserTimeZone() {
+  if (!window.PR_TZ_NEEDS_INIT) return;
+  window.PR_TZ_NEEDS_INIT = false;   // don't double-fire within this session
+  let tz = '';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (_) {}
+  fetch('/api/timezone/init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-MediaReducer': '1' },
+    body: JSON.stringify({ tz }),
+  }).then(r => (r.ok ? r.json() : null)).then(d => {
+    if (d && d.ok && d.time_zone && d.time_zone !== 'auto') {
+      window.PR_SERVER_TIME_ZONE = d.time_zone;   // times now render in the detected zone
+      // Let the Config page (if open) reflect it in the dropdown without a reload.
+      window.dispatchEvent(new CustomEvent('pr-timezone-initialized', { detail: { tz: d.time_zone } }));
+    }
+  }).catch(() => {});
+})();
+
+function prResolvedTimeZone() {
+  // The app runs on ONE clock — the operating zone set in Configuration
+  // (auto = container clock). All times render in that zone so what you read
+  // matches when things actually happen.
+  return String(window.PR_SERVER_TIME_ZONE || 'UTC').trim() || 'UTC';
+}
+function prTimeFormat() {
+  const raw = String(window.PR_DISPLAY_TIME_FORMAT || '12h').toLowerCase();
+  return raw === '24' || raw === '24h' ? '24h' : '12h';
+}
+function prTimeQuery() {
+  return new URLSearchParams({ time_format: prTimeFormat() }).toString();
+}
+function prServerEpochNow() {
+  // Server clock estimate: render-time epoch plus client elapsed time.
+  return Number(window.PR_SERVER_EPOCH || 0)
+       + (Date.now() / 1000 - Number(window.PR_CLIENT_EPOCH_AT_LOAD || 0));
+}
+function prClockSkewSeconds() {
+  // Positive = server clock ahead of this device. Includes page-load latency,
+  // so treat small values as noise.
+  return Number(window.PR_SERVER_EPOCH || 0) - Number(window.PR_CLIENT_EPOCH_AT_LOAD || 0);
+}
+function prDateTimeFormat(withSeconds = true) {
+  const is24 = prTimeFormat() === '24h';
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: prResolvedTimeZone(),
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: is24 ? '2-digit' : 'numeric',
+    minute: '2-digit',
+    ...(withSeconds ? { second: '2-digit' } : {}),
+    hour12: !is24,
+    hourCycle: is24 ? 'h23' : 'h12',
+  });
+}
+function prFormatDate(date, withSeconds = true) {
+  try { return prDateTimeFormat(withSeconds).format(date); }
+  catch (_) { return date.toLocaleString(undefined, { hour12: prTimeFormat() !== '24h' }); }
+}
+function prFormatEpoch(epochSeconds, withSeconds = true) {
+  if (epochSeconds === null || epochSeconds === undefined || epochSeconds === '') return '—';
+  const n = Number(epochSeconds);
+  if (!Number.isFinite(n)) return '—';
+  return prFormatDate(new Date(n * 1000), withSeconds);
+}
+function prNormalizeDisplayedTimestamps(text) {
+  // Defensive browser-side cleanup for raw log lines that still start with the
+  // script's server-clock 24-hour timestamp. The backend normally converts log
+  // output before sending it; this keeps Dashboard output consistent if any raw
+  // text slips through. It only changes what is displayed, never the log file.
+  const raw = String(text ?? '');
+  if (!raw) return raw;
+  const re = /(^|\n)(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})(\s+-\s+|\s+\|\s*)/g;
+  return raw.replace(re, (match, lineStart, datePart, hh, mm, ss, sep) => {
+    if (prTimeFormat() === '24h') return match;
+    const h = Number(hh);
+    if (!Number.isFinite(h)) return match;
+    const suffix = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${lineStart}${datePart} ${h12}:${mm}:${ss} ${suffix}${sep}`;
+  });
+}
+
+function prSetTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  document.documentElement.setAttribute('data-bs-theme', t);
+  try { localStorage.setItem('pr-theme', t); } catch (e) {}
+  const label = document.getElementById('theme-toggle-label');
+  const btn = document.getElementById('theme-toggle');
+  // Button advertises the theme you'll switch TO.
+  if (label) label.textContent = (t === 'light') ? 'Dark' : 'Light';
+  if (btn) btn.title = (t === 'light') ? 'Switch to dark theme' : 'Switch to light theme';
+}
+function prToggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+  prSetTheme(current === 'light' ? 'dark' : 'light');
+}
+// Sync the label/title with whatever the pre-paint script already applied.
+document.addEventListener('DOMContentLoaded', function () {
+  prSetTheme(document.documentElement.getAttribute('data-theme') || 'dark');
+});
+
+// ── First-run welcome / About & quick start ─────────────────────────────────
+// Auto-opens once for a fresh install; any dismissal (Get started, ×, Esc,
+// backdrop) persists the seen flag so it never nags again. The "?" header
+// button reopens it on demand without touching the flag (already seen).
+window.PR_WELCOME_SERVER_NEEDED = {{ 'true' if welcome_needed | default(false) else 'false' }};
+
+function prWelcomeSeenPending() {
+  try {
+    const ts = Number(sessionStorage.getItem('pr-welcome-seen-pending') || 0);
+    return !!ts && Date.now() - ts < 120000;
+  } catch (_) {
+    return false;
+  }
+}
+
+function prSetWelcomeSeenPending() {
+  try { sessionStorage.setItem('pr-welcome-seen-pending', String(Date.now())); } catch (_) {}
+}
+
+function prClearWelcomeSeenPending() {
+  try { sessionStorage.removeItem('pr-welcome-seen-pending'); } catch (_) {}
+}
+
+window.PR_WELCOME_NEEDED = window.PR_WELCOME_SERVER_NEEDED && !prWelcomeSeenPending();
+if (!window.PR_WELCOME_SERVER_NEEDED) prClearWelcomeSeenPending();
+
+async function prPersistWelcomeSeen({ keepalive = false } = {}) {
+  if (!window.PR_WELCOME_NEEDED && !window.PR_WELCOME_SERVER_NEEDED) return;
+  window.PR_WELCOME_NEEDED = false;
+  prSetWelcomeSeenPending();
+  try {
+    const opts = keepalive
+      ? { method: 'POST', keepalive: true }
+      : { method: 'POST', cache: 'no-store' };
+    await fetch('/api/welcome/seen', opts);
+  } catch (_) {}
+}
+
+function prShowWelcome() {
+  const el = document.getElementById('welcome-modal');
+  if (el && window.bootstrap) bootstrap.Modal.getOrCreateInstance(el).show();
+}
+
+async function prWelcomeOpenConfig() {
+  // Persist the seen flag before navigating. The session flag covers the short
+  // page-transition window if config.json has not finished writing yet.
+  await prPersistWelcomeSeen();
+  window.location.href = '/config';
+}
+
+(function initWelcomeGuide() {
+  const el = document.getElementById('welcome-modal');
+  if (!el) return;
+  el.addEventListener('hidden.bs.modal', () => {
+    if (!window.PR_WELCOME_NEEDED) return;
+    prPersistWelcomeSeen({ keepalive: true });
+  });
+  if (window.PR_WELCOME_NEEDED) {
+    document.addEventListener('DOMContentLoaded', prShowWelcome);
+    if (document.readyState !== 'loading') prShowWelcome();
+  }
+})();
+
+// ── Shared debug output popup ─────────────────────────────────────────────────
+// Every debug button routes through here: a fixed panel with the raw text and
+// a copy-to-clipboard button. Created lazily so any page can use it.
+function _prDebugBox() {
+  let overlay = document.getElementById('pr-debug-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'pr-debug-overlay';
+    overlay.className = 'pr-debug-overlay';
+    overlay.innerHTML =
+      '<div class="pr-debug-box" role="dialog" aria-modal="true" aria-label="Debug output">' +
+        '<div class="pr-debug-head">' +
+          '<span class="pr-debug-title" id="pr-debug-title"></span>' +
+          '<button type="button" class="btn btn-sm btn-outline-secondary" id="pr-debug-copy" onclick="prCopyDebugBox(this)">Copy</button>' +
+          '<button type="button" class="btn btn-sm btn-outline-secondary" onclick="prHideDebugBox()">Close</button>' +
+        '</div>' +
+        '<pre id="pr-debug-text"></pre>' +
+      '</div>';
+    overlay.addEventListener('click', (ev) => { if (ev.target === overlay) prHideDebugBox(); });
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && overlay.classList.contains('show')) prHideDebugBox();
+    });
+  }
+  return overlay;
+}
+// Pin the page-title bar exactly below the site header and give it its
+// floating backdrop only while actually stuck.
+(function () {
+  const bar = document.querySelector('.page-title-bar');
+  if (!bar) return;
+  const headerH = () => document.querySelector('.site-header')?.offsetHeight || 58;
+  const syncTop = () => {
+    document.documentElement.style.setProperty('--pr-header-h', headerH() + 'px');
+    document.documentElement.style.setProperty('--pr-titlebar-h', (bar.offsetHeight || 54) + 'px');
+  };
+  const syncStuck = () => bar.classList.toggle('is-stuck', bar.getBoundingClientRect().top <= headerH() + 1);
+  syncTop(); syncStuck();
+  window.addEventListener('resize', () => { syncTop(); syncStuck(); });
+  window.addEventListener('scroll', syncStuck, { passive: true });
+})();
+
+// Shared two-step confirm affordance: morph a button's label in place
+// (used by Config save/reset and the Dashboard run buttons).
+function _measureMorphButtonWidth(btn, text) {
+  if (!btn) return 0;
+  const probe = btn.cloneNode(false);
+  probe.removeAttribute('id');
+  probe.removeAttribute('onclick');
+  probe.disabled = false;
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.pointerEvents = 'none';
+  probe.style.left = '-9999px';
+  probe.style.top = '-9999px';
+  probe.style.width = 'auto';
+  probe.style.minWidth = '0';
+  const span = document.createElement('span');
+  span.className = 'btn-morph-label';
+  span.textContent = text;
+  probe.appendChild(span);
+  document.body.appendChild(probe);
+  const width = Math.ceil(probe.offsetWidth);
+  probe.remove();
+  return width;
+}
+
+function _morphButtonText(btn, text, opts = {}) {
+  if (!btn) return;
+  const nextText = String(text || '');
+  btn.classList.add('btn-morph');
+
+  if (btn._morphTimer) {
+    clearTimeout(btn._morphTimer);
+    btn._morphTimer = null;
+  }
+  let label = btn.querySelector('.btn-morph-label');
+  if (!label) {
+    const currentText = (btn.textContent || '').trim();
+    btn.textContent = '';
+    label = document.createElement('span');
+    label.className = 'btn-morph-label';
+    label.textContent = currentText;
+    btn.appendChild(label);
+  }
+
+  if ((label.textContent || '').trim() === nextText) {
+    btn.setAttribute('aria-label', nextText);
+    return;
+  }
+
+  const currentWidth = Math.ceil(btn.getBoundingClientRect().width || btn.offsetWidth);
+  const nextWidth = _measureMorphButtonWidth(btn, nextText);
+  // noShrink (used when arming "Are you sure?"): never make the tap target
+  // smaller than it was. On touch, the confirming tap lands where the button
+  // WAS — if the arming morph shrinks it, that tap hits the page instead and
+  // the outside-click canceller disarms the confirmation.
+  const targetWidth = opts.noShrink ? Math.max(currentWidth, nextWidth) : nextWidth;
+
+  btn.setAttribute('aria-label', nextText);
+  btn.style.width = `${currentWidth}px`;
+  btn.style.minWidth = `${currentWidth}px`;
+  btn.offsetWidth; // force the width transition to start from the current size
+
+  label.textContent = nextText;
+  requestAnimationFrame(() => {
+    btn.style.width = `${targetWidth}px`;
+    btn.style.minWidth = `${targetWidth}px`;
+  });
+
+  btn._morphTimer = setTimeout(() => {
+    btn.style.width = '';
+    // Keep the widened footprint for the whole armed state; the disarm morph
+    // (without noShrink) clears it.
+    btn.style.minWidth = opts.noShrink ? `${targetWidth}px` : '';
+    btn._morphTimer = null;
+  }, 210);
+}
+let _prDebugReturnFocus = null;
+function prShowDebugBox(title, text) {
+  const overlay = _prDebugBox();
+  overlay.querySelector('#pr-debug-title').textContent = title || 'Debug output';
+  overlay.querySelector('#pr-debug-text').textContent = text || '(empty)';
+  overlay.classList.add('show');
+  // The box declares role=dialog aria-modal, so actually move focus into it
+  // (and back on close) — otherwise keyboard focus stays on the now-disabled
+  // trigger button and Tab wanders the page behind the overlay.
+  if (!overlay.contains(document.activeElement)) {
+    _prDebugReturnFocus = (document.activeElement instanceof HTMLElement) ? document.activeElement : null;
+    overlay.querySelector('#pr-debug-copy')?.focus();
+  }
+}
+function prHideDebugBox() {
+  const overlay = document.getElementById('pr-debug-overlay');
+  if (!overlay || !overlay.classList.contains('show')) return;
+  overlay.classList.remove('show');
+  if (_prDebugReturnFocus && document.contains(_prDebugReturnFocus)) {
+    try { _prDebugReturnFocus.focus(); } catch (_) {}
+  }
+  _prDebugReturnFocus = null;
+}
+async function prCopyDebugBox(btn) {
+  const text = document.getElementById('pr-debug-text')?.textContent || '';
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    }
+  } catch (_) { /* fall through to the textarea fallback */ }
+  if (!ok) {
+    // http:// LAN origins have no navigator.clipboard — classic fallback.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+    ta.remove();
+  }
+  if (btn) {
+    const old = btn.textContent;
+    btn.textContent = ok ? 'Copied' : 'Copy failed';
+    setTimeout(() => { btn.textContent = old; }, 1600);
+  }
+}
+// Keep the "…" loading state visible for a beat before results replace it: a
+// fast (LAN) response can resolve before the browser paints the loading frame,
+// so the panel would flash straight old→new and never look like it refreshed.
+const PR_DEBUG_MIN_MS = 400;
+function prDebugMinVisible(startedAt) {
+  const remaining = PR_DEBUG_MIN_MS - (performance.now() - startedAt);
+  return remaining > 0 ? new Promise(res => setTimeout(res, remaining)) : Promise.resolve();
+}
+// POST a {ok, text} debug endpoint and pop the result.
+async function prRunDebug(url, title, btn, body) {
+  if (btn) btn.disabled = true;
+  const startedAt = performance.now();
+  prShowDebugBox(title, 'Running debug…');
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || 'Debug request failed.');
+    await prDebugMinVisible(startedAt);
+    prShowDebugBox(title, d.text || '(empty response)');
+  } catch (e) {
+    await prDebugMinVisible(startedAt);
+    prShowDebugBox(title, 'Debug failed: ' + (e.message || e));
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// Returns a dismiss function. Normal toasts auto-dismiss after 5s; pass
+// {sticky: true} for a toast the caller keeps up until it resolves (two-step
+// confirms like the library-cap warning, until the second click or a cancel).
+function showToast(msg, type = 'success', opts = {}) {
+  const wrap = document.getElementById('toast-wrap');
+  const cls  = ({ success: 'pr-toast--success', danger: 'pr-toast--danger', warning: 'pr-toast--warning', info: 'pr-toast--info' })[type] || 'pr-toast--info';
+  const text = String(msg ?? '')
+    .replace(/\u2026/g, '...')
+    .replace(/[\u2013\u2014]/g, '-')
+    // Emoji only — \p{S} also covered ordinary math symbols, which mangled
+    // real messages ("HEADROOM_GB=1000" lost its '=', "~1200 GB" its '~').
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const el = document.createElement('div');
+  el.className = `pr-toast ${cls}`;
+  el.textContent = text;
+  el.style.cursor = 'pointer';
+  el.title = 'Dismiss';
+  wrap.appendChild(el);
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    el.classList.add('pr-toast--out');
+    setTimeout(() => el.remove(), 200);
+  };
+  el.addEventListener('click', dismiss);
+  // Errors and warnings carry instructions ("Reload the page", "check the
+  // connection...") — give them longer than the 5s success blip.
+  if (!opts.sticky) setTimeout(dismiss, (type === 'danger' || type === 'warning') ? 9000 : 5000);
+  return dismiss;
+}
+
+// Header "running" badge. Toggled via a class on the header so CSS decides which
+// badge (mobile vs desktop) is shown. The Dashboard drives it directly from its
+// own status polling; every other page runs the lightweight poller below so the
+// badge is visible no matter where you are while a run is active.
+window.prSetHeaderRunning = function (on, live) {
+  const h = document.querySelector('.site-header');
+  if (!h) return;
+  h.classList.toggle('is-running', !!on);
+  h.classList.toggle('is-live-run', !!on && !!live);
+  const label = live ? 'Running' : 'Simulating';
+  h.querySelectorAll('.run-badge-label').forEach(el => { el.textContent = label; });
+};
+// The badge links to the Dashboard's run-progress card. Already on the
+// Dashboard, smooth-scroll to it instead of a full reload.
+document.querySelectorAll('.header-run-badge').forEach(a => {
+  a.addEventListener('click', (e) => {
+    const target = document.getElementById('run-progress');
+    if (!target) return;   // other pages navigate normally
+    e.preventDefault();
+    history.replaceState(null, '', '#run-progress');
+    prScrollTo(target);
+  });
+});
+// ── IMDb manual-setup popup (shared by all pages) ──
+// Which failure the popup was already shown for. Persisted so a page reload
+// or tab switch does not re-open it — only a NEW failure (a new key) pops it
+// again. Run failures use the run's started_at; library-sample failures use
+// 'sample:' + the failure timestamp.
+let _imdbHelpShownFor = null;
+function _imdbHelpAlreadyShown(key) {
+  try { return localStorage.getItem('pr-imdb-help-shown') === String(key); }
+  catch (_) { return _imdbHelpShownFor === key; }
+}
+function _markImdbHelpShown(key) {
+  _imdbHelpShownFor = key;
+  try { localStorage.setItem('pr-imdb-help-shown', String(key)); } catch (_) {}
+}
+
+async function showImdbHelpModal() {
+  // Fill in the exact destination path and configured source URL so the steps
+  // match this install, then open the modal.
+  try {
+    const r = await fetch('/api/imdb/status', { cache: 'no-store' });
+    const s = await r.json();
+    const path = s.path || '/config/title.ratings.tsv';
+    const url = s.url || 'https://datasets.imdbws.com/title.ratings.tsv.gz';
+    const tsvEl = document.getElementById('imdb-help-tsv-path');
+    const gzEl = document.getElementById('imdb-help-gz-path');
+    const urlEl = document.getElementById('imdb-help-url');
+    if (tsvEl) tsvEl.textContent = path;
+    if (gzEl) gzEl.textContent = path + '.gz';
+    if (urlEl && url) urlEl.href = url;
+  } catch (_) { /* keep the sensible defaults already in the markup */ }
+  const modalEl = document.getElementById('imdb-help-modal');
+  if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
+}
+
+// An AUTOMATIC library-sample build that failed on the IMDb dataset shows a
+// toast once per failure, on whatever page is open — the persistent
+// explanation lives in the Filtering & Scoring sample table. The full
+// setup-steps popup is reserved for failed runs and for the explorer's
+// explicit Refresh. Fed the sample_imdb_failed_at field from /api/status
+// polls; keyed separately from the run popup so the two guards never fight
+// over one storage slot.
+let _imdbSampleToastShownFor = null;
+window.prHandleSampleImdbError = function (failedAt) {
+  if (!failedAt) return;
+  const key = String(failedAt);
+  try { if (localStorage.getItem('pr-imdb-sample-toast') === key) return; }
+  catch (_) { if (_imdbSampleToastShownFor === key) return; }
+  _imdbSampleToastShownFor = key;
+  try { localStorage.setItem('pr-imdb-sample-toast', key); } catch (_) {}
+  showToast('Could not download the IMDb ratings dataset, so the library sample was skipped. '
+    + 'Add the dataset to the config folder, then press Refresh on Filtering and Scoring.', 'danger');
+};
+
+// Live red Configuration tab: /api/status polls call this so an API failure
+// mid-run (or a recovery) repaints the header without a page reload.
+window.prSetConfigTabError = function (on) {
+  const tab = [...document.querySelectorAll('.header-tabs a')].find(a => a.getAttribute('href') === '/config');
+  if (!tab) return;
+  on = !!on;
+  if (tab.classList.contains('config-needs-onboarding') === on) return;
+  tab.classList.toggle('config-needs-onboarding', on);
+  if (on) tab.title = 'Fix the API connection settings';
+  else tab.removeAttribute('title');
+};
+// Sliding tab underline: on hover-capable pointers the active tab's blue bar
+// glides to the hovered tab and returns when the pointer leaves the tab row.
+(function initTabIndicator() {
+  if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+  const tabs = document.querySelector('.header-tabs');
+  if (!tabs || !tabs.querySelector('a')) return;
+  const bar = document.createElement('span');
+  bar.className = 'header-tab-indicator';
+  tabs.appendChild(bar);
+  tabs.classList.add('has-indicator');
+  const activeTab = () => tabs.querySelector('a.active');
+  function moveTo(el, instant = false) {
+    if (!el) { bar.style.opacity = '0'; return; }
+    if (instant) bar.style.transition = 'none';
+    bar.style.opacity = '1';
+    bar.style.left = el.offsetLeft + 'px';
+    bar.style.width = el.offsetWidth + 'px';
+    bar.style.top = (el.offsetTop + el.offsetHeight - 2) + 'px';
+    // The alert-red Configuration tab keeps its color under the bar too.
+    bar.style.background = el.classList.contains('config-needs-onboarding')
+      ? 'var(--text-danger)' : 'var(--text-accent)';
+    if (instant) requestAnimationFrame(() => { bar.style.transition = ''; });
+  }
+  moveTo(activeTab(), true);
+  tabs.querySelectorAll('a').forEach(a => {
+    a.addEventListener('mouseenter', () => moveTo(a));
+  });
+  tabs.addEventListener('mouseleave', () => moveTo(activeTab()));
+  window.addEventListener('resize', () => moveTo(activeTab(), true));
+  // Fonts can settle after first paint and shift the tab widths.
+  window.addEventListener('load', () => moveTo(activeTab(), true));
+})();
+
+(function pollHeaderRunBadge() {
+  async function tick() {
+    if (window.__prDashboardOwnsBadge) return;   // Dashboard updates it itself
+    try {
+      const r = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
+      if (r.ok) {
+        const d = await r.json();
+        window.prSetHeaderRunning(!!d.run_active, !!d.run_live);
+        window.prSetConfigTabError(!!d.config_attention);
+        window.prHandleSampleImdbError(d.sample_imdb_failed_at);
+        // Page hook: lets a page react to run-state changes without its own
+        // /api/status poll (the explorer locks Filtering & Scoring with it).
+        if (typeof window.prOnStatusPoll === 'function') {
+          try { window.prOnStatusPoll(d); } catch (_) {}
+        }
+      }
+    } catch (_) { /* transient — try again next tick */ }
+  }
+  tick();
+  setInterval(tick, 4000);
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>
