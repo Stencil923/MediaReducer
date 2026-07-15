@@ -247,7 +247,7 @@ def _time_zone_options() -> list[str]:
 
 # Application version — surfaced in the debug report so bug reports name the
 # build. Bump on release.
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.0-beta.1"
 
 # Host clock, captured before any TIME_ZONE override is applied so switching the
 # setting back to auto can restore it.
