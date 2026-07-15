@@ -122,7 +122,8 @@ The `/library` mount must be writable for Live runs to delete files.
 ## Running Outside Docker
 
 You don't have to use Docker. MediaReducer is just `app.py` (the web UI) and
-`engine.py` (the worker); run `python3 app.py` and it serves on port 5000. The
+`engine.py` (the worker); run `python3 app.py` and it serves on port 7474 (the
+same port the Docker image publishes, so the URL is identical either way). The
 five paths it expects default to the container mounts above, but each can point
 anywhere via an environment variable:
 

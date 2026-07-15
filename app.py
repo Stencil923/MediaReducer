@@ -6577,4 +6577,4 @@ if __name__ == "__main__":
         except (ValueError, OSError):
             pass
 
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=7474, debug=False, threaded=True)
