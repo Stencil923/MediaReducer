@@ -1,0 +1,31 @@
+services:
+  mediareducer:
+    build: .
+    container_name: mediareducer
+    ports:
+      - "7474:5000"          # web UI — access at http://your-server-ip:7474
+    volumes:
+      - ${PLEX_LIBRARY_PATH}:/library:rw             # shared movie library mount (file deletion)
+      - ${TAUTULLI_APPDATA}:/tautulli:ro             # Tautulli config auto-detection
+      - ${RADARR_APPDATA}:/radarr:ro                 # Radarr config auto-detection (optional)
+      # The two fallbacks below are UNRAID defaults — set both vars in .env on
+      # any other host, or Docker will create /mnt/user/appdata/... for you.
+      - ${JELLYFIN_APPDATA:-/mnt/user/appdata/jellyfin}:/jellyfin:ro   # Jellyfin config auto-detection (optional)
+      - ${MEDIAREDUCER_DATA:-/mnt/user/appdata/mediareducer}:/config  # persistent config/logs/cache
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Run as a specific user instead of root (optional — works on any host).
+      # The mapped user needs write access to your movie files and /config.
+      # Unraid: 99/100 = nobody:users. Other Linux hosts: your own user's ids
+      # (`id -u` / `id -g`, commonly 1000/1000).
+      # - PUID=99
+      # - PGID=100
+      # Accessing the UI through a reverse-proxy domain? List it here,
+      # comma-separated — unknown Host headers are rejected (DNS-rebinding guard).
+      # - MEDIAREDUCER_TRUSTED_HOSTS=media.example.com
+    init: true               # reap engine subprocesses cleanly + forward SIGTERM to the app
+    # On stop, the app forwards SIGTERM to an in-flight run and waits ~8s for the
+    # engine to finish its current file (unlink → deleted.log) before exiting.
+    # Keep the grace comfortably above that so a clean finish is never cut short.
+    stop_grace_period: 30s
+    restart: unless-stopped
