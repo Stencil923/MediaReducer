@@ -381,9 +381,11 @@
     .log-term {
       background: var(--term-bg); color: var(--term-text);
       font-family: var(--font-mono);
-      font-size: .76rem; line-height: 1.6; min-height: 200px; height: 440px; overflow-y: auto;
+      font-size: .76rem; line-height: 1.6; min-height: 200px; height: 440px; overflow: auto;
       padding: 14px 16px; margin: 0; border-radius: 0 0 16px 16px;
-      white-space: pre-wrap; word-break: break-all;
+      /* Keep each log line intact and scroll it horizontally rather than wrapping
+         long paths across many rows — the themed scrollbar handles both axes. */
+      white-space: pre;
       border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
       scrollbar-color: var(--border-strong) var(--term-bg);
     }
