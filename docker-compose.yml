@@ -3,7 +3,7 @@ services:
     build: .
     container_name: mediareducer
     ports:
-      - "7474:5000"          # web UI — access at http://your-server-ip:7474
+      - "7474:7474"          # web UI — access at http://your-server-ip:7474
     volumes:
       - ${PLEX_LIBRARY_PATH}:/library:rw             # shared movie library mount (file deletion)
       - ${TAUTULLI_APPDATA}:/tautulli:ro             # Tautulli config auto-detection
