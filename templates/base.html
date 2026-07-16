@@ -346,6 +346,9 @@
       box-shadow: inset 0 1px 0 rgba(255,255,255,.16);
     }
     .pr-pill[hidden] { display: none; }
+    /* Status dot: a real circle (not the ● glyph, whose baseline sits off-centre)
+       so it aligns cleanly with the label. Inherits the pill's text colour. */
+    .pr-pill-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
     /* Phones: pills shrink to label size, but interactive ones (links, jump
        targets) keep a finger-sized tap area via an invisible ::after, without
        growing visually. */
@@ -354,6 +357,7 @@
         height: 24px; min-height: 24px; padding: 0 9px;
         font-size: .68rem; border-radius: 8px; gap: 5px;
       }
+      .pr-pill-dot { width: 6px; height: 6px; }
       a.pr-pill, .pr-pill[onclick], .pr-pill[role="button"] { position: relative; }
       a.pr-pill::after, .pr-pill[onclick]::after, .pr-pill[role="button"]::after {
         content: ""; position: absolute; left: -4px; right: -4px; top: -9px; bottom: -9px;
@@ -1350,14 +1354,14 @@
           <span class="brand-sub">Media Library Manager</span>
         </span>
       </a>
-      <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-mobile" aria-live="polite"><span aria-hidden="true">●</span> <span class="run-badge-label">Simulating</span></a>
+      <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-mobile" aria-live="polite"><span class="pr-pill-dot" aria-hidden="true"></span><span class="run-badge-label">Simulating</span></a>
     </div>
     <div class="header-tabs">
       <a href="/"         class="{{ 'active' if request.path == '/'         else '' }}">Dashboard</a>
       <a href="/config"   class="{{ 'active' if request.path == '/config'   else '' }} {{ 'config-needs-onboarding' if connection_onboarding_needed or api_connection_error else '' }}" {{ 'title="Fix the API connection settings"' if api_connection_error and not connection_onboarding_needed else ('title="Set up your media server connection (Plex via Tautulli, or Jellyfin)"' if connection_onboarding_needed else '') }}>Configuration</a>
       <a href="/explorer" class="{{ 'active' if request.path == '/explorer' else '' }}">Filtering &amp; Scoring</a>
     </div>
-    <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-desktop" aria-live="polite"><span aria-hidden="true">●</span> <span class="run-badge-label">Simulating</span></a>
+    <a href="/#run-progress" class="pr-pill pr-pill--accent header-run-badge run-badge-desktop" aria-live="polite"><span class="pr-pill-dot" aria-hidden="true"></span><span class="run-badge-label">Simulating</span></a>
     <button type="button" id="about-toggle" class="theme-toggle about-toggle" onclick="prShowWelcome()"
             aria-label="About MediaReducer and quick start guide" title="About &amp; quick start"
             aria-haspopup="dialog">?</button>

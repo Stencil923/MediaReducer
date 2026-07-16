@@ -3869,6 +3869,9 @@ async function saveConfig() {
         showToast('Saved. Connection issues found.', 'danger');
       } else if (d.api_config_changed && health && health.severity === 'warning') {
         showToast('Saved with connection warnings.', 'warning');
+      } else if (d.pending_cleared > 0) {
+        showToast(`Saved. Space limits are satisfied — cleared ${d.pending_cleared} movie`
+          + `${d.pending_cleared === 1 ? '' : 's'} from the deletion queue.`, 'success');
       } else {
         showToast('Configuration saved', 'success');
       }

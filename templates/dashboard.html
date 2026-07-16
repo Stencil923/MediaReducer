@@ -581,12 +581,16 @@
       --bs-btn-active-bg: var(--text-danger);
       --bs-btn-active-border-color: var(--text-danger);
       min-width: 76px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
       background: transparent !important;
       border-color: var(--text-danger) !important;
       color: var(--text-danger) !important;
       font-weight: 700;
       transition: opacity .15s ease, filter .15s ease, background-color .15s ease, border-color .15s ease, color .15s ease;
     }
+    /* A real square (not the ■ glyph, which renders small and sits off-baseline)
+       sized like a stop symbol; follows the button's colour on hover/disable. */
+    .dashboard-stop-glyph { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 2px; background: currentColor; }
     .dashboard-stop-btn:hover,
     .dashboard-stop-btn:focus,
     .dashboard-stop-btn:active,
@@ -876,7 +880,7 @@
       <button class="btn btn-sm dashboard-stop-btn" onclick="stopRun()" id="btn-stop"
               {% if not run_active %}disabled{% endif %}
               title="{{ 'Stop the active run' if run_active else 'No active run to stop' }}">
-        ■ Stop
+        <span class="dashboard-stop-glyph" aria-hidden="true"></span>Stop
       </button>
       <button class="btn btn-sm btn-icon run-help-toggle" type="button" id="btn-run-help"
               onclick="toggleRunHelp()" aria-controls="run-help" aria-expanded="false"
