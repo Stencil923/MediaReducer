@@ -1484,8 +1484,8 @@ def _load_config_from_file():
     if "HEADROOM_GB"                in _c: HEADROOM_GB                = _coerce_config_number(_c["HEADROOM_GB"], "HEADROOM_GB", min_value=0, default=0)
     if "REDLINE_GB"                 in _c: REDLINE_GB                 = _coerce_config_number(_c["REDLINE_GB"], "REDLINE_GB", allow_none=True, min_value=0, default=None)
     if "MAX_LIBRARY_GB"             in _c: MAX_LIBRARY_GB             = _coerce_config_positive_or_none(_c["MAX_LIBRARY_GB"], "MAX_LIBRARY_GB", default=None)
-    # Floor of 1 (never same-day) applied with max(); a stored 0 from an older
-    # config is silently promoted, not flagged as a manual-edit error.
+    # Defensive floor of 1 so a run never deletes the same day, whatever
+    # config.json holds (the app rejects a below-1 value before a run starts).
     if "DELETE_DELAY_DAYS"          in _c: DELETE_DELAY_DAYS          = max(1, int(_coerce_config_number(_c["DELETE_DELAY_DAYS"], "DELETE_DELAY_DAYS", min_value=0, max_value=365, default=1)))
     if "DAILY_RUN_TIME" in _c:
         _drt = str(_c["DAILY_RUN_TIME"] or "").strip()

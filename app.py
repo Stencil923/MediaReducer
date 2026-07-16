@@ -366,8 +366,7 @@ def _is_blank(value) -> bool:
 def _clamp_max_imdb_rating(value):
     """Nullable rating cutoff: None/blank = disabled, else clamp to 0.1–10.
     A value of 0 or below also reads as disabled — a cutoff of 0 matches
-    nothing, and older builds wrote 0 for a cleared field, so flagging it
-    would lock existing configs out on upgrade."""
+    nothing, so it means the same as "no cutoff" rather than being an error."""
     if _is_blank(value):
         return None
     try:
@@ -433,14 +432,15 @@ _CONFIG_NUM_RULES = (
     ("MAX_HEADROOM_PCT", None, lambda n: 0 < n <= 100, "must be a percentage above 0 and at most 100"),
     ("MAX_LIBRARY_GB", "null", lambda n: n > 0, "must be a number of GB above zero, or null"),
     ("GRACE_PERIOD_DAYS", None, lambda n: n >= 0 and float(n).is_integer(), "must be a whole number of days, zero or greater"),
-    # Accepts 0 here (a legacy/hand-edited 0 is silently promoted to the 1-day
-    # floor at load); the save FORM enforces the 1-day minimum for new input.
-    ("DELETE_DELAY_DAYS", None, lambda n: 0 <= n <= 365 and float(n).is_integer(), "must be a whole number of days from 0 to 365"),
+    # Floor of 1 (a marked movie is never deleted the same day), so 0 has no valid
+    # meaning — the GUI never writes it. A hand-edited 0 locks out like any other
+    # out-of-range edit rather than being silently reinterpreted.
+    ("DELETE_DELAY_DAYS", None, lambda n: 1 <= n <= 365 and float(n).is_integer(), "must be a whole number of days from 1 to 365"),
     ("LOG_RETENTION_DAYS", None, lambda n: n >= 0, "must be a number of days, zero or greater"),
     ("IMDB_RATINGS_MAX_AGE_DAYS", None, lambda n: n >= 1, "must be a number of days, one or greater"),
     ("SCORE_BALANCE", None, lambda n: 0 <= n <= 100, "must be a number from 0 to 100"),
-    # 0 is accepted as a legacy disabled spelling (older builds wrote it for a
-    # cleared field; the clamp reads it as None) — the GUI itself rejects 0.
+    # 0 is accepted as a disabled spelling (a cutoff of 0 matches nothing, so the
+    # clamp reads it as None) — the GUI writes null, not 0.
     ("MAX_IMDB_RATING", "blank", lambda n: 0 <= n <= 10, "must be a number from 0 to 10, or null"),
     ("NEAR_TIE_PTS", "blank", lambda n: 0.5 <= n <= 25, "must be a number from 0.5 to 25 points, or null"),
     ("MAX_STALENESS_MONTHS", None, lambda n: 1 <= n <= 120, "must be a number of months from 1 to 120"),
@@ -574,14 +574,6 @@ def load_config() -> dict:
     cfg["USE_JELLYFIN"] = _coerce_bool(cfg.get("USE_JELLYFIN"))
     _normalize_retention_scoring(cfg)
     _normalize_library_paths(cfg)
-    # Legacy installs stored DELETE_DELAY_DAYS: 0 (the old default) and config.json
-    # is never rewritten on upgrade. Clamp to the current floor of 1 here so the
-    # template, _savedConfig, and the save payload all agree — an un-promoted 0
-    # otherwise loads the Config page dirty and gets rejected on save.
-    try:
-        cfg["DELETE_DELAY_DAYS"] = max(1, int(float(cfg.get("DELETE_DELAY_DAYS", 1) or 1)))
-    except (TypeError, ValueError):
-        cfg["DELETE_DELAY_DAYS"] = 1
     cfg["CHECK_PATH"] = FILESYSTEM_CHECK_PATH
     cfg["TAUTULLI_APPDATA"] = TAUTULLI_APPDATA_DIR
     cfg["RADARR_APPDATA"] = RADARR_APPDATA_DIR
@@ -4563,6 +4555,17 @@ def pending_count() -> int:
     return len(_pending_raw())
 
 
+def _clear_pending_deletions() -> bool:
+    """Drop the whole marked-for-deletion queue. Callers must ensure no run is
+    active (the engine owns the file during a run); the config-save path guards
+    that with _run_active. Missing file already means an empty queue."""
+    try:
+        pending_path().unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
 def _normalized_monitor_dirs(cfg: dict) -> list[str]:
     out = []
     for raw in cfg.get("MONITOR_DIRS") or []:
@@ -4671,8 +4674,8 @@ def pending_deletion_entries() -> list[dict]:
 
 def _delete_delay_days(cfg: dict | None = None) -> int:
     try:
-        # Minimum 1: a marked movie is never deleted the same day. Clamps a
-        # hand-edited 0 (or blank) up to the floor.
+        # Defensive floor of 1: a marked movie is never deleted the same day. Valid
+        # config is always >= 1 (the file guard rejects less); max() covers the rest.
         return max(1, int(float((cfg or load_config()).get("DELETE_DELAY_DAYS", 1) or 1)))
     except (TypeError, ValueError):
         return 1
@@ -5755,6 +5758,24 @@ def api_save_config():
         # must never grant an immediate run.
         if _apply_configured_time_zone(cfg):
             burn_daily_window_on_startup(reason="time zone changed")
+        # Removing or lowering a space limit orphans the marked-for-deletion queue:
+        # the marks were a plan for a breach that no longer exists. The engine clears
+        # the queue the same way during its periodic Summary, but a threshold-only save
+        # skips that refresh — and once every limit is satisfied Simulate is disabled,
+        # so the marks would otherwise be stuck with no way to clear them. Reconcile
+        # here, immediately, whenever the saved config leaves nothing over any limit.
+        # (No run can be active — the entry guard rejects saves during one.)
+        pending_cleared = 0
+        if pending_count():
+            try:
+                _disk = cached_disk_stats()
+                _lib_gb = library_stats().get("library_gb")
+            except Exception:
+                _disk, _lib_gb = None, None
+            if not _deletion_limits_exceeded(cfg, _disk, _lib_gb):
+                pending_cleared = pending_count()
+                _clear_pending_deletions()
+
         # Storage stats only refresh when the saved config changes what the size scan
         # measures. Runs do their own precheck, so threshold-only saves stay quick and
         # don't kick off disk work.
@@ -5809,6 +5830,7 @@ def api_save_config():
             ),
             "radarr_cleanup_forced_disabled": radarr_cleanup_forced_disabled,
             "summary_refresh_started": summary_started,
+            "pending_cleared": pending_cleared,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
