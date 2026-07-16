@@ -1,0 +1,61 @@
+"""Dashboard run buttons ghost when every space limit is satisfied, fail
+OPEN on unknown values, and never mask a real threshold problem."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import app as A
+
+A._connection_health_for_ui = lambda cfg: {"critical_ok": True, "required_tooltip": ""}
+A._has_monitored_dirs = lambda cfg=None: True
+A._space_threshold_state = lambda cfg, disk=None: {
+    "ok_for_simulate": True, "ok_for_live": True,
+    "simulate_tooltip": "", "live_tooltip": "", "has_library_cap": False}
+A.library_stats = lambda: {"library_gb": 500}
+
+cfg = {"HEADROOM_GB": 100, "REDLINE_GB": None, "MAX_LIBRARY_GB": None}
+ok = True
+def check(name, cond):
+    global ok
+    print(("PASS " if cond else "FAIL ") + name)
+    ok = ok and cond
+
+# Satisfied: total 1000, used 800 -> limit 900, under it.
+st = A._live_button_state(cfg, {"used_gb": 800.0, "total_gb": 1000.0, "free_gb": 200.0})
+check("satisfied ghosts simulate", st["simulate_disabled"] is True)
+check("satisfied ghosts live", st["live_disabled"] is True)
+check("satisfied tooltip says why", "satisfied" in st["simulate_tooltip"])
+check("space_satisfied flag", st["space_satisfied"] is True)
+check("summary stays enabled", st["summary_disabled"] is False)
+
+# Breached: used 950 > 900 limit.
+st = A._live_button_state(cfg, {"used_gb": 950.0, "total_gb": 1000.0, "free_gb": 50.0})
+check("breached enables simulate", st["simulate_disabled"] is False)
+check("breached enables live", st["live_disabled"] is False)
+check("no stale tooltip when enabled", st["simulate_tooltip"] == "")
+
+# Unknown disk: fail open (the engine is the authority).
+st = A._live_button_state(cfg, None)
+check("unknown disk fails open", st["simulate_disabled"] is False)
+
+# A real threshold problem keeps its own tooltip.
+A._space_threshold_state = lambda cfg, disk=None: {
+    "ok_for_simulate": True, "ok_for_live": False,
+    "simulate_tooltip": "",
+    "live_tooltip": "Set a Headroom target, Redline, or Library Size Cap to enable Live.",
+    "has_library_cap": False}
+st = A._live_button_state(cfg, {"used_gb": 800.0, "total_gb": 1000.0, "free_gb": 200.0})
+check("threshold tooltip wins for live", "Headroom target" in st["live_tooltip"])
+check("satisfied still ghosts simulate", st["simulate_disabled"] is True)
+
+# Breached without a plan for the CURRENT thresholds: Live ghosts (a manual
+# Live Run deletes immediately), Simulate stays available to build the plan.
+A._space_threshold_state = lambda cfg, disk=None: {
+    "ok_for_simulate": True, "ok_for_live": True, "simulate_required": True,
+    "simulate_tooltip": "", "live_tooltip": "", "has_library_cap": False}
+st = A._live_button_state(cfg, {"used_gb": 950.0, "total_gb": 1000.0, "free_gb": 50.0})
+check("stale plan ghosts live", st["live_disabled"] is True)
+check("stale plan keeps simulate enabled", st["simulate_disabled"] is False)
+check("stale plan tooltip names Simulate", "Simulate" in st["live_tooltip"])
+
+print("RESULT:", "PASS" if ok else "FAIL")
+sys.exit(0 if ok else 1)
