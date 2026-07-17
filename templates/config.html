@@ -3506,6 +3506,12 @@ syncSavedVisibilitySections();
 // start empty and a later save would wipe PROTECTED_COLLECTIONS.)
 initCollections(_savedConfig);
 let _lastKnownLibraryGb = null;
+// Ages (calendar days) of marks still waiting out the delay, from /api/status.
+// Lowering the delay past one of these ages deletes that movie next cleanup.
+let _markedWaitingAges = null;
+function _captureMarkedWaitingAges(d) {
+  if (Array.isArray(d?.marked_waiting_ages)) _markedWaitingAges = d.marked_waiting_ages;
+}
 function updateCurrentLibrarySizeBadge(gb) {
   const numericTracked = Number(gb);
   if (Number.isFinite(numericTracked) && numericTracked > 0 && numericTracked !== _lastKnownLibraryGb) {
@@ -3542,6 +3548,7 @@ async function refreshCurrentLibrarySizeBadge() {
     const d = await r.json();
     _configRunActive = !!d.run_active;
     _configSummaryActive = !!d.summary_active;
+    _captureMarkedWaitingAges(d);
     updateCurrentLibrarySizeBadge(d.library_gb);
     _applyConfigRuntimeLocks();
   } catch (_) { /* keep the 0 GB fallback visible */ }
@@ -3556,6 +3563,7 @@ async function refreshConfigRuntimeState() {
     _configRunActive = !!d.run_active;
     _configSummaryActive = !!d.summary_active;
     _simulateRequired = !!(d.live_state?.space_thresholds?.simulate_required);
+    _captureMarkedWaitingAges(d);
     updateCurrentLibrarySizeBadge(d.library_gb);
   } catch (_) {
     return;
@@ -3634,6 +3642,7 @@ _syncDirtyState();
 // A cap the current library already exceeds means the very next Live pass
 // prunes down to it — surface that at save time and require the second click.
 function _immediatePruneWarning(cfg, nowLive) {
+  const warnings = [];
   // Cap-driven prune: the cap is being armed/changed below the library size.
   const capWarning = (() => {
     if (cfg.MAX_LIBRARY_GB === null || cfg.MAX_LIBRARY_GB === undefined) return '';
@@ -3652,12 +3661,30 @@ function _immediatePruneWarning(cfg, nowLive) {
       ? `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — Live will start pruning immediately. Save again to confirm.`
       : `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — the next Live run will prune down to it. Save again to confirm.`;
   })();
-  if (capWarning) return capWarning;
+  if (capWarning) warnings.push(capWarning);
+  // Delay-driven prune: lowering the deletion delay makes already-marked movies
+  // ripe sooner, so the next cleanup deletes some that would still be waiting.
+  const delayWarning = (() => {
+    const newDelay = Number(cfg.DELETE_DELAY_DAYS);
+    const savedDelay = Number(_savedConfig?.DELETE_DELAY_DAYS);
+    if (!Number.isFinite(newDelay) || !Number.isFinite(savedDelay)) return '';
+    if (newDelay >= savedDelay) return '';                 // only when lowering
+    if (!Array.isArray(_markedWaitingAges) || !_markedWaitingAges.length) return '';
+    // Waiting marks are all younger than the saved delay; any now at/above the
+    // new delay become deletable at the next cleanup instead of waiting.
+    const nowRipe = _markedWaitingAges.filter(a => Number(a) >= newDelay).length;
+    if (nowRipe <= 0) return '';
+    return `Deletion delay lowered from ${savedDelay} to ${newDelay} day${newDelay === 1 ? '' : 's'} — `
+      + `${nowRipe} already-marked movie${nowRipe === 1 ? '' : 's'} ${nowRipe === 1 ? 'is' : 'are'} now old enough `
+      + `and will be deleted on the next cleanup instead of waiting. Save again to confirm.`;
+  })();
+  if (delayWarning) warnings.push(delayWarning);
   // Headroom/redline-driven prune: going Live while free space is ALREADY
   // past a threshold — the first scheduler tick (within ~15 minutes) prunes.
-  // Without this, arming Live under a breached headroom got a bare
-  // "Are you sure?" while the cap case got a full sentence.
-  if (nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom')) {
+  // Only as a fallback when nothing more specific already warned, so arming
+  // Live under a breached headroom still gets a full sentence, not a bare
+  // "Are you sure?".
+  if (!warnings.length && nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom')) {
     const total = Number(_diskStats?.total_gb);
     const used = Number(_diskStats?.used_gb);
     const free = Number(_diskStats?.free_gb);
@@ -3670,11 +3697,11 @@ function _immediatePruneWarning(cfg, nowLive) {
         deficit = Math.max(deficit, head - free);
       }
       if (deficit > 0) {
-        return `Free space is already ${prGbAmount(deficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`;
+        warnings.push(`Free space is already ${prGbAmount(deficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`);
       }
     }
   }
-  return '';
+  return warnings.join(' ');
 }
 
 // ── Double-confirm when switching to Live ───────────────────────────────────
