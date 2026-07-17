@@ -69,10 +69,15 @@ Radarr does not monitor — the best copy survives longest.
 
 SCHEDULING (invoked every few minutes by the web UI's scheduler)
 ----------
-  - Headroom: once per calendar day when usage exceeds HEADROOM_GB.
-  - Redline: immediate on every tick if free space drops below REDLINE_GB.
+  - Headroom: once per calendar day when usage exceeds HEADROOM_GB. Frees back
+    to the HEADROOM_GB target.
+  - Redline: immediate on every tick if free space drops below REDLINE_GB. Frees
+    only back to the REDLINE_GB floor (just enough to clear the emergency),
+    deleting lowest-value first from a fresh re-score — which clears the
+    already-marked movies (the lowest-value ones) in order, reflecting the
+    current paths/filters/scoring.
   - Library cap: immediate on every tick if on-disk size exceeds MAX_LIBRARY_GB
-    (same as redline).
+    (same trigger cadence as redline).
   - RUN_MODE="debug_sim": full simulation, no deletions, ignores schedule.
   - RUN_MODE="debug_info": status and library size vs. limits, then exits.
   - RUN_MODE="headroom": live mode; enforces the space limits and MAX_LIBRARY_GB
@@ -192,8 +197,9 @@ EXECUTABLE_RUN_MODES = ("debug_info", "debug_sim", "headroom")
 HEADROOM_GB = 1000  # free space to maintain (once-per-day cleanup trigger). ~1 TB
                     # is a reasonable start on a 20 TB array.
 REDLINE_GB  = 200   # emergency floor: immediate cleanup when free space drops below
-                    # this. Cannot exceed HEADROOM_GB. Set equal to HEADROOM_GB for a
-                    # single threshold enforced every run ("redline-only"); None disables.
+                    # this, freeing only back to this floor (not the headroom target).
+                    # Cannot exceed HEADROOM_GB. Set equal to HEADROOM_GB for a single
+                    # threshold enforced every run ("redline-only"); None disables.
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -213,7 +219,8 @@ MAX_LIBRARY_GB = None  # maximum on-disk library size in GB. None = disabled.
 # earliest deletion is the next day's daily run (N=1). Larger N widens the grace
 # window to protect a movie or change the rules. Redline emergencies and manual
 # Live Runs ignore the delay (waiting defeats an emergency floor / a deliberate
-# button press).
+# button press); a redline re-scores fresh and deletes lowest-value first, so it
+# clears the already-marked movies (the lowest-value ones) in the current order.
 DELETE_DELAY_DAYS = 1
 
 # Time of day (24h HH:MM, in the operating time zone) the once-per-day
@@ -5331,14 +5338,15 @@ def main():
 
     # Compute how many bytes need to be freed to satisfy all active conditions.
     _headroom_deficit_gb = max(0.0, used_gb - max_gb)
-    # Redline fires on FREE space, so its deficit must be measured in free
-    # terms: restore free space to the HEADROOM_GB floor the config maintains
-    # (REDLINE_GB <= HEADROOM_GB is enforced at load). On filesystems where
-    # used+free==total this equals the used-based headroom deficit — but with
-    # a root reserve (ext4's ~5%, btrfs metadata) used-based math can say 0
-    # while free is genuinely below the emergency floor, which would make a
-    # redline run compute a 0-byte target and delete nothing, forever.
-    _redline_deficit_gb  = max(0.0, HEADROOM_GB - free_gb) if redline_hit else 0.0
+    # Redline fires on FREE space, so its deficit is measured in free terms:
+    # free just enough to bring free space back to the REDLINE_GB floor. An
+    # emergency clears the breach only — it does NOT top up to the headroom
+    # target; the once-per-day headroom run does that (honoring the deletion
+    # delay). Measuring against free rather than used matters on filesystems
+    # with a root reserve (ext4's ~5%, btrfs metadata), where used-based math
+    # can read 0 while free is genuinely below the floor — which would free
+    # nothing while space keeps draining.
+    _redline_deficit_gb  = max(0.0, REDLINE_GB - free_gb) if redline_hit else 0.0
     _library_deficit_gb  = max(0.0, library_gb - MAX_LIBRARY_GB) if library_cap_hit else 0.0
     # The emergency (redline) run restores the free-space floor only; the
     # library cap is a daily target that also honors the deletion delay, so
@@ -5623,12 +5631,25 @@ def main():
                   deleted=0, bytes_freed=0, current_title="",
                   message="Freeing space…")
 
+    # A redline emergency deletes straight down THIS run's freshly-scored
+    # candidate list — every movie is re-scored under the current monitored
+    # paths, filters, and scoring at the moment the redline fires, so the order
+    # always reflects the latest settings, never a stale snapshot from when a
+    # movie was marked. That order is lowest-value first, which is exactly the
+    # already-marked movies (they were marked because they score lowest), so an
+    # emergency clears the marked queue in order before touching anything
+    # unmarked — and follows the updated order if you have since changed paths,
+    # filters, or scoring. Strict order (no near-tie file-size optimization)
+    # keeps that sequence intact; paced daily runs and manual Live Runs keep the
+    # optimizer.
+    _emergency = immediate_trigger and not _manual_live
     pending = list(candidates)
     tie_group = []
     while pending or tie_group:
         if planned_bytes >= to_free_bytes:
             break
-        candidate = _pop_next_deletion(pending, tie_group, to_free_bytes - planned_bytes)
+        candidate = pending.pop(0) if _emergency \
+            else _pop_next_deletion(pending, tie_group, to_free_bytes - planned_bytes)
         # A transient filesystem error mid-loop (mount hiccup, permission
         # change, file vanishing between exists() and stat()) must not abort
         # the run after some files are already gone — that would skip the

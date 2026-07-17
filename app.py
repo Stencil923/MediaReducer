@@ -826,6 +826,34 @@ def burn_daily_window_on_startup(reason: str = "startup") -> None:
     except Exception as e:
         print(f"WARNING: could not stamp the daily-run window ({e})", flush=True)
 
+
+def reopen_daily_window(reason: str = "daily run time moved later") -> None:
+    """Undo today's daily-window burn so a run time moved to a slot still ahead
+    of the clock can fire again today. No-op unless the window is currently burned
+    for today. Safe with the deletion delay: mark ages are calendar-day granular
+    (see engine _mark_age_days), so a second run on the same day only re-marks
+    candidates — no mark ages into eligibility between two runs on one day, so
+    nothing extra is deleted."""
+    p = cache_path()
+    today = time.strftime("%Y-%m-%d")
+    try:
+        if not p.exists():
+            return
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("last_cleanup_date") != today:
+            return
+        data.pop("last_cleanup_date", None)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(p)
+        finally:
+            tmp.unlink(missing_ok=True)
+        print(f"Daily-run window reopened for today ({reason}).", flush=True)
+    except Exception as e:
+        print(f"WARNING: could not reopen the daily-run window ({e})", flush=True)
+
 def log_path()     -> Path: return output_dir() / "lastrun.log"
 def deleted_path() -> Path: return output_dir() / "deleted.log"
 def progress_path()-> Path: return output_dir() / "progress.json"
@@ -4688,6 +4716,24 @@ def _daily_run_time(cfg: dict | None = None) -> str:
         return "00:00"
 
 
+def _run_time_moved_into_past(old_time: str, new_time: str, now_hhmm: str) -> bool:
+    """True when a save moves the daily run time to a slot already behind today's
+    clock. The engine would otherwise fire an immediate catch-up run (the window
+    is unused and now >= the new time), so today's window is burned and the new
+    time takes effect tomorrow. An unchanged time, or one still ahead today (which
+    simply fires later), returns False — HH:MM strings compare correctly within a
+    day."""
+    return new_time != old_time and now_hhmm > new_time
+
+
+def _run_time_moved_ahead_today(old_time: str, new_time: str, now_hhmm: str) -> bool:
+    """True when a save moves the daily run time to a slot still ahead of the clock
+    today. If today's run already fired (its window is burned), it is reopened so
+    the new, later time can run again today — safe, since a same-day re-run only
+    re-marks. Unchanged times, and times already behind the clock, return False."""
+    return new_time != old_time and now_hhmm < new_time
+
+
 def pending_delete_forecast() -> dict:
     """For the dashboard's breach note and red countdown: queue size, marks ripe now,
     and the next deletion EVENT — the exact batch the next deleting daily run removes
@@ -4700,12 +4746,22 @@ def pending_delete_forecast() -> dict:
     else:
         event_on = min((e["delete_on"] for e in entries), default=None)
         batch = [e for e in entries if e["delete_on"] == event_on] if event_on else []
+    # Calendar-day age of each mark that is still WAITING (not yet ripe under the
+    # current delay). Lowering the delay to N makes any waiting mark whose age is
+    # >= N deletable at the next cleanup, so the Config page uses these to warn
+    # before a save that would delete more than the current delay would.
+    today = datetime.now().date()
+    waiting_ages = sorted(
+        (today - datetime.fromtimestamp(e["marked_at"]).date()).days
+        for e in entries if e["days_remaining"] > 0
+    )
     return {
         "count": len(entries),
         "ripe": len(ripe),
         "event_on": event_on,
         "event_count": len(batch),
         "event_bytes": int(sum(e.get("size_bytes") or 0 for e in batch)),
+        "waiting_ages": waiting_ages,
     }
 
 # ── Routes — pages ────────────────────────────────────────────────────────────
@@ -4894,6 +4950,9 @@ def api_status():
         "deleted_reclaimed_label": deleted["reclaimed_label"],
         "marked_count":            _forecast["count"],
         "marked_ripe_count":       _forecast["ripe"],
+        # Ages (calendar days) of marks still waiting out the delay — the Config
+        # page warns before a save that lowers the delay enough to delete them.
+        "marked_waiting_ages":     _forecast["waiting_ages"],
         "marked_event_on":         _forecast["event_on"],
         "marked_event_count":      _forecast["event_count"],
         "marked_event_bytes":      _forecast["event_bytes"],
@@ -5756,8 +5815,24 @@ def api_save_config():
         # Point the process clock at the saved zone. Moving the zone moves the midnight
         # boundary, so re-burn today's run window — like the startup burn, a clock change
         # must never grant an immediate run.
-        if _apply_configured_time_zone(cfg):
+        _tz_changed = _apply_configured_time_zone(cfg)
+        if _tz_changed:
             burn_daily_window_on_startup(reason="time zone changed")
+        # Adjusting the daily run time within the same day, in the configured zone
+        # (already applied above), matching the engine's own comparison:
+        #   • moved to a slot already behind the clock (e.g. 3am → 1am at 2:20am):
+        #     treat it as missed and burn today's window so the new time starts
+        #     tomorrow — never an instant catch-up run.
+        #   • moved to a slot still ahead when today's run already fired: reopen the
+        #     window so it can run again today at the new time. Safe with the delay
+        #     (a same-day re-run only re-marks). Skipped if the zone also changed —
+        #     that burn is a deliberate safety reset we must not undo here.
+        _old_rt, _new_rt = _daily_run_time(saved_cfg), _daily_run_time(cfg)
+        _now_hhmm = time.strftime("%H:%M")
+        if _run_time_moved_into_past(_old_rt, _new_rt, _now_hhmm):
+            burn_daily_window_on_startup(reason="daily run time moved earlier")
+        elif not _tz_changed and _run_time_moved_ahead_today(_old_rt, _new_rt, _now_hhmm):
+            reopen_daily_window(reason="daily run time moved later")
         # Removing or lowering a space limit orphans the marked-for-deletion queue:
         # the marks were a plan for a breach that no longer exists. The engine clears
         # the queue the same way during its periodic Summary, but a threshold-only save

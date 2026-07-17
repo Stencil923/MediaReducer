@@ -226,9 +226,14 @@ copy. It never asks Radarr to delete files.
 
 Space Thresholds unlock after a monitored path is saved.
 
-- **Headroom target** — cleanup runs when free space drops below this amount.
-  Blank saves as 0.
-- **Redline emergency floor** — optional immediate-cleanup floor.
+- **Headroom target** — cleanup runs when free space drops below this amount,
+  freeing back up to it. Blank saves as 0.
+- **Redline emergency floor** — optional immediate-cleanup floor. When free
+  space drops below it, cleanup runs on the next tick and frees only enough to
+  get back to the floor (not up to the headroom target). It re-scores your
+  library and deletes lowest-value first, so it clears the already-marked movies
+  (which are the lowest-value ones) in order — and if you have since changed
+  monitored paths, filters, or scoring, it follows that updated order.
 - **Library Size Cap** — optional cap on the total size of monitored movie
   files.
 
@@ -243,10 +248,11 @@ The Dashboard's storage numbers are cached and refresh every 15 minutes, after
 config saves, and whenever you hit the ↻ button — but every run re-checks the
 real numbers before it does anything.
 
-If a change would let MediaReducer start deleting the moment you save it (say,
-a cap below your current library size), it drops to Paused and makes you
-confirm before Live comes back on. Anything that can delete right away takes
-two deliberate clicks.
+If a change would make MediaReducer delete more the next time it runs — say, a
+cap below your current library size, or lowering the deletion delay so movies
+already marked come due sooner — a persistent notice explains exactly what will
+happen and the save takes a second, confirming click. Anything that can delete
+right away takes two deliberate clicks.
 
 ### 5. Advanced
 
@@ -366,9 +372,18 @@ With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
   midnight) — an eligible day waits for that time of day. The daily window
   is only consumed by a cleanup that actually runs — a within-limits check
   or one that's still waiting for the run time never blocks a breach later
-  that day.
-- **Redline** cleanups trigger immediately on any tick that finds them
-  breached, ignoring the once-per-day schedule (and the deletion delay).
+  that day. Moving the run time to a slot still ahead today keeps today's run
+  at the new time — even if today's run already happened, moving it to a later
+  slot lets it run once more today (safe: with the deletion delay a same-day
+  re-run only re-marks, deleting nothing extra). Moving it to a slot already
+  past skips today and starts at the new time tomorrow (it never triggers an
+  instant catch-up run).
+- **Redline** cleanups trigger immediately on any tick that finds free space
+  below the floor, ignoring the once-per-day schedule (and the deletion delay).
+  A redline frees only enough to get back to the floor. It re-scores your
+  library at run time and deletes lowest-value first, so it clears the
+  already-marked movies (the lowest-value ones) in order — always reflecting
+  your latest paths, filters, and scoring rather than a stale snapshot.
 - **Deletion delay** (Space Thresholds) holds daily deletions for N whole
   days (minimum 1 — a movie is never deleted the same day it's marked).
   **Simulate writes the plan**: it marks the candidates (deleting nothing),
