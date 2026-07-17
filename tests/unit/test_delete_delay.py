@@ -114,6 +114,11 @@ with tempfile.TemporaryDirectory() as td:
           by_title["Movie B"]["days_remaining"] == 0 and "deletable now" in by_title["Movie B"]["line"])
     check("pending mark carries its eligibility date",
           f"deletable from {by_title['Movie A']['delete_on']}" in by_title["Movie A"]["line"])
+    # Waiting-mark ages feed the Config page's "lowering the delay deletes more"
+    # warning: Movie C (marked now) age 0, Movie A (1 day ago) age 1; Movie B is
+    # already ripe under the 7-day delay, so it is not waiting.
+    check("forecast reports ages of still-waiting marks",
+          A.pending_delete_forecast().get("waiting_ages") == [0, 1])
     # Shortening the delay moves pending deletions up.
     _state["cfg"]["DELETE_DELAY_DAYS"] = 2
     entries = {e["title"]: e for e in A.pending_deletion_entries()}

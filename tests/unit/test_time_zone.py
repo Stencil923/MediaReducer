@@ -117,6 +117,30 @@ try:
     check("file validator accepts a real run time",
           not A._config_file_issues({"DAILY_RUN_TIME": "23:30"}))
 
+    # ── Moving the run time earlier burns today's window; later still fires today ─
+    # At 02:20, moving 03:00 → 01:00 is now behind the clock: don't catch up today.
+    check("earlier run time (already passed) burns today's window",
+          A._run_time_moved_into_past("03:00", "01:00", "02:20") is True)
+    # 03:00 → 05:00 is still ahead: it fires today at 05:00, no burn.
+    check("later run time still fires today", A._run_time_moved_into_past("03:00", "05:00", "02:20") is False)
+    # Unchanged time never burns, even if it is behind the clock.
+    check("unchanged run time never burns", A._run_time_moved_into_past("01:00", "01:00", "02:20") is False)
+    # Exactly the current minute fires now (engine runs when now >= run time).
+    check("run time equal to now is not 'past'", A._run_time_moved_into_past("03:00", "02:20", "02:20") is False)
+
+    # ── Moving the run time later (after today already ran) reopens the window ────
+    # At 03:00 (2am run already fired today), moving to 05:00 should reopen so it
+    # can run again today at 05:00.
+    check("later run time (still ahead) reopens today",
+          A._run_time_moved_ahead_today("02:00", "05:00", "03:00") is True)
+    check("earlier run time does not reopen", A._run_time_moved_ahead_today("02:00", "01:00", "03:00") is False)
+    check("unchanged run time does not reopen", A._run_time_moved_ahead_today("05:00", "05:00", "03:00") is False)
+    check("run time equal to now does not reopen", A._run_time_moved_ahead_today("02:00", "03:00", "03:00") is False)
+    # The two decisions are mutually exclusive.
+    check("past and ahead are mutually exclusive",
+          not (A._run_time_moved_into_past("02:00", "05:00", "03:00")
+               and A._run_time_moved_ahead_today("02:00", "05:00", "03:00")))
+
     # ── A running engine locks the clock: the global save guard covers the
     # time zone too (the UI also ghosts the field while a run is active) ──────
     with tempfile.TemporaryDirectory() as td:
