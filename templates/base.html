@@ -391,13 +391,21 @@
     .log-term {
       background: var(--term-bg); color: var(--term-text);
       font-family: var(--font-mono);
-      font-size: .76rem; line-height: 1.6; min-height: 200px; height: 440px; overflow: auto;
+      font-size: .76rem; line-height: 1.6; min-height: 200px; height: 440px;
+      overflow-y: auto; overflow-x: hidden;
       padding: 14px 16px; margin: 0; border-radius: 0 0 16px 16px;
-      /* Keep each log line intact and scroll it horizontally rather than wrapping
-         long paths across many rows — the themed scrollbar handles both axes. */
-      white-space: pre;
       border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
       scrollbar-color: var(--border-strong) var(--term-bg);
+    }
+    /* Each log line is its own block: long lines wrap in place with a hanging
+       indent so continuations read as part of their line, and copying still
+       yields the original one-line-per-entry text — the indent is styling, not
+       characters, and each block copies as its own line. */
+    .log-term .log-line {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      padding-left: 2.25em;
+      text-indent: -2.25em;
     }
 
     /* ═══════ Accordion ═══════ */

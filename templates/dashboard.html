@@ -967,8 +967,7 @@
     </div>
   </div>
   <div class="log-window-body">
-    <pre class="log-term" id="log-term">Pick an action above to run MediaReducer.
-Live output will stream here.</pre>
+    <div class="log-term" id="log-term"><div class="log-line">Pick an action above to run MediaReducer.</div><div class="log-line">Live output will stream here.</div></div>
     <button type="button" class="log-jump" id="log-jump" hidden onclick="_logJumpToBottom()">↓ Jump to latest</button>
   </div>
 </div>
@@ -1241,7 +1240,7 @@ async function jumpToLogSection(kind) {
     _logViewMode = 'section';
     _logViewKind = kind;
     _termPinned = false;             // static view: never follow live output
-    term.textContent = prNormalizeDisplayedTimestamps(d.content || '');
+    _renderTermLines(term, prNormalizeDisplayedTimestamps(d.content || ''));
     term.scrollTop = 0;
     _setLogViewUI();
     _updateLogJumpButton();
@@ -1322,12 +1321,32 @@ document.getElementById('log-term')?.addEventListener('scroll', (e) => {
   _updateLogJumpButton();
 });
 
+// Render log text as one block per line (see .log-line): long lines wrap with
+// a hanging indent, and a copy still comes out as the original lines. Blank
+// lines become a <br> block so they keep their height and copy as a newline.
+// Skips the DOM rebuild when the text hasn't changed between polls.
+let _termRenderedText = null;
+function _renderTermLines(term, text) {
+  if (text === _termRenderedText) return;
+  _termRenderedText = text;
+  const lines = (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n');
+  const frag = document.createDocumentFragment();
+  for (const line of lines) {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    if (line) div.textContent = line;
+    else div.appendChild(document.createElement('br'));
+    frag.appendChild(div);
+  }
+  term.replaceChildren(frag);
+}
+
 function _setTerm(content) {
   const term = document.getElementById('log-term');
   if (!term) return;
   const follow = _termPinned;
   const keepTop = term.scrollTop;
-  term.textContent = prNormalizeDisplayedTimestamps(content || '');
+  _renderTermLines(term, prNormalizeDisplayedTimestamps(content || ''));
   term.scrollTop = follow ? term.scrollHeight : keepTop;
   _updateLogJumpButton();
 }
