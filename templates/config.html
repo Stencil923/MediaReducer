@@ -715,7 +715,7 @@
             <div id="section-detected" class="form-text"{% if cached_radarr_section_id %} data-section-id="{{ cached_radarr_section_id }}"{% endif %}{% if cached_radarr_section_name %} data-section-name="{{ cached_radarr_section_name }}"{% endif %}{% if cached_radarr_section_method %} data-section-method="{{ cached_radarr_section_method }}"{% endif %}{% if cached_radarr_section_method_label %} data-section-method-label="{{ cached_radarr_section_method_label }}"{% endif %}>{% if cached_radarr_section_id %}Detected section: {{ cached_radarr_section_id }}{% if cached_radarr_section_name %} ({{ cached_radarr_section_name }}){% endif %}{% if cached_radarr_section_method_label or cached_radarr_section_method %} via {{ cached_radarr_section_method_label or cached_radarr_section_method }}{% endif %}{% else %}The Plex section ID is detected automatically after Radarr and Plex connect.{% endif %}</div>
           </div>
           <div id="section-requires-radarr" class="form-text connection-unlock-note"{{ '' if not radarr_connected else ' hidden' }}>Connect Radarr to unlock this.</div>
-          <div class="form-text">After deletion, remove the movie from Radarr once the last copy is gone.</div>
+          <div class="form-text">When the copy in Radarr's movie section is deleted, remove the movie from Radarr so it isn't re-downloaded.</div>
         </div>
         </div>
 
