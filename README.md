@@ -47,7 +47,8 @@ movie files at `/library`.
   anything runs.
 - Shows progress, logs, storage, and a permanent deletion history on the
   Dashboard.
-- Can tell Radarr to unmonitor a movie once its last copy is gone.
+- Can tell Radarr to forget a movie once its copy is deleted, so it doesn't
+  get re-downloaded.
 
 ## Requirements
 
@@ -219,9 +220,9 @@ until at least one path is saved.
 
 When Plex or Jellyfin is connected, this section also shows protected
 collection pickers — selected collections are always skipped. When Radarr is
-connected, **Optional Radarr cleanup** appears as a single checkbox: it
-unmonitors a movie in Radarr after the last managed copy is deleted, and never
-asks Radarr to delete files.
+connected, **Optional Radarr cleanup** appears as a single checkbox: when the
+copy in Radarr's section is deleted, the movie is removed from Radarr so it
+doesn't get re-downloaded. It never asks Radarr to delete files.
 
 ### 4. Space Thresholds
 
@@ -475,9 +476,9 @@ Use the storage card's ↻ button or clear the cache. Stats also refresh on the
 
 ### Radarr did not remove a movie
 
-Radarr cleanup runs only when it is enabled, Radarr is connected, the deleted
-movie belongs to the detected Plex section, and no other managed copy remains
-on disk.
+Radarr cleanup runs only when it is enabled, Radarr is connected, and the
+deleted file was the copy in Radarr's detected Plex section. Redline emergency
+deletions from the marked queue skip Radarr cleanup.
 
 ## License
 

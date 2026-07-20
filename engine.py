@@ -5,8 +5,8 @@ engine.py — the MediaReducer deletion engine.
 Monitors disk usage and monitored movie-library size and removes low-value
 movie files when configured thresholds are exceeded. Reads libraries from
 Plex/Tautulli, Jellyfin, or both; Plex and Jellyfin supply protected-collection
-metadata; Radarr can drop a deleted movie from monitoring once its last copy is
-gone. Pure Python 3 standard library — no pip installs.
+metadata; Radarr forgets a movie the moment its copy in Radarr's own section is
+deleted. Pure Python 3 standard library — no pip installs.
 
 HOW IT RUNS
 -----------
@@ -2469,7 +2469,7 @@ def radarr_delete(tmdb_id, title, movie=None):
     _abort_api_failure(f"Radarr delete failed during post-delete cleanup | title={title} | tmdb_id={tmdb_id} | status={del_status}", phase="deleting")
 
 
-def cleanup_radarr(candidate, section1_paths_by_tmdb):
+def cleanup_radarr(candidate):
     """
     After a file has been physically deleted, decide whether to remove the movie
     from Radarr. (Overseerr needs no direct call — once Radarr drops the movie,
@@ -2477,12 +2477,11 @@ def cleanup_radarr(candidate, section1_paths_by_tmdb):
 
     Rules:
     - Only runs when RADARR_OVERSEERR_SECTION_ID is set.
-    - Only runs when the deleted file was in that section.
-    - Checks whether any other file for the same TMDB ID still exists on disk
-      within that section (including protected movies and movies not selected
-      for deletion). If a surviving copy exists, skips cleanup so Radarr stays
-      aware of the movie.
-    - Only when this was the last copy does it remove the movie from Radarr.
+    - Only runs when the deleted file was in that section — the one Radarr
+      manages. Deleting Radarr's copy removes the movie from Radarr right then,
+      regardless of duplicates elsewhere (another section, a second Version in
+      the same folder): those copies aren't Radarr's, and leaving the movie in
+      Radarr with its own file gone invites a re-download.
     """
     if not RADARR_OVERSEERR_SECTION_ID:
         return
@@ -2516,37 +2515,8 @@ def cleanup_radarr(candidate, section1_paths_by_tmdb):
             f"title={title} | tmdb_id={tmdb_id}"
         )
 
-    deleted_path = candidate["path"].resolve()
-    all_section1_paths = section1_paths_by_tmdb.get(tmdb_id, set())
-    other_paths = all_section1_paths - {deleted_path}
-    surviving = [p for p in other_paths if p.exists()]
-
-    # Belt-and-suspenders for multi-file movies: a single Plex item can hold
-    # several physical files ("Versions"), which the scan registers as just one
-    # path — so section1_paths_by_tmdb may not know about a sibling copy. If the
-    # deleted file's own folder still holds another playable file, treat it as a
-    # surviving copy and keep Radarr aware rather than risk forgetting a movie
-    # that still exists on disk. Only ever makes cleanup MORE conservative.
-    if not surviving:
-        try:
-            for sib in deleted_path.parent.iterdir():
-                if (sib != deleted_path and sib.suffix.lower() in MOVIE_EXTENSIONS
-                        and sib.is_file()):
-                    surviving.append(sib)
-                    break
-        except OSError:
-            pass
-
-    if surviving:
-        log(
-            f"Radarr: skipping cleanup, {len(surviving)} other copy/copies "
-            f"still on disk in section {RADARR_OVERSEERR_SECTION_ID} | "
-            f"title={title} | surviving={[str(p) for p in surviving]}"
-        )
-        return
-
     log(
-        f"Radarr: last copy in section {RADARR_OVERSEERR_SECTION_ID} deleted, "
+        f"Radarr: copy in section {RADARR_OVERSEERR_SECTION_ID} deleted, "
         f"cleaning up | title={title} | tmdb_id={tmdb_id}"
     )
 
@@ -4152,13 +4122,7 @@ def score_candidate(c, now=None):
 
 def build_candidates():
     """
-    Fetch all movies and return:
-      - candidates: sorted list of deletion candidates
-      - section1_paths_by_tmdb: {tmdb_id: set of resolved Paths} for ALL
-        on-disk movies in RADARR_OVERSEERR_SECTION_ID (including protected
-        movies and movies not selected for deletion), used at delete time to
-        check whether a surviving copy exists before triggering Radarr
-        cleanup.
+    Fetch all movies and return the sorted candidate list plus scan stats.
 
     Deletion order is the RetentionScore ASCENDING (see module docstring for
     the full formula): the lowest-value movie is deleted first. Exact score
@@ -4180,7 +4144,6 @@ def build_candidates():
       - Plex and Jellyfin disagree on the file's identity (IMDb/TMDb conflict).
     """
     candidates = []
-    section1_paths_by_tmdb: dict = {}  # tmdb_id -> set of resolved Paths
     identity_mismatches: list = []     # movies the two servers identify differently
     _mismatch_skip_paths: set = set()  # resolved paths a Plex row flagged as a conflict
     stats = {
@@ -4419,12 +4382,6 @@ def build_candidates():
             emit_progress(phase="scanning", scanned=movie_idx, total=total_movies,
                           eligible=stats['eligible'], protected=stats['protected'],
                           skipped=_skipped, message="Scanning and scoring movies…")
-
-        # Register this path in the section1 map BEFORE the protection check.
-        # A protected movie is still a surviving copy — deleting a different
-        # copy shouldn't trigger Radarr cleanup if a protected one exists.
-        if str(section_id) == str(RADARR_OVERSEERR_SECTION_ID) and tmdb_id:
-            section1_paths_by_tmdb.setdefault(tmdb_id, set()).add(file_path.resolve())
 
         if outside_monitored:
             stats["outside_monitored_dirs"] += 1
@@ -4687,7 +4644,7 @@ def build_candidates():
     score_and_rank_candidates(candidates)
 
     stats["identity_mismatch_details"] = identity_mismatches
-    return candidates, section1_paths_by_tmdb, stats, total_movies
+    return candidates, stats, total_movies
 
 
 def score_and_rank_candidates(candidates):
@@ -4835,7 +4792,7 @@ def remove_empty_movie_folder(file_path):
         log(f"WARNING: Could not remove directory {movie_dir}: {e}")
 
 
-def delete_candidate(candidate, section1_paths_by_tmdb) -> bool:
+def delete_candidate(candidate) -> bool:
     """Delete one candidate's file. Returns True only when THIS call unlinked
     it — a file already gone (vanished externally), a safety abort, a dry run,
     or an unlink error all return False so the caller's deleted/freed
@@ -4899,10 +4856,9 @@ def delete_candidate(candidate, section1_paths_by_tmdb) -> bool:
             raise SystemExit(143)
     remove_empty_movie_folder(path)
 
-    # Radarr cleanup — only in live mode, only for the section
-    # defined by RADARR_OVERSEERR_SECTION_ID, and only when this was the last
-    # surviving copy of this TMDB ID in that section.
-    cleanup_radarr(candidate, section1_paths_by_tmdb)
+    # Radarr cleanup — only in live mode, and only when the deleted file was in
+    # the section defined by RADARR_OVERSEERR_SECTION_ID (Radarr's own copy).
+    cleanup_radarr(candidate)
     return True
 
 
@@ -5002,8 +4958,8 @@ def _redline_fast_path(to_free_bytes) -> bool:
     catch a change (fail-closed: if protection can't be verified, full scan).
     Scoring/order is trusted from the plan — watch-history drift since the
     Simulate is accepted; config changes are not (they stale the stamp). Radarr
-    cleanup needs scan data, so it is skipped here and reconciles on the next
-    full run.
+    cleanup is skipped here: mark entries don't carry the TMDB/section identity
+    it needs, and an emergency shouldn't wait on nonessential Radarr calls.
 
     Returns True when the emergency was fully handled (deletions + summary +
     terminal progress written); False to fall back to the full scan — the reason
@@ -5057,7 +5013,7 @@ def _redline_fast_path(to_free_bytes) -> bool:
         return False
 
     log(f"REDLINE fast path: deleting from the marked queue in plan order — "
-        f"no library rescan. Radarr cleanup reconciles on the next full run.")
+        f"no library rescan; Radarr cleanup is skipped for these emergency deletions.")
     log_blank()
     emit_progress(phase="deleting", trigger="REDLINE", target_bytes=to_free_bytes,
                   deleted=0, bytes_freed=0, current_title="",
@@ -5833,7 +5789,7 @@ def main():
 
     # ── Build candidates and run cleanup ────────────────────────────────────
 
-    candidates, section1_paths_by_tmdb, build_stats, total_scanned = build_candidates()
+    candidates, build_stats, total_scanned = build_candidates()
 
     # The library size that drives the cap comes straight from disk in
     # get_library_size_gb() (library_gb above), so it reflects the true current
@@ -6068,7 +6024,7 @@ def main():
                     planned_bytes += size_before
                     continue
                 log(f"Mark aged {age_days} day(s) (delay {DELETE_DELAY_DAYS}) — deleting: {candidate['title']}")
-            if delete_candidate(candidate, section1_paths_by_tmdb):
+            if delete_candidate(candidate):
                 deleted_count += 1
                 bytes_freed += size_before
                 planned_bytes += size_before
