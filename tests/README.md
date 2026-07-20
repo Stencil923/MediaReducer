@@ -24,7 +24,7 @@ lines and exits non-zero on failure):
 | `test_delete_delay` | Deletion-delay config validation (whole days) and marked-for-deletion queue composition |
 | `test_time_zone` | `TIME_ZONE` drives the process clock — daily-run midnight, deletion-delay aging, log timestamps — with `auto` meaning the container clock |
 | `test_deleted_log` | deleted.log parser across every line generation; rationale fields surface in history lines |
-| `test_radarr_last_copy` | Radarr cleanup keeps a movie while another physical copy (multi-Version item) survives on disk |
+| `test_radarr_cleanup` | Radarr forgets a movie the moment its copy in Radarr's section is deleted (duplicates elsewhere don't block it); off-section deletions leave Radarr alone unless Radarr owns the deleted folder |
 | `test_live_button_state` | Simulate/Live ghost when space limits are satisfied; fail open on unknowns; real problems keep their tooltips |
 | `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs; sample builds warn |
 | `test_safety_autopause` | A Live tick with unsafe thresholds pauses Live with the reason; safe ticks still run |
