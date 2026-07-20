@@ -41,46 +41,55 @@
   .metric-topline .label {
     margin-bottom: 0;
   }
-  /* Marked-for-deletion footer spanning both columns of the Lifetime pruned
-     button, so it stands out from the two lifetime stats. */
-  .dashboard-marked-strip {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid color-mix(in srgb, var(--text-warning) 34%, var(--border));
-    background: color-mix(in srgb, var(--text-warning) 15%, transparent);
+  /* Two side-by-side buttons at the card bottom: Marked deletions (left) and
+     the lifetime pruned/space stats (right). The row takes over the button's
+     old pin-to-bottom job. */
+  .dashboard-history-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: auto 0 0;
+  }
+  .dashboard-history-row .dashboard-history-btn {
+    margin: 0;
+    grid-template-columns: minmax(0, 1fr);   /* one segment per button now */
+  }
+  /* With movies actually marked, the left button takes the warning tint the
+     old footer strip had — it's the "deletions are queued" signal. */
+  .dashboard-marked-btn.has-marked {
+    border-color: color-mix(in srgb, var(--text-warning) 40%, var(--border-strong));
+    background: color-mix(in srgb, var(--text-warning) 12%, var(--surface-2));
+  }
+  .dashboard-marked-btn.has-marked .dashboard-mini-value,
+  .dashboard-marked-btn.has-marked .dashboard-mini-value .unit,
+  .dashboard-marked-btn.has-marked .dashboard-mini-label {
     color: var(--text-warning);
-    font-size: .76rem;
-    font-weight: 700;
-    letter-spacing: .04em;
-    line-height: 1.1;
-    text-transform: uppercase;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
-  /* display:flex above overrides the UA [hidden] rule — honor hidden here. */
-  .dashboard-marked-strip[hidden] { display: none; }
-  .dashboard-marked-strip .dashboard-marked-text {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dashboard-marked-strip strong { font-weight: 800; font-size: .82rem; }
-  .dashboard-marked-dot {
+  .dashboard-marked-btn .dashboard-marked-dot {
+    display: none;
     flex: 0 0 auto;
     width: 7px;
     height: 7px;
     border-radius: 50%;
     background: var(--text-warning);
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-warning) 24%, transparent);
+    vertical-align: middle;
+    margin-right: 6px;
   }
-  .dashboard-history-btn:hover .dashboard-marked-strip,
-  .dashboard-history-btn:focus .dashboard-marked-strip {
-    background: color-mix(in srgb, var(--text-warning) 20%, transparent);
+  .dashboard-marked-btn.has-marked .dashboard-marked-dot { display: inline-block; }
+  /* These labels ("Lifetime pruned & space regained") may exceed their column —
+     wrap at word boundaries, never mid-word (mini-labels nowrap by default). */
+  .dashboard-history-segment .dashboard-mini-label {
+    white-space: normal;
+    overflow-wrap: break-word;
   }
+  /* The combined value line ("1,234 MOVIES · 567 GB") may wrap, but only
+     BETWEEN the two stat chunks — each chunk stays whole. */
+  .dashboard-history-segment .dashboard-mini-value {
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+  .dh-stat-chunk { white-space: nowrap; }
   .breach-note {
     /* Pinned to the Cleanup Targets card bottom; same face as the labels
        above it (.dashboard-mini-label), in red. */
@@ -155,6 +164,11 @@
   .dashboard-history-segment .dashboard-mini-label {
     margin-top: 5px;
     margin-bottom: 0;
+  }
+  /* Two-word labels ("Headroom target") wrap inside their grid column
+     instead of running into the neighbouring one (mini-labels nowrap by default). */
+  .dashboard-target-row .dashboard-mini-label {
+    white-space: normal;
   }
   .dashboard-target-row .value,
   .dashboard-last-run .value {
@@ -246,9 +260,6 @@
   .dashboard-history-segment {
     min-width: 0;
     padding: 10px 12px;
-  }
-  .dashboard-history-segment + .dashboard-history-segment {
-    border-left: 1px solid var(--border);
   }
   .dashboard-last-run {
     min-width: 0;
@@ -426,6 +437,17 @@
       white-space: normal;
     }
   }
+  /* 320px-class phones (iPhone SE and kin): the half-width grid columns get a
+     few px too narrow for "Redline" / "DELETIONS" at full size, which would
+     force mid-word breaks — step everything down one notch instead. */
+  @media (max-width: 355px) {
+    .metric-main .value,
+    .dashboard-target-row .value,
+    .dashboard-last-run .value { font-size: 1.3rem; }
+    .dashboard-history-segment { padding: 10px 8px; }
+    .dashboard-history-segment .dashboard-mini-label,
+    .dashboard-target-row .dashboard-mini-label { font-size: .7rem; letter-spacing: .05em; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .dashboard-history-btn:hover, .dashboard-history-btn:focus { transform: none; }
   }
@@ -492,7 +514,8 @@
         </div>
         <div class="dashboard-target-list metric-main">
           <div class="dashboard-target-row" id="target-row-headroom">
-            <div class="value">{% if thresholds_configured %}{{ headroom_gb|commafy }} <span class="unit">GB</span>{% else %}Not set{% endif %}</div>
+            {# The mini-labels are fixed titles — mode changes swap the VALUE only. #}
+            <div class="value">{% if not thresholds_configured %}Not set{% elif (headroom_gb or 0)|float > 0 %}{{ headroom_gb|commafy }} <span class="unit">GB</span>{% elif redline_only %}Redline only{% else %}Off{% endif %}</div>
             <span class="dashboard-mini-label">Headroom target</span>
           </div>
           <div class="dashboard-target-row" id="target-row-redline">
@@ -536,30 +559,33 @@
           <span class="value" id="last-run-value" data-last-run-ts="{{ last_run_ts or '' }}">{{ last_run or '—' }}</span>
           <div class="sub" id="next-run-sub">{% if run_mode == 'paused' %}Scheduler paused{% else %}Next run: calculating…{% endif %}</div>
         </div>
-        <button type="button" class="dashboard-history-btn metric-bottom" onclick="openDeletedHistory()"
-                title="Show deleted.log history">
-          <span class="dashboard-history-segment">
-            <span class="dashboard-mini-value">
-              <span id="pruned-count-value">{{ deleted_count|commafy(0) }}</span>
-              <span class="unit" id="pruned-count-unit">{{ 'MOVIE' if deleted_count == 1 else 'MOVIES' }}</span>
+        <div class="dashboard-history-row metric-bottom">
+          <button type="button" class="dashboard-history-btn dashboard-marked-btn {{ 'has-marked' if marked_count else '' }}"
+                  id="btn-marked-deletions" onclick="openDeletedHistory('marked')"
+                  title="Review the movies currently marked for deletion">
+            <span class="dashboard-history-segment">
+              <span class="dashboard-mini-value">
+                <span id="pruned-marked-count">{{ marked_count|commafy(0) }}</span>
+              </span>
+              <span class="dashboard-mini-label"><span class="dashboard-marked-dot" aria-hidden="true"></span>Marked deletions</span>
             </span>
-            <span class="dashboard-mini-label">Lifetime pruned</span>
-          </span>
-          <span class="dashboard-history-segment">
-            {% set reclaimed_parts = (deleted_reclaimed_label or '0 GB').split(' ', 1) %}
-            <span class="dashboard-mini-value" id="pruned-space-value" data-reclaimed-bytes="{{ deleted_reclaimed_bytes or 0 }}">
-              <span id="pruned-space-number">{{ reclaimed_parts[0]|group_int }}</span>
-              <span class="unit" id="pruned-space-unit">{{ reclaimed_parts[1]|default('GB', true)|upper }}</span>
+          </button>
+          <button type="button" class="dashboard-history-btn" onclick="openDeletedHistory('deleted')"
+                  title="Show deleted.log history">
+            <span class="dashboard-history-segment">
+              {% set reclaimed_parts = (deleted_reclaimed_label or '0 GB').split(' ', 1) %}
+              <span class="dashboard-mini-value">
+                {# Each stat is a no-wrap chunk so a wrap lands between them and
+                   the separator travels with the space figure, never dangling. #}
+                <span class="dh-stat-chunk"><span id="pruned-count-value">{{ deleted_count|commafy(0) }}</span>
+                <span class="unit" id="pruned-count-unit">{{ 'MOVIE' if deleted_count == 1 else 'MOVIES' }}</span></span>
+                <span class="dh-stat-chunk"><span class="unit" aria-hidden="true">· </span><span id="pruned-space-value" data-reclaimed-bytes="{{ deleted_reclaimed_bytes or 0 }}"><span id="pruned-space-number">{{ reclaimed_parts[0]|group_int }}</span>
+                <span class="unit" id="pruned-space-unit">{{ reclaimed_parts[1]|default('GB', true)|upper }}</span></span></span>
+              </span>
+              <span class="dashboard-mini-label">Lifetime pruned &amp; space regained</span>
             </span>
-            <span class="dashboard-mini-label">Space reclaimed</span>
-          </span>
-          <span class="dashboard-marked-strip" id="pruned-marked"
-                title="Marked for deletion — the delay window is running; open the history to review them"
-                {{ '' if marked_count else 'hidden' }}>
-            <span class="dashboard-marked-dot" aria-hidden="true"></span>
-            <span class="dashboard-marked-text"><strong id="pruned-marked-count">{{ marked_count|commafy(0) }}</strong> marked for deletion</span>
-          </span>
-        </button>
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -952,7 +978,7 @@ Live output will stream here.</pre>
     <div class="modal-content">
       <div class="modal-header">
         <div>
-          <h5 class="modal-title">Deleted Movie History</h5>
+          <h5 class="modal-title" id="deleted-history-title">Deleted Movie History</h5>
           <div id="deleted-history-summary" style="font-size:.78rem;color:var(--text-muted);">Loading deleted.log…</div>
         </div>
         <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
@@ -1504,6 +1530,7 @@ function renderProgress(p) {
 }
 
 let _progressFetchSeq = 0;
+let _progressKnown = false;   // set once the panel has real data — idle polls then skip the fetch
 async function refreshProgress() {
   // Fired by both the 750ms log poll and the 3s status poll with a 5s
   // timeout: on a slow server several requests overlap, and without an
@@ -1512,8 +1539,30 @@ async function refreshProgress() {
   const seq = ++_progressFetchSeq;
   try {
     const d = await _fetchJson(`/api/run/progress?_=${Date.now()}`, { cache: 'no-store' }, 5000);
-    if (seq === _progressFetchSeq) renderProgress(d);
+    if (seq === _progressFetchSeq) { _progressKnown = true; renderProgress(d); }
   } catch (_) { /* keep last rendered state on a transient failure */ }
+}
+
+// Live re-render of the Cleanup Targets numbers from the status poll — the
+// storage-bar marks and breach note already update live, and a threshold
+// changed in another tab must not leave this card showing stale values until
+// a reload. The mini-labels are fixed titles; only the values change. Only
+// the no-monitored-library state keeps its server-rendered "Not set" — every
+// configured state ("Off", "Redline only", "Disabled", a value) re-renders,
+// so switching TO the all-off state in another tab updates too.
+function _renderTargetRows(d) {
+  if (!d.thresholds_configured) return;
+  const gb = (v) => `${prCommaNum(v, 1)} <span class="unit">GB</span>`;
+  const headroomVal = document.querySelector('#target-row-headroom .value');
+  if (headroomVal) {
+    headroomVal.innerHTML = Number(d.headroom_gb) > 0 ? gb(d.headroom_gb)
+      : (d.redline_only ? 'Redline only' : 'Off');
+  }
+  const redlineVal = document.querySelector('#target-row-redline .value');
+  if (redlineVal) redlineVal.innerHTML = Number(d.redline_gb) > 0 ? gb(d.redline_gb) : 'Disabled';
+  const capVal = document.querySelector('#target-row-cap .dashboard-mini-value');
+  if (capVal) capVal.innerHTML = Number(d.library_cap_gb) > 0
+    ? `<span>${prCommaNum(d.library_cap_gb, 1)}</span> <span class="unit">GB</span>` : 'Disabled';
 }
 
 function _isMobileLogView() {
@@ -1652,11 +1701,11 @@ function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', m
   if (value) value.textContent = prCommaNum(safe, 0);
   if (unit) unit.textContent = safe === 1 ? 'MOVIE' : 'MOVIES';
   if (markedCount !== null) {
-    const strip = document.getElementById('pruned-marked');
+    const btn = document.getElementById('btn-marked-deletions');
     const countEl = document.getElementById('pruned-marked-count');
     const m = Math.max(0, Math.trunc(Number(markedCount) || 0));
     if (countEl) countEl.textContent = prCommaNum(m, 0);
-    if (strip) strip.hidden = m <= 0;
+    btn?.classList.toggle('has-marked', m > 0);
   }
   if (space) {
     const formatted = _formatReclaimedBytes(reclaimedBytes, reclaimedLabel);
@@ -1674,8 +1723,9 @@ function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', m
 // Deleted Movie History table: marked-for-deletion rows pinned on top, then
 // the deleted history newest→oldest, paginated 100 per page in-memory.
 const _DH_PAGE = 100;
-let _dhRows = [];       // combined marked + deleted, in display order
+let _dhRows = [];       // the open view's rows, in display order
 let _dhPageIdx = 0;
+let _dhView = 'deleted';   // 'marked' | 'deleted' — set by whichever button opened the modal
 
 function _dhCap(s) { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
@@ -1718,7 +1768,12 @@ function _dhRenderPage() {
   if (!total) {
     if (tbody) tbody.innerHTML = '';
     if (wrap) wrap.hidden = true;
-    if (empty) { empty.hidden = false; empty.textContent = 'No movies have been pruned yet.'; }
+    if (empty) {
+      empty.hidden = false;
+      empty.textContent = _dhView === 'marked'
+        ? 'No movies are marked for deletion.'
+        : 'No movies have been pruned yet.';
+    }
     if (pager) pager.hidden = true;
     return;
   }
@@ -1764,7 +1819,8 @@ function downloadDeletedHistory(btn) {
     _dhRows.map(r => _dhRowText(r).map(c => String(c ?? '').replace(/[\t\r\n]+/g, ' ')).join('\t'))
   );
   const text = prNormalizeDisplayedTimestamps(lines.join('\n') + '\n');
-  if (!prDownloadText(`mediareducer-deleted-log-${prFileStamp()}.txt`, text)) {
+  const stem = _dhView === 'marked' ? 'mediareducer-marked-deletions' : 'mediareducer-deleted-log';
+  if (!prDownloadText(`${stem}-${prFileStamp()}.txt`, text)) {
     if (btn) { btn.textContent = 'Nothing to save'; setTimeout(() => { btn.textContent = label; }, 1600); }
   }
 }
@@ -1775,9 +1831,9 @@ async function loadDeletedHistory() {
   const empty = document.getElementById('deleted-history-empty');
   const pager = document.getElementById('deleted-history-pager');
   const eraseBtn = document.getElementById('btn-clear-deleted-log');
-  if (summary) summary.textContent = 'Loading deleted.log…';
+  if (summary) summary.textContent = 'Loading…';
   if (wrap) wrap.hidden = true;
-  if (empty) { empty.hidden = false; empty.textContent = 'Loading deleted.log…'; }
+  if (empty) { empty.hidden = false; empty.textContent = 'Loading…'; }
   if (pager) pager.hidden = true;
   try {
     const d = await _fetchJson(`/api/logs/deleted?limit=all&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 12000);
@@ -1787,16 +1843,24 @@ async function loadDeletedHistory() {
     _updateDeletedCounter(count, d.reclaimed_bytes || 0, d.reclaimed_label || '',
                           d.marked_count !== undefined ? d.marked_count : marked.length);
     const reclaimed = _formatReclaimedBytes(d.reclaimed_bytes || 0, d.reclaimed_label || '');
-    let summaryText = `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
-    if (marked.length) summaryText += ` ${marked.length} marked for deletion.`;
-    if (summary) summary.textContent = summaryText;
-    // Marked pinned on top (both already newest-first from the server), deleted
-    // below newest→oldest.
-    _dhRows = marked.map(e => Object.assign({ _kind: 'marked' }, e))
-                    .concat(deleted.map(e => Object.assign({ _kind: 'deleted' }, e)));
+    if (summary) {
+      summary.textContent = _dhView === 'marked'
+        ? `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} marked for deletion.`
+        : `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
+    }
+    // One list per view (both already come newest-first / in plan order from
+    // the server): the left button shows the queue, the stats button the history.
+    _dhRows = _dhView === 'marked'
+      ? marked.map(e => Object.assign({ _kind: 'marked' }, e))
+      : deleted.map(e => Object.assign({ _kind: 'deleted' }, e));
     _dhPageIdx = 0;
     _dhRenderPage();
-    if (eraseBtn) eraseBtn.disabled = _active || count <= 0;
+    // Erase truncates deleted.log — history-view only. Download saves whichever
+    // list is on screen.
+    if (eraseBtn) {
+      eraseBtn.hidden = _dhView === 'marked';
+      eraseBtn.disabled = _active || count <= 0;
+    }
     const dlBtn = document.getElementById('btn-download-deleted-log');
     if (dlBtn) {
       dlBtn.disabled = _active || !_dhRows.length;
@@ -1811,7 +1875,12 @@ async function loadDeletedHistory() {
   }
 }
 
-function openDeletedHistory() {
+function openDeletedHistory(view) {
+  // Two views over one modal: 'marked' (the queue) from the left button,
+  // 'deleted' (deleted.log history) from the stats button.
+  _dhView = view === 'marked' ? 'marked' : 'deleted';
+  const title = document.getElementById('deleted-history-title');
+  if (title) title.textContent = _dhView === 'marked' ? 'Marked for Deletion' : 'Deleted Movie History';
   const modalEl = document.getElementById('deleted-history-modal');
   if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
   loadDeletedHistory();
@@ -2028,7 +2097,11 @@ function _updateBreachNote() {
     if (_safetyBlocked) {
       text = 'Over space limits — but a target is past the safety percentage, so Live can\'t run.';
     } else if (d.redline > 0) {
-      text = `Over space limits — a run would free ~${prGbAmount(d.max)} GB.`;
+      // Redline frees only back to its floor (never up to the headroom target),
+      // ignoring the daily window and the deletion delay.
+      text = _paused
+        ? `Redline hit — a run would free ~${prGbAmount(d.redline)} GB to clear the floor.`
+        : `Redline hit — the next check (within ~15 min) frees ~${prGbAmount(d.redline)} GB back above the floor.`;
     } else if (!ev.count) {
       // Nothing marked — Simulate writes the plan, and Live (automatic OR the
       // manual button) stays ghosted over limits until it exists.
@@ -2249,9 +2322,11 @@ function _liveDeficits() {
   if (Number.isFinite(head) && head > 0 && Number.isFinite(used)) {
     d.headroom = Math.max(0, used - (total - head));
   }
+  // A redline emergency frees only back to the redline floor (never up to the
+  // headroom target), so its deficit is measured against the floor itself.
   const red = Number(_storageRedlineGb);
-  if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red && Number.isFinite(head)) {
-    d.redline = Math.max(0, head - free);
+  if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
+    d.redline = Math.max(0, red - free);
   }
   const cap = Number(_storageLibraryCapGb);
   const lib = Number(snap.libraryGb);
@@ -2300,8 +2375,12 @@ async function syncStatus({refreshLog = true} = {}) {
       _markedEvent = { on: d.marked_event_on, count: d.marked_event_count, bytes: d.marked_event_bytes };
     }
     _updateStorageCard(d.disk, d.library_gb);
+    _renderTargetRows(d);
     _applyButtonStates();
-    refreshProgress();
+    // Progress only changes while a run is active — skip the second fetch on
+    // idle polls. One trailing fetch on the active→idle transition still lands
+    // the final done/stopped state, and the first poll always primes the panel.
+    if (d.run_active || wasActive || !_progressKnown) refreshProgress();
     _updateLastRunDisplay(d.last_run_ts, d.last_run);
     if (window.prSetConfigTabError) window.prSetConfigTabError(!!d.config_attention);
     if (window.prHandleSampleImdbError) window.prHandleSampleImdbError(d.sample_imdb_failed_at);

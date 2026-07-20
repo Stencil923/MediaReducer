@@ -415,7 +415,7 @@
           <label class="form-check-label" for="mode-headroom">
             <div class="run-mode-title">
               <span class="run-mode-name">Live</span>
-              <span id="pill-headroom" class="pr-pill pr-pill--neutral">Headroom: {{ config.HEADROOM_GB|commafy }} GB</span>
+              <span id="pill-headroom" class="pr-pill pr-pill--neutral">{{ ('Headroom: ' ~ config.HEADROOM_GB|commafy ~ ' GB') if (config.HEADROOM_GB or 0)|float > 0 else ('Headroom: redline only' if config.REDLINE_ONLY_MODE else 'Headroom: off') }}</span>
               <span id="pill-redline" class="pr-pill pr-pill--neutral" {{ '' if redline_configured else 'hidden' }}>{{ ('Redline: ' ~ (config.REDLINE_GB|commafy) ~ ' GB') if redline_configured else 'Redline: —' }}</span>
               <span id="pill-live-cap" class="pr-pill pr-pill--neutral" {{ '' if library_cap_configured else 'hidden' }}>{{ ('Library size cap: ' ~ (config.MAX_LIBRARY_GB|commafy) ~ ' GB') if library_cap_configured else 'Library size cap: —' }}</span>
             </div>
@@ -746,33 +746,43 @@
 
         <h6 class="mb-2">Free-space cleanup</h6>
         <p class="section-desc mb-3">Keep a buffer of free disk space. When free space drops below the target, the daily cleanup frees space back above it.</p>
+        {# The checkbox IS the mode switch: unticked = REDLINE_ONLY_MODE.
+           Ticked with 0 (the shipped default) is a normal config whose
+           headroom trigger is off — Redline and/or the cap may still be
+           armed. headroom_active = a real target (>= 1) exists. #}
+        {% set headroom_enabled = (not has_monitor_dirs) or not config.REDLINE_ONLY_MODE %}
+        {% set headroom_active = (not has_monitor_dirs) or (config.HEADROOM_GB or 0)|float > 0 %}
         <div class="row g-4">
           <div class="col-md-6" id="headroom-field">
             <label class="input-label" for="HEADROOM_GB">Headroom target</label>
             <div class="input-group gb-input-group">
+              <div class="input-group-text">
+                <input class="form-check-input" type="checkbox" id="headroom-enabled"
+                       {{ 'checked' if headroom_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+              </div>
               <input type="number" class="form-control" id="HEADROOM_GB" name="HEADROOM_GB"
-                     value="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}" min="0" step="100" aria-describedby="headroom-error"
-                     {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+                     value="{{ (config.HEADROOM_GB if headroom_enabled else (config.get('_HEADROOM_GB_LAST') or '')) if has_monitor_dirs else 0 }}" min="0" step="100" aria-describedby="headroom-error"
+                     {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
               <span class="input-group-text">GB</span>
             </div>
-            <div id="headroom-error" class="field-error">Headroom must be 0 GB or more.</div>
-            <div class="form-text">Free space to keep available. The daily cleanup runs when free space falls below it. Blank = 0.</div>
+            <div id="headroom-error" class="field-error">Enter a Headroom target in GB (0 = daily cleanup off), or untick it.</div>
+            <div class="form-text">Free space to keep available — the daily cleanup runs when free space falls below it; 0 turns this trigger off. Untick for redline-only mode: Redline (required) becomes the only deletion trigger.</div>
           </div>
           <div class="col-md-6" id="redline-field">
             <label class="input-label" for="REDLINE_GB">Redline emergency floor</label>
             <div class="input-group gb-input-group">
               <div class="input-group-text">
                 <input class="form-check-input" type="checkbox" id="redline-enabled"
-                       {{ 'checked' if (has_monitor_dirs and config.REDLINE_GB is not none) else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+                       {{ 'checked' if (has_monitor_dirs and config.REDLINE_GB is not none) else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
               </div>
               <input type="number" class="form-control" id="REDLINE_GB" name="REDLINE_GB"
-                     value="{{ config.REDLINE_GB if (has_monitor_dirs and config.REDLINE_GB is not none) else (config.get('_REDLINE_GB_LAST') or '') }}" min="1" max="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}" aria-describedby="redline-error"
+                     value="{{ config.REDLINE_GB if (has_monitor_dirs and config.REDLINE_GB is not none) else (config.get('_REDLINE_GB_LAST') or '') }}" min="1" {% if headroom_active %}max="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}"{% endif %} aria-describedby="redline-error"
                      {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or config.REDLINE_GB is none else '' }}>
               <span class="input-group-text">GB</span>
             </div>
             <div id="redline-error" class="field-error">Enter a Redline value before saving, or uncheck this option.</div>
-            <div class="form-text">Optional. Deletes immediately whenever free space is this low (checked every ~15 min), bypassing the once-a-day schedule and the deletion delay.</div>
-            <div id="redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and config.REDLINE_GB is not none and config.REDLINE_GB|float == config.HEADROOM_GB|float) else 'hidden' }}>Redline-only mode: Headroom is enforced immediately on every check instead of once per day.</div>
+            <div class="form-text">Optional. Deletes immediately when free space falls this low (checked every ~15 min) — no daily schedule, no deletion delay.</div>
+            <div id="no-trigger-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_active and config.REDLINE_GB is none and not config.MAX_LIBRARY_GB) else 'hidden' }}>No cleanup trigger is set — Live stays off until you set a Headroom target, a Redline floor, or a Library Size Cap.</div>
           </div>
         </div>
 
@@ -788,7 +798,7 @@
           <div class="input-group gb-input-group mb-2" id="cap-input-group">
             <div class="input-group-text">
               <input class="form-check-input" type="checkbox" id="cap-enabled"
-                     {{ 'checked' if library_cap_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+                     {{ 'checked' if library_cap_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
             </div>
             <input type="number" class="form-control" id="MAX_LIBRARY_GB" name="MAX_LIBRARY_GB"
                    value="{{ config.MAX_LIBRARY_GB if library_cap_enabled else (config.get('_MAX_LIBRARY_GB_LAST') or '') }}" placeholder="e.g. 15000" min="1" step="100"
@@ -798,6 +808,7 @@
           </div>
           <div id="cap-error" class="field-error">Enter a Library Size Cap value before saving, or uncheck this option.</div>
           <div id="cap-paths-note" class="form-text" {{ 'hidden' if thresholds_have_library else '' }}>{{ 'Save a monitored directory first.' if selected_media_apis_ready else ('Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.')) }}</div>
+          <div id="cap-redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_enabled) else 'hidden' }}>Not used in redline-only mode — re-tick Headroom to use a cap.</div>
           <div class="form-text">Measure your library first with &#8635; on the Dashboard's Storage card, then set a cap below it.</div>
         </div>
 
@@ -811,11 +822,12 @@
                    value="{{ config.DELETE_DELAY_DAYS or 1 }}" min="1" max="365" step="1" inputmode="numeric"
                    onkeydown="if(['.',',','e','E','-'].includes(event.key))event.preventDefault()"
                    aria-describedby="delete-delay-error"
-                   {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
+                   {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
             <span class="input-group-text">days</span>
           </div>
           <div id="delete-delay-error" class="field-error">Must be a whole number of days, 1–365.</div>
-          <div class="form-text">Days a marked movie waits before deletion. Minimum 1 — never the same day; the earliest is the next day's run. Redline and manual Live Runs skip the delay.</div>
+          <div class="form-text">Minimum 1 — the earliest deletion is the next day's run. Redline and manual Live Runs skip the delay.</div>
+          <div id="delay-redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_enabled) else 'hidden' }}>Not used in redline-only mode — Redline deletes immediately at the floor.</div>
           <div id="delay-redline-advisory" class="form-text delay-redline-advisory" hidden></div>
         </div>
       </div>
@@ -1000,6 +1012,7 @@ let _dirty = false;
 let _collectionSelections = { plex: new Set(), jellyfin: new Set() };
 let _collectionOptions    = { plex: [], jellyfin: [] };
 let _confirmSave = false;
+let _confirmSaveSnapshot = null;   // form payload the armed "Are you sure?" was shown for
 let _dismissPruneToast = null;   // sticky cap-warning toast, up while "Are you sure?" is armed
 let _savePending = false;
 let _imdbDownloadStatus = null;
@@ -1657,6 +1670,7 @@ function _canonicalConfig(cfg) {
     RUN_MODE: cfg.RUN_MODE === 'headroom' ? 'headroom' : 'paused',
     HEADROOM_GB: _numOrNull(cfg.HEADROOM_GB),
     REDLINE_GB: _numOrNull(cfg.REDLINE_GB),
+    REDLINE_ONLY_MODE: !!cfg.REDLINE_ONLY_MODE,
     MAX_LIBRARY_GB: _positiveNumOrNull(cfg.MAX_LIBRARY_GB),
     DELETE_DELAY_DAYS: _numOrNull(cfg.DELETE_DELAY_DAYS) ?? 0,
     MAX_HEADROOM_PCT: _numOrNull(cfg.MAX_HEADROOM_PCT),
@@ -1728,7 +1742,7 @@ function _configsMatch(a, b) {
 }
 
 const SECTION_DEFAULT_FIELDS = {
-  space: ['HEADROOM_GB', 'REDLINE_GB', 'MAX_LIBRARY_GB', 'DELETE_DELAY_DAYS'],
+  space: ['HEADROOM_GB', 'REDLINE_GB', 'REDLINE_ONLY_MODE', 'MAX_LIBRARY_GB', 'DELETE_DELAY_DAYS'],
   advanced: ['IMDB_RATINGS_URL', 'IMDB_RATINGS_MAX_AGE_DAYS', 'LOG_RETENTION_DAYS', 'KEEP_INTERRUPTED_LOGS', 'DEBUG_MODE', 'MAX_HEADROOM_PCT'],
 };
 
@@ -1772,6 +1786,8 @@ function _applySpaceThresholdLock() {
   if (resetBtn) resetBtn.disabled = locked || !hasMonitorDirs;
 
   if (!hasSavedDirs) {
+    const headroomToggle = document.getElementById('headroom-enabled');
+    if (headroomToggle) headroomToggle.checked = true;
     if (headroomInput) headroomInput.value = '0';
     if (redlineToggle) redlineToggle.checked = false;
     if (redlineInput) redlineInput.value = '';
@@ -1779,10 +1795,17 @@ function _applySpaceThresholdLock() {
     _redlineValidationArmed = false;
   }
 
-  _setDisabled('HEADROOM_GB', locked || !hasMonitorDirs);
-  _setDisabled('redline-enabled', locked || !hasMonitorDirs);
+  const headroomOn = _headroomEnabled();
+  _setDisabled('headroom-enabled', locked || !hasMonitorDirs);
+  _setDisabled('HEADROOM_GB', locked || !hasMonitorDirs || !headroomOn);
+  // Redline is REQUIRED in redline-only mode (checkbox unticked) — its toggle
+  // locks there; re-ticking Headroom is the way out of the mode. With the
+  // checkbox ticked it toggles freely, whatever the Headroom value.
+  _setDisabled('redline-enabled', locked || !hasMonitorDirs || !headroomOn);
   _setDisabled('REDLINE_GB', locked || !hasMonitorDirs || !redlineOn);
-  _setDisabled('DELETE_DELAY_DAYS', locked || !hasMonitorDirs);
+  // The delay paces daily marking runs, which redline-only mode retires.
+  _setDisabled('DELETE_DELAY_DAYS', locked || !hasMonitorDirs || !headroomOn);
+  _updateRedlineOnlyUI();
   _applySpaceThresholdAvailability();
 }
 
@@ -1803,7 +1826,9 @@ function _applySpaceThresholdAvailability() {
   if (capInput && !hasSavedDirs) capInput.value = '';
 
   const capOn = !!capToggle?.checked;
-  if (capToggle) capToggle.disabled = locked || !hasMonitorDirs;
+  // The cap rides the daily schedule, which only redline-only mode retires —
+  // it works fine alongside a 0 Headroom (cap-only configs are valid).
+  if (capToggle) capToggle.disabled = locked || !hasMonitorDirs || !_headroomEnabled();
   if (capInput) capInput.disabled = locked || !hasMonitorDirs || !capOn;
   if (capNote) {
     capNote.hidden = hasMonitorDirs;
@@ -1831,7 +1856,8 @@ function _sectionMatchesDefault(section) {
 }
 function _optionalEnabledInvalidDirty() {
   return (_spaceThresholdsHaveUsableLibrary() && document.getElementById('cap-enabled')?.checked && !_libraryCapConfigured())
-    || (_spaceThresholdsHaveUsableLibrary() && document.getElementById('redline-enabled')?.checked && (!_nonNegativeNumberFilled('REDLINE_GB') || _redlineExceedsHeadroom()));
+    || (_spaceThresholdsHaveUsableLibrary() && document.getElementById('redline-enabled')?.checked && (!_nonNegativeNumberFilled('REDLINE_GB') || _redlineExceedsHeadroom()))
+    || (_spaceThresholdsHaveUsableLibrary() && !_headroomHasValue());
 }
 
 function _hasUnsavedChanges() {
@@ -2006,6 +2032,15 @@ async function browseLibraryPath(path = LIBRARY_ROOT) {
 
 function chooseLibraryBrowserPath() {
   if (!_libraryBrowserTargetInput) return;
+  // Refuse a folder another row already monitors — leave the picker open so a
+  // different one can be chosen instead of landing a doomed duplicate row.
+  const chosen = _libraryPath(_browserSuffix(_libraryBrowserCurrentPath));
+  const taken = [...document.querySelectorAll('.monitor-dir')]
+    .some(el => el !== _libraryBrowserTargetInput && _libraryPath(el.value) === chosen);
+  if (chosen && taken) {
+    showToast('That folder is already monitored — pick a different one.', 'warning');
+    return;
+  }
   _libraryBrowserTargetInput.value = _browserSuffix(_libraryBrowserCurrentPath);
   _libraryBrowserTargetInput.dispatchEvent(new Event('input', { bubbles: true }));
   const modalEl = document.getElementById('library-browser-modal');
@@ -2024,7 +2059,14 @@ function populateForm(cfg) {
   const modeEl = document.querySelector(`input[name="RUN_MODE"][value="${uiMode}"]`);
   if (modeEl) modeEl.checked = true;
 
-  sv('HEADROOM_GB', cfgHasMonitorDirs ? cfg.HEADROOM_GB : 0);
+  // The checkbox mirrors the stored mode flag: unticked = REDLINE_ONLY_MODE.
+  // The unconfigured default (0, mode off) renders ticked with 0 — type a
+  // number to turn the headroom trigger on. The unticked ghosted field shows
+  // the remembered value like the other optional thresholds.
+  const hasHeadroom = !cfgHasMonitorDirs || !cfg.REDLINE_ONLY_MODE;
+  sc('headroom-enabled', hasHeadroom); sd('HEADROOM_GB', !hasHeadroom);
+  sv('HEADROOM_GB', cfgHasMonitorDirs
+      ? (hasHeadroom ? cfg.HEADROOM_GB : (cfg._HEADROOM_GB_LAST ?? '')) : 0);
   _headroomValidationArmed = false;
   validateHeadroom();
   const hasRedline = cfgHasMonitorDirs && cfg.REDLINE_GB !== null && cfg.REDLINE_GB !== undefined;
@@ -2097,23 +2139,31 @@ function getFormConfig() {
   const hasSavedDirs = _hasSavedMonitorDirs();
   const selectedApisReady = _selectedMediaApisReady();
   const thresholdsUsable = _spaceThresholdsHaveUsableLibrary();
-  const preserveLockedThresholds = hasSavedDirs && !selectedApisReady;
   const savedHeadroom = _numOrNull(_savedConfig?.HEADROOM_GB) ?? 0;
   const savedRedline = _numOrNull(_savedConfig?.REDLINE_GB);
   const savedLibraryCap = _positiveNumOrNull(_savedConfig?.MAX_LIBRARY_GB);
   return {
     RUN_MODE: document.querySelector('input[name="RUN_MODE"]:checked')?.value ?? 'paused',
-    // Blank Headroom saves as 0 — same silent fill-in as the grace period.
-    HEADROOM_GB: thresholdsUsable ? (requiredNumber('HEADROOM_GB') ?? 0) : (preserveLockedThresholds ? savedHeadroom : 0),
-    REDLINE_GB:  thresholdsUsable ? (chk('redline-enabled') ? requiredNumber('REDLINE_GB') : null) : (preserveLockedThresholds ? savedRedline : null),
-    MAX_LIBRARY_GB: thresholdsUsable ? (chk('cap-enabled') ? n('MAX_LIBRARY_GB') : null) : (preserveLockedThresholds ? savedLibraryCap : null),
+    // Headroom's toggle stores 0 when off (redline-only mode) — the same
+    // value-memory pattern as Redline/Cap, with 0 instead of null. While the
+    // section is locked (no saved dirs, or the media API is down) the SAVED
+    // values ride through untouched: fabricating 0/null here read as a broken
+    // redline-only request server-side and made onboarding saves impossible.
+    HEADROOM_GB: thresholdsUsable ? (chk('headroom-enabled') ? (requiredNumber('HEADROOM_GB') ?? 0) : 0)
+                                  : savedHeadroom,
+    // The Headroom checkbox IS the mode switch — unticked saves the flag.
+    REDLINE_ONLY_MODE: thresholdsUsable ? !chk('headroom-enabled')
+                                        : !!_savedConfig?.REDLINE_ONLY_MODE,
+    REDLINE_GB:  thresholdsUsable ? (chk('redline-enabled') ? requiredNumber('REDLINE_GB') : null) : savedRedline,
+    MAX_LIBRARY_GB: thresholdsUsable ? (chk('cap-enabled') ? n('MAX_LIBRARY_GB') : null) : savedLibraryCap,
     // Whole days a movie stays marked before deletion; blank saves as 0.
     DELETE_DELAY_DAYS: thresholdsUsable ? (prBlankNumber('DELETE_DELAY_DAYS', 1) ?? 1)
-                                        : (preserveLockedThresholds ? (_numOrNull(_savedConfig?.DELETE_DELAY_DAYS) ?? 1) : 1),
+                                        : (_numOrNull(_savedConfig?.DELETE_DELAY_DAYS) ?? 1),
     // Text still sitting in a disabled optional field rides along so the
     // server remembers it (shown greyed out; survives restarts).
     _REDLINE_GB_LAST: (thresholdsUsable && !chk('redline-enabled')) ? requiredNumber('REDLINE_GB') : undefined,
     _MAX_LIBRARY_GB_LAST: (thresholdsUsable && !chk('cap-enabled')) ? requiredNumber('MAX_LIBRARY_GB') : undefined,
+    _HEADROOM_GB_LAST: (thresholdsUsable && !chk('headroom-enabled')) ? requiredNumber('HEADROOM_GB') : undefined,
     MAX_HEADROOM_PCT: n('MAX_HEADROOM_PCT'),
     OUTPUT_DIR: _savedConfig.OUTPUT_DIR,
     CHECK_PATH: LIBRARY_ROOT,
@@ -2182,14 +2232,32 @@ function _libraryCapConfigured() {
   return !!capOn && prPositiveNumber(prFieldRaw('MAX_LIBRARY_GB'));
 }
 
-// The Headroom the form would save: blank = 0, invalid = null.
+function _headroomEnabled() {
+  return !!document.getElementById('headroom-enabled')?.checked;
+}
+
+// The Headroom the form would save: 0 when the toggle is off (redline-only
+// mode), else the field number (blank/garbage = null = invalid).
 function _headroomFormValue() {
-  return prBlankNumber('HEADROOM_GB', 0);
+  if (!_headroomEnabled()) return 0;
+  return prBlankNumber('HEADROOM_GB');
 }
 
 function _headroomHasValue() {
+  // Unticked is always a valid 0; ticked accepts >= 1 (a real target) or an
+  // explicit 0 — the shipped default, meaning the daily cleanup is off until
+  // a target is typed. Blank/garbage stays invalid.
+  if (!_headroomEnabled()) return true;
+  const v = prBlankNumber('HEADROOM_GB');
+  return v !== null && (v === 0 || v >= 1);
+}
+
+// True when a REAL daily-cleanup target exists (ticked with a value >= 1) —
+// the predicate the cap/delay availability and the headroom-off notes key on.
+// The checkbox alone can't answer that: ticked with 0 is still "off".
+function _headroomActive() {
   const v = _headroomFormValue();
-  return v !== null && v >= 0;
+  return v !== null && v >= 1;
 }
 
 function _maxHeadroomPctValid() {
@@ -2207,29 +2275,31 @@ function _nonNegativeNumberFilled(id) {
 }
 
 function _redlineExceedsHeadroom() {
+  // While Headroom is ticked, Redline must sit STRICTLY below its value — a
+  // tie would enforce the full target on every check, which is just
+  // redline-only mode spelled wrong (untick Headroom for that). At 0 any
+  // Redline trips this. The unticked state has no ceiling.
+  if (!_headroomEnabled()) return false;
   const redline = prNumOrNull(prFieldRaw('REDLINE_GB'));
-  const headroom = _headroomFormValue();
-  return redline !== null && headroom !== null && redline > headroom;
-}
-
-function _redlineEqualsHeadroom() {
-  const redline = prNumOrNull(prFieldRaw('REDLINE_GB'));
-  const headroom = _headroomFormValue();
-  return redline !== null && headroom !== null && redline === headroom;
+  const headroom = prBlankNumber('HEADROOM_GB');
+  return redline !== null && headroom !== null && redline >= headroom;
 }
 
 function _syncRedlineMax() {
   const input = document.getElementById('REDLINE_GB');
   const headroom = _headroomFormValue();
   if (!input) return;
-  if (headroom !== null) input.setAttribute('max', String(headroom));
+  if (headroom !== null && headroom > 0) input.setAttribute('max', String(headroom));
   else input.removeAttribute('max');
 }
 
 function _redlineErrorText() {
-  return _redlineExceedsHeadroom()
-    ? 'Redline cannot be higher than Headroom (GB).'
-    : 'Enter a Redline above 0 GB before saving, or uncheck this option.';
+  if (_redlineExceedsHeadroom()) {
+    return prBlankNumber('HEADROOM_GB') === 0
+      ? 'Headroom is 0 — untick it (redline-only mode) to run Redline on its own.'
+      : 'Redline must be lower than Headroom — for the full target on every check, untick Headroom instead.';
+  }
+  return 'Enter a Redline above 0 GB before saving, or uncheck this option.';
 }
 
 function _showSection(sectionId) {
@@ -2249,15 +2319,20 @@ function _headroomSafetyLimitGb() {
 }
 
 function _headroomSafetyExceeded() {
-  const headroom = _headroomFormValue();
+  // The safety cap bounds the free-space floor the system maintains: the
+  // Headroom target when one exists (>= 1), else the Redline floor.
+  const floor = _headroomActive()
+    ? _headroomFormValue()
+    : (document.getElementById('redline-enabled')?.checked ? prNumOrNull(prFieldRaw('REDLINE_GB')) : null);
   const limit = _headroomSafetyLimitGb();
-  return headroom !== null && limit !== null && headroom > limit;
+  return floor !== null && limit !== null && floor > limit;
 }
 
 function _headroomSafetyText() {
+  const which = _headroomActive() ? 'Headroom' : 'Redline';
   const limit = _headroomSafetyLimitGb();
-  if (limit === null) return 'Headroom exceeds the safety cap. Lower Headroom or raise the safety cap to enable Live.';
-  return `Headroom exceeds the safety cap (${Math.floor(limit).toLocaleString()} GB max). Lower Headroom or raise the safety cap to enable Live.`;
+  if (limit === null) return `${which} exceeds the safety cap. Lower ${which} or raise the safety cap to enable Live.`;
+  return `${which} exceeds the safety cap (${Math.floor(limit).toLocaleString()} GB max). Lower ${which} or raise the safety cap to enable Live.`;
 }
 
 // The safety percentage also floors the Library Size Cap: a Live run may delete
@@ -2286,7 +2361,7 @@ function _libraryCapSafetyText() {
 function _spaceThresholdBlockingText() {
   if (!_selectedMediaApisReady()) return 'Connect or uncheck the selected media server first.';
   if (!_hasSavedMonitorDirs()) return 'Save a monitored directory to enable Live.';
-  if (!_headroomHasValue()) return 'Enter a valid Headroom value to enable Live.';
+  if (!_headroomHasValue()) return 'Enter a Headroom target of 1 GB or more (or disable Headroom) to enable Live.';
   if (!_maxHeadroomPctValid()) return 'Enter a valid Headroom safety percentage.';
   const redlineOn = document.getElementById('redline-enabled')?.checked;
   if (redlineOn && !prPositiveNumber(prFieldRaw('REDLINE_GB'))) return 'Enter a Redline above 0 GB, or disable Redline.';
@@ -2333,12 +2408,26 @@ function _monitorDirIssue(input) {
   if (!suffix) return 'blank';
   const parts = suffix.split('/').filter(Boolean);
   if (suffix.includes('//') || parts.some(p => p === '.' || p === '..')) return 'invalid';
+  if (_monitorDirIsDuplicate(input)) return 'duplicate';
   return input?.closest?.('.monitor-dir-row')?.dataset?.monitorIssue || '';
+}
+
+// True when an EARLIER row already monitors the same folder — the first row
+// keeps its clean state, every repeat flags, so removing the repeats resolves
+// it. Compared on the resolved path so "Movies", "/Movies" and the full
+// library path all count as the same folder.
+function _monitorDirIsDuplicate(input) {
+  const mine = _libraryPath(input?.value);
+  if (!mine) return false;
+  const inputs = [...document.querySelectorAll('.monitor-dir')];
+  const idx = inputs.indexOf(input);
+  return inputs.slice(0, idx).some(el => _libraryPath(el.value) === mine);
 }
 
 function _monitorDirErrorText(issue) {
   if (issue === 'blank') return 'Enter a folder, use /, or remove this row.';
   if (issue === 'missing') return `That folder does not exist under ${LIBRARY_ROOT}.`;
+  if (issue === 'duplicate') return 'Already monitored — remove this duplicate row.';
   return `Enter a valid ${LIBRARY_ROOT} folder, or remove this row.`;
 }
 
@@ -2434,7 +2523,9 @@ function validateHeadroom({ show = false, focus = false } = {}) {
   const input = document.getElementById('HEADROOM_GB');
   const field = document.getElementById('headroom-field');
   const err = document.getElementById('headroom-error');
-  if (!_spaceThresholdsHaveUsableLibrary()) {
+  if (!_spaceThresholdsHaveUsableLibrary() || !_headroomEnabled()) {
+    // Disabled (redline-only mode): the ghosted field only displays the
+    // remembered value — never flag it.
     prApplyFieldFlag(field, err, input, false);
     return true;
   }
@@ -2477,10 +2568,13 @@ function validateRedline({ show = false, focus = false } = {}) {
   const input = document.getElementById('REDLINE_GB');
   const field = document.getElementById('redline-field');
   const err = document.getElementById('redline-error');
-  const onlyNote = document.getElementById('redline-only-note');
+  const noTriggerNote = document.getElementById('no-trigger-note');
+  if (noTriggerNote) {
+    noTriggerNote.hidden = !(_spaceThresholdsHaveUsableLibrary() && !_headroomActive()
+                             && !redlineOn && !document.getElementById('cap-enabled')?.checked);
+  }
   if (!_spaceThresholdsHaveUsableLibrary()) {
     prApplyFieldFlag(field, err, input, false);
-    if (onlyNote) onlyNote.hidden = true;
     return true;
   }
   _syncRedlineMax();
@@ -2499,8 +2593,6 @@ function validateRedline({ show = false, focus = false } = {}) {
     _focusAfterSectionOpens(input);
   }
 
-  if (onlyNote) onlyNote.hidden = !(redlineOn && !invalid && _redlineEqualsHeadroom());
-
   _updateDelayRedlineAdvisory();
   return !invalid;
 }
@@ -2516,9 +2608,10 @@ function _updateDelayRedlineAdvisory() {
   const redlineOn = !!document.getElementById('redline-enabled')?.checked;
   // 1 day is the minimum grace everyone has; only flag a LONGER delay (2+),
   // where the overgrowth window without a Redline floor is meaningfully wider.
-  const show = _spaceThresholdsHaveUsableLibrary() && delay >= 2 && !redlineOn;
+  // Redline-only mode retires the delay entirely, so the advisory is moot.
+  const show = _spaceThresholdsHaveUsableLibrary() && _headroomEnabled() && delay >= 2 && !redlineOn;
   if (show) {
-    note.textContent = `No Redline floor set — with a ${delay}-day delay, a fast-filling library could run out of space before marks age out. Redline deletes immediately when space is critically low, bypassing the delay.`;
+    note.textContent = `No Redline floor set — with a ${delay}-day delay, the disk could fill before marked movies age out. A Redline floor deletes immediately, skipping the delay.`;
   }
   note.hidden = !show;
 }
@@ -2590,6 +2683,75 @@ function toggleLibraryCap() {
   _updatePills();
 }
 
+// Headroom-off UI: the notes under Redline/Cap/Delay that explain what a
+// disabled Headroom changes. The ghosting itself lives in the lock/availability
+// functions so every path (populate, toggles, saves) stays consistent.
+function _updateRedlineOnlyUI() {
+  const usable = _spaceThresholdsHaveUsableLibrary();
+  // The cap/delay notes explain redline-only mode (checkbox unticked).
+  const inMode = usable && !_headroomEnabled();
+  ['cap-redline-only-note', 'delay-redline-only-note'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !inMode;
+  });
+  // The no-trigger warning: nothing armed at all — no real Headroom target,
+  // no Redline floor, no Library Size Cap.
+  const noTrigger = document.getElementById('no-trigger-note');
+  if (noTrigger) {
+    noTrigger.hidden = !(usable && !_headroomActive()
+                         && !document.getElementById('redline-enabled')?.checked
+                         && !document.getElementById('cap-enabled')?.checked);
+  }
+}
+
+function toggleHeadroom() {
+  const box = document.getElementById('headroom-enabled');
+  if (_spaceThresholdsLocked()) {
+    if (box) box.checked = !box.checked;   // revert — locked while Live
+    _applySpaceThresholdLock();
+    showToast('Pause Live mode before changing thresholds.', 'warning');
+    return;
+  }
+  if (!_spaceThresholdsHaveUsableLibrary()) {
+    if (box) box.checked = true;
+    _applySpaceThresholdLock();
+    showToast(_spaceThresholdUnavailableText('changing Headroom'), 'warning');
+    return;
+  }
+  const enabled = !!box?.checked;
+  if (!enabled) {
+    // Unticking IS entering redline-only mode, which needs a valid Redline
+    // floor. (Turning just the headroom trigger off is the field's job: 0.)
+    const redlineOn = document.getElementById('redline-enabled')?.checked;
+    if (!redlineOn || !prPositiveNumber(prFieldRaw('REDLINE_GB'))) {
+      if (box) box.checked = true;
+      showToast('Set a Redline floor first — unticking Headroom switches to redline-only '
+        + 'mode, where Redline is the only deletion trigger. (To just turn the headroom '
+        + 'trigger off, set it to 0.)', 'warning');
+      return;
+    }
+    const capBox = document.getElementById('cap-enabled');
+    if (capBox?.checked) {
+      capBox.checked = false;
+      _capValidationArmed = false;
+      showToast('Library Size Cap turned off — it is not used in redline-only mode. '
+        + 'Its value is remembered.', 'warning');
+    }
+  }
+  _headroomValidationArmed = false;
+  _applySpaceThresholdLock();
+  validateHeadroom();
+  validateRedline();
+  validateLibraryCap();
+  validateDeleteDelay();
+  if (enabled) {
+    const input = document.getElementById('HEADROOM_GB');
+    setTimeout(() => { input?.focus(); validateHeadroom(); }, 0);
+  }
+  _updatePills();
+  _syncDirtyState();
+}
+
 function toggleRedline() {
   if (_spaceThresholdsLocked()) {
     _applySpaceThresholdLock();
@@ -2649,7 +2811,9 @@ function _updateRunModeAvailability() {
   // The simulate-required ghost only gates ARMING Live (paused → Live) — an
   // already-armed Live must never be flipped to Paused by a status poll.
   const simBlock = (_simulateRequired && !_isLiveRunMode(_savedConfig?.RUN_MODE))
-    ? 'Over space limits — run Simulate to review the deletion plan, then enable Live.' : '';
+    ? (_headroomEnabled()
+        ? 'Over space limits — run Simulate to review the deletion plan, then enable Live.'
+        : 'Run Simulate to build the Redline deletion-order preview, then enable Live.') : '';
   const liveBlock = _currentConnectionBlockingText() || _spaceThresholdBlockingText() || simBlock;
 
   _setRunModeDisabled('headroom', runLocked || !!liveBlock, _liveBlockIsSafety());
@@ -2678,7 +2842,9 @@ function _updatePills() {
   const redlineEnabled = !!document.getElementById('redline-enabled')?.checked;
   const redlineValid = prPositiveNumber(prFieldRaw('REDLINE_GB'));
   const redlineHasInput = r !== '';
-  const hTxt = 'Headroom: ' + (String(h ?? '').trim() !== '' ? prCommaNum(h) : '0') + ' GB';
+  const hTxt = _headroomEnabled()
+    ? (_headroomActive() ? 'Headroom: ' + prCommaNum(h) + ' GB' : 'Headroom: off')
+    : 'Headroom: redline only';
   const rTxt = redlineValid && r ? 'Redline: ' + prCommaNum(r) + ' GB' : 'Redline: —';
   const lTxt = capConfigured && l ? 'Library size cap: ' + prCommaNum(l) + ' GB' : 'Library size cap: —';
   const ph = document.getElementById('pill-headroom');
@@ -2698,7 +2864,13 @@ function _updatePills() {
   _updateRunModeAvailability();
   _scheduleSectionIssueUpdate();
 }
-document.getElementById('HEADROOM_GB')?.addEventListener('input', () => { validateHeadroom({ show: true }); validateRedline({ show: true }); _updatePills(); });
+document.getElementById('HEADROOM_GB')?.addEventListener('input', () => {
+  validateHeadroom({ show: true }); validateRedline({ show: true });
+  // Crossing 0 ↔ >= 1 flips the cap/delay availability and the headroom-off
+  // notes live, not just on the next toggle or save.
+  _applySpaceThresholdLock();
+  _updatePills();
+});
 document.getElementById('REDLINE_GB')?.addEventListener('input', () => { validateRedline({ show: true }); _updatePills(); });
 document.getElementById('MAX_HEADROOM_PCT')?.addEventListener('input', () => { validateMaxHeadroomPct({ show: true }); _updatePills(); });
 
@@ -3480,6 +3652,7 @@ prWireBlurValidation('HEADROOM_GB', validateHeadroom);
 
 document.getElementById('cap-enabled')?.addEventListener('change', toggleLibraryCap);
 document.getElementById('redline-enabled')?.addEventListener('change', toggleRedline);
+document.getElementById('headroom-enabled')?.addEventListener('change', toggleHeadroom);
 document.getElementById('section-enabled')?.addEventListener('change', toggleSectionId);
 
 function _wireRunModeCardClicks() {
@@ -3688,17 +3861,25 @@ function _immediatePruneWarning(cfg, nowLive) {
     const total = Number(_diskStats?.total_gb);
     const used = Number(_diskStats?.used_gb);
     const free = Number(_diskStats?.free_gb);
+    // Per-trigger deficits: the daily cleanup frees back to the Headroom
+    // target, but a Redline breach frees only to its own floor — and in
+    // redline-only mode HEADROOM_GB is always 0, so the redline warning must
+    // not hide behind a headroom guard.
     const head = Number(cfg.HEADROOM_GB);
-    if (Number.isFinite(total) && total > 0 && Number.isFinite(head) && head > 0) {
-      let deficit = 0;
-      if (Number.isFinite(used)) deficit = Math.max(deficit, used - (total - head));
-      const red = Number(cfg.REDLINE_GB);
-      if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
-        deficit = Math.max(deficit, head - free);
-      }
-      if (deficit > 0) {
-        warnings.push(`Free space is already ${prGbAmount(deficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`);
-      }
+    let headDeficit = 0;
+    if (Number.isFinite(total) && total > 0 && Number.isFinite(used)
+        && Number.isFinite(head) && head > 0) {
+      headDeficit = Math.max(0, used - (total - head));
+    }
+    const red = Number(cfg.REDLINE_GB);
+    let redDeficit = 0;
+    if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
+      redDeficit = Math.max(0, red - free);
+    }
+    if (headDeficit > 0) {
+      warnings.push(`Free space is already ${prGbAmount(headDeficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`);
+    } else if (redDeficit > 0) {
+      warnings.push(`Free space is already ${prGbAmount(redDeficit)} GB below the Redline floor — Live frees ~that much within ~15 minutes. Save again to confirm.`);
     }
   }
   return warnings.join(' ');
@@ -3725,6 +3906,7 @@ function _clearPruneToast() {
 }
 function _resetConfirm() {
   if (_confirmSave) { _confirmSave = false; _setSaveText('Save Configuration'); }
+  _confirmSaveSnapshot = null;
   _clearPruneToast();
 }
 
@@ -3812,12 +3994,18 @@ async function saveConfig() {
   // or saving a Library Size Cap that the current library already exceeds
   // (which would prune down to the cap as soon as Live runs). Same in-page
   // save-button morph as every other confirmation — no browser popups.
+  // The confirmation is only good for the EXACT form it was shown for: a
+  // keyboard-only edit after arming (Tab into a field, retype, Enter on Save)
+  // never fires the click-away disarm, so without the snapshot check an armed
+  // "Are you sure?" would silently cover values the user never saw warned.
   const wasLive = _savedConfig.RUN_MODE?.startsWith('headroom');
   const nowLive = cfg.RUN_MODE?.startsWith('headroom');
   const pruneWarning = _immediatePruneWarning(cfg, nowLive);
-  if (!confirmedLive && ((!wasLive && nowLive) || pruneWarning)) {
+  const confirmStillValid = confirmedLive && _confirmSaveSnapshot === JSON.stringify(cfg);
+  if (!confirmStillValid && ((!wasLive && nowLive) || pruneWarning)) {
     _setSavePending(false);
     _confirmSave = true;
+    _confirmSaveSnapshot = JSON.stringify(cfg);
     _setSaveText('Are you sure?');
     // Sticky: the warning must stay readable for the whole "Are you sure?"
     // decision. It comes down on the confirming click or on cancel.
@@ -3825,6 +4013,7 @@ async function saveConfig() {
     return;
   }
   _confirmSave = false;
+  _confirmSaveSnapshot = null;
   _clearPruneToast();
   _setSaveText('Saving');
 

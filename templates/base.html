@@ -197,12 +197,16 @@
     .run-badge-mobile { margin-left: 12px; margin-right: 56px; }
     .site-header.is-running .run-badge-mobile { display: inline-flex; }
 
-    /* Row 2 — tabs (compact) */
+    /* Row 2 — tabs (compact). The row scrolls sideways itself on screens too
+       narrow for all three tabs — never the whole page. */
     .header-tabs {
       position: relative;
       display: flex; gap: 2px; padding: 0 16px;
       border-top: 1px solid var(--surface-2);
+      overflow-x: auto;
+      scrollbar-width: none;
     }
+    .header-tabs::-webkit-scrollbar { display: none; }
     /* JS-added sliding underline (hover-capable pointers only): one bar glides
        to whichever tab is hovered and returns on leave. The static per-tab
        underline is the fallback everywhere else. */
@@ -228,6 +232,12 @@
     }
     .header-tabs a:hover  { color: var(--text-secondary); }
     .header-tabs a.active { color: var(--text-accent); border-bottom-color: var(--text-accent); }
+    /* Small phones (e.g. 360px-wide Pixels, iPhone SE/mini): tighter tab
+       padding so all three tabs fit without scrolling. */
+    @media (max-width: 400px) {
+      .header-tabs { padding: 0 8px; }
+      .header-tabs a { padding: 7px 9px; }
+    }
     @keyframes pr-config-tab-pulse {
       0%, 100% {
         color: var(--text-danger);
@@ -568,12 +578,21 @@
     .form-check-input:checked { background-color: var(--text-accent); border-color: var(--text-accent); }
     .form-range::-webkit-slider-thumb { background: var(--text-accent); }
     .form-text  { color: var(--text-muted); font-size: .78rem; }
+    /* Filesystem paths in help text are one unbreakable token — wrap anywhere
+       rather than pushing a narrow phone screen sideways. */
+    code { overflow-wrap: anywhere; }
 
     /* ═══════ Buttons ═══════ */
     /* Inherit the page font; touch-action lets controls act on every tap — no
        double-tap-zoom eating the second tap of two-click confirmations. */
     button, input, select { font: inherit; }
-    button, .btn, input[type=range], input[type=checkbox], select { touch-action: manipulation; }
+    button, .btn, input[type=checkbox], select { touch-action: manipulation; }
+    /* Sliders: pan-y hands VERTICAL touch gestures to the page scroller, so
+       scrolling a finger down a slider-heavy page (Filtering & Scoring) can't
+       nudge the thumbs — only a horizontal drag (or a tap) adjusts a slider.
+       A JS guard near prCommaNum undoes the value jump some mobile browsers
+       apply on the initial touch before the scroll takes over. */
+    input[type=range] { touch-action: pan-y; }
     /* Shared dirty-state affordance for Revert buttons (Config + Filtering). */
     .btn-revert-active {
       border-color: var(--border-warning) !important;
@@ -1310,6 +1329,51 @@
       return String(s ?? '').replace(/[&<>"']/g,
         ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
     }
+
+    /* Touch guard for sliders (pairs with the input[type=range] touch-action:
+       pan-y rule): pan-y hands vertical gestures to the page scroller, but
+       some mobile browsers still jump the slider's value on the INITIAL touch
+       before deciding the gesture is a scroll. Remember the value at
+       touchstart and restore it when the gesture turns out to be vertical —
+       taps (no movement) and horizontal drags keep working untouched. */
+    (function prGuardRangeTouchScroll() {
+      let g = null;
+      const restore = () => {
+        if (g && g.el.value !== g.v) {
+          g.el.value = g.v;
+          g.el.dispatchEvent(new Event('input', { bubbles: true }));
+          g.el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      };
+      document.addEventListener('touchstart', (e) => {
+        const el = e.target;
+        if (el?.matches?.('input[type="range"]') && e.touches.length === 1) {
+          g = { el, v: el.value, x: e.touches[0].clientX, y: e.touches[0].clientY,
+                horiz: false, moved: false, scrolling: false };
+        }
+      }, { capture: true, passive: true });
+      document.addEventListener('touchmove', (e) => {
+        if (!g || g.horiz || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        const dx = Math.abs(t.clientX - g.x);
+        const dy = Math.abs(t.clientY - g.y);
+        if (!g.scrolling && dx < 6 && dy < 6) return;   // no clear intent yet
+        g.moved = true;
+        if (!g.scrolling && dx > dy) { g.horiz = true; return; }  // deliberate slide
+        // Vertical: snap back IMMEDIATELY — mid-scroll, not at finger-up — and
+        // keep undoing any further jumps while this scroll gesture continues.
+        g.scrolling = true;
+        restore();
+      }, { capture: true, passive: true });
+      // touchcancel = the scroller took the gesture (the common pan-y path);
+      // touchend after unclassified vertical movement = a short flick. A final
+      // restore covers a jump that landed after the last touchmove.
+      document.addEventListener('touchcancel', () => { if (g && !g.horiz) restore(); g = null; }, true);
+      document.addEventListener('touchend', () => {
+        if (g && !g.horiz && g.moved) restore();
+        g = null;
+      }, true);
+    })();
 
     /* Thousands-separated number (up to maxFrac decimals); mirrors the
        server's commafy filter so live updates match the initial render.
