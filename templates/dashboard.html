@@ -65,18 +65,6 @@
   .dashboard-marked-btn.has-marked .dashboard-mini-label {
     color: var(--text-warning);
   }
-  .dashboard-marked-btn .dashboard-marked-dot {
-    display: none;
-    flex: 0 0 auto;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--text-warning);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--text-warning) 24%, transparent);
-    vertical-align: middle;
-    margin-right: 6px;
-  }
-  .dashboard-marked-btn.has-marked .dashboard-marked-dot { display: inline-block; }
   /* These labels ("Lifetime pruned & space regained") may exceed their column —
      wrap at word boundaries, never mid-word (mini-labels nowrap by default). */
   .dashboard-history-segment .dashboard-mini-label {
@@ -567,7 +555,7 @@
               <span class="dashboard-mini-value">
                 <span id="pruned-marked-count">{{ marked_count|commafy(0) }}</span>
               </span>
-              <span class="dashboard-mini-label"><span class="dashboard-marked-dot" aria-hidden="true"></span>Marked deletions</span>
+              <span class="dashboard-mini-label" id="marked-deletions-label">{{ 'Redline queue' if redline_only else 'Marked deletions' }}</span>
             </span>
           </button>
           <button type="button" class="dashboard-history-btn" onclick="openDeletedHistory('deleted')"
@@ -1542,9 +1530,13 @@ function renderProgress(p) {
 
   document.getElementById('rp-stat-scanned').textContent = (Number(p.scanned) || 0).toLocaleString();
   document.getElementById('rp-stat-eligible').textContent = (Number(p.eligible) || 0).toLocaleString();
-  document.getElementById('rp-stat-deleted-label').textContent = isSim ? 'Would delete' : 'Deleted';
+  // Redline-only Simulate builds the standing queue, so the tiles count what
+  // was QUEUED — "would delete" would wrongly imply an imminent deletion.
+  document.getElementById('rp-stat-deleted-label').textContent =
+    isSim ? (_redlineOnly ? 'Queued' : 'Would delete') : 'Deleted';
   document.getElementById('rp-stat-deleted').textContent = (Number(p.deleted) || 0).toLocaleString();
-  document.getElementById('rp-stat-freed-label').textContent = isSim ? 'Would free' : 'Freed';
+  document.getElementById('rp-stat-freed-label').textContent =
+    isSim ? (_redlineOnly ? 'Queue size' : 'Would free') : 'Freed';
   document.getElementById('rp-stat-freed').textContent = _formatReclaimedBytes(p.bytes_freed);
 }
 
@@ -1570,6 +1562,17 @@ async function refreshProgress() {
 // configured state ("Off", "Redline only", "Disabled", a value) re-renders,
 // so switching TO the all-off state in another tab updates too.
 function _renderTargetRows(d) {
+  _redlineOnly = !!d.redline_only;
+  // In redline-only mode the queue is a standing "next in line" list, not
+  // scheduled deletions — the button and modal say "queue" instead of "marked".
+  const markedLabel = document.getElementById('marked-deletions-label');
+  if (markedLabel) markedLabel.textContent = _redlineOnly ? 'Redline queue' : 'Marked deletions';
+  const markedBtn = document.getElementById('btn-marked-deletions');
+  if (markedBtn) {
+    markedBtn.title = _redlineOnly
+      ? 'Review the queue Redline will delete from, worst-scored first'
+      : 'Review the movies currently marked for deletion';
+  }
   if (!d.thresholds_configured) return;
   const gb = (v) => `${prCommaNum(v, 1)} <span class="unit">GB</span>`;
   const headroomVal = document.querySelector('#target-row-headroom .value');
@@ -1746,6 +1749,7 @@ let _dhRows = [];       // the open view's rows, in display order
 let _dhPageIdx = 0;
 let _dhView = 'deleted';   // 'marked' | 'deleted' — set by whichever button opened the modal
 let _dhDeletedCount = 0;   // deleted.log entry count — Erase stays ghosted at 0
+let _redlineOnly = {{ 'true' if redline_only else 'false' }};   // refreshed each status poll
 
 function _dhCap(s) { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
@@ -1756,7 +1760,7 @@ function _dhRenderRow(r) {
     if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + prHtmlEsc(r.score));
     if (r.when) bits.push(prHtmlEsc(_dhCap(r.when)));
     return `<tr class="dh-marked">`
-      + `<td><span class="dh-badge marked">Marked</span></td>`
+      + `<td><span class="dh-badge marked">${_redlineOnly ? 'Queued' : 'Marked'}</span></td>`
       + `<td class="dh-title">${prHtmlEsc(r.title || '—')}</td>`
       + `<td class="dh-num">${prHtmlEsc(r.size || '—')}</td>`
       + `<td class="dh-num">${prHtmlEsc(r.time || '—')}</td>`
@@ -1791,7 +1795,8 @@ function _dhRenderPage() {
     if (empty) {
       empty.hidden = false;
       empty.textContent = _dhView === 'marked'
-        ? 'No movies are marked for deletion.'
+        ? (_redlineOnly ? 'Nothing is queued for Redline yet — run Simulate to build the queue.'
+                        : 'No movies are marked for deletion.')
         : 'No movies have been pruned yet.';
     }
     if (pager) pager.hidden = true;
@@ -1818,7 +1823,7 @@ function _dhRowText(r) {
     const bits = [];
     if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + r.score);
     if (r.when) bits.push(_dhCap(r.when));
-    return ['Marked', r.title || dash, r.size || dash, r.time || dash, bits.join(' · ') || dash, r.path || dash];
+    return [_redlineOnly ? 'Queued' : 'Marked', r.title || dash, r.size || dash, r.time || dash, bits.join(' · ') || dash, r.path || dash];
   }
   if (!r.title && r.line) return ['Deleted', r.line, '', '', '', ''];
   return ['Deleted', r.title || dash, r.size || dash, r.time || dash, r.why || dash, r.path || dash];
@@ -1865,7 +1870,9 @@ async function loadDeletedHistory() {
     const reclaimed = _formatReclaimedBytes(d.reclaimed_bytes || 0, d.reclaimed_label || '');
     if (summary) {
       summary.textContent = _dhView === 'marked'
-        ? `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} marked for deletion.`
+        ? (_redlineOnly
+            ? `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} queued for Redline — worst-scored deletes first when free space hits the floor.`
+            : `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} marked for deletion.`)
         : `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
     }
     // One list per view (both already come newest-first / in plan order from
@@ -1901,7 +1908,9 @@ function openDeletedHistory(view) {
   // 'deleted' (deleted.log history) from the stats button.
   _dhView = view === 'marked' ? 'marked' : 'deleted';
   const title = document.getElementById('deleted-history-title');
-  if (title) title.textContent = _dhView === 'marked' ? 'Marked for Deletion' : 'Deleted Movie History';
+  if (title) title.textContent = _dhView === 'marked'
+    ? (_redlineOnly ? 'Redline Queue' : 'Marked for Deletion')
+    : 'Deleted Movie History';
   const modalEl = document.getElementById('deleted-history-modal');
   if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
   loadDeletedHistory();
