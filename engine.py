@@ -1859,8 +1859,8 @@ def write_plan_to_queue(planned, trigger) -> tuple[dict, int, int]:
     dropped = len(mark_store) - sum(1 for k in mark_store if k in kept)
     save_pending(kept, stamp_thresholds=True)
     if _redline_only_mode():
-        log(f"Marked in Redline deletion order: {len(kept)} movie(s) ({new_marks} new"
-            f"{f', {dropped} unmarked' if dropped else ''}) — they delete only when "
+        log(f"Queued for Redline: {len(kept)} movie(s) ({new_marks} new"
+            f"{f', {dropped} dropped' if dropped else ''}) — they delete only when "
             f"free space hits the Redline floor, worst-scored first.")
     elif DELETE_DELAY_DAYS > 0:
         log(f"Marked for deletion: {len(kept)} movie(s) ({new_marks} new"
@@ -5199,7 +5199,8 @@ def log_identity_mismatches(build_stats):
 def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
                     final_gb, final_free_gb, freed_bytes, removed_count,
                     skipped_under_limit, effective_library_gb, max_gb,
-                    build_stats, total_scanned, library_cap_hit=False):
+                    build_stats, total_scanned, library_cap_hit=False,
+                    queued_count=None, queued_bytes=0):
     """Write the end-of-run summary block for both Simulate and Live runs.
 
     One implementation, two label sets, so the two modes can never drift apart:
@@ -5252,6 +5253,10 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     row("Eligible:", build_stats['eligible'])
     log_raw("-" * 34)
     row("Would delete:" if is_sim else "Deleted:", removed_count)
+    # Redline-only: "Would delete" above counts only what a Redline breach
+    # would remove right now; the standing queue is a separate fact.
+    if queued_count is not None:
+        row("Queued for Redline:", f"{queued_count} (~{bytes_to_gb(queued_bytes):.1f} GB — deletes worst-scored first when free space hits the floor)")
     # The "limit reached" note only applies when candidates were actually left
     # untouched because the target was met first. When every candidate is acted
     # on (e.g. the cap is far below the library and can't be reached), the count
@@ -5831,7 +5836,7 @@ def main():
 
         log(f"DRY RUN [{trigger}]: Simulating deletions — target: free {to_free_gb:.1f} GB.")
         if _sim_min_count:
-            log(f"Redline-only mode: marking the first {min(_sim_min_count, len(candidates))} movies "
+            log(f"Redline-only mode: queueing the first {min(_sim_min_count, len(candidates))} movies "
                 f"in deletion order. When free space drops below {REDLINE_GB} GB, Redline deletes "
                 f"down this list (re-scored fresh at that moment) until back at the floor.")
         emit_progress(phase="simulating", trigger=trigger, target_bytes=to_free_bytes,
@@ -5889,24 +5894,41 @@ def main():
         log_blank()
         write_plan_to_queue(_sim_planned, trigger)
 
-        final_gb = round(bytes_to_gb(simulated_used), 1)
+        # Redline-only: the queue is a standing preview, not scheduled work —
+        # the summary reports only what a Redline breach would delete RIGHT NOW
+        # (the queue prefix covering the current deficit; nothing while free
+        # space sits above the floor). The full queue gets its own row.
+        _would_count, _would_bytes = simulated_count, simulated_freed_bytes
+        _queued_count = _queued_bytes = None
+        if _redline_only_mode():
+            _would_count, _would_bytes = 0, 0
+            for _c, _size in _sim_planned:
+                if _would_bytes >= to_free_bytes:
+                    break
+                _would_bytes += _size
+                _would_count += 1
+            _queued_count, _queued_bytes = simulated_count, simulated_freed_bytes
+
+        final_gb = round(bytes_to_gb(usage_info["used"] - _would_bytes), 1)
         final_free_gb = round(bytes_to_gb(usage_info["total"]) - final_gb, 1)
         log_run_summary(
             is_sim=True, trigger=trigger, to_free_gb=to_free_gb,
             used_gb=used_gb, free_before_gb=round(bytes_to_gb(usage_info["free"]), 1),
             final_gb=final_gb, final_free_gb=final_free_gb,
-            freed_bytes=simulated_freed_bytes, removed_count=simulated_count,
+            freed_bytes=_would_bytes, removed_count=_would_count,
             skipped_under_limit=len(candidates) - simulated_count,
             effective_library_gb=effective_library_gb, max_gb=max_gb,
             build_stats=build_stats, total_scanned=total_scanned,
             library_cap_hit=library_cap_hit,
+            queued_count=_queued_count, queued_bytes=_queued_bytes or 0,
         )
 
         log_blank()
         _mm = build_stats.get("identity_mismatch", 0)
         if _redline_only_mode():
-            _sim_msg = (f"Dry run — marked {simulated_count} movie(s) in Redline deletion order, "
-                        f"~{bytes_to_gb(simulated_freed_bytes):.1f} GB. They delete only when Redline hits.")
+            _sim_msg = (f"Dry run — queued {simulated_count} movie(s) for Redline "
+                        f"(~{bytes_to_gb(simulated_freed_bytes):.1f} GB). They delete, worst-scored "
+                        f"first, only when free space hits the floor.")
         elif DELETE_DELAY_DAYS > 0:
             _sim_msg = (f"Dry run — marked {simulated_count} movie(s) for deletion "
                         f"({DELETE_DELAY_DAYS}-day delay), ~{bytes_to_gb(simulated_freed_bytes):.1f} GB.")
