@@ -3784,6 +3784,11 @@ def _build_debug_report() -> str:
 def api_debug_report():
     """Build a full sanitized diagnostic report and return it for the browser to
     download — nothing is written to the container filesystem."""
+    # Mid-run the report would capture a half-written run log and a moving
+    # deletion plan, and its live connection probes compete with the engine's
+    # own API traffic — a snapshot like that misleads the bug report it's for.
+    if _run_active:
+        return jsonify({"ok": False, "error": "A run is active. Try again when it finishes."}), 409
     try:
         text = _build_debug_report()
         name = f"debug_report_{time.strftime('%Y-%m-%d_%H-%M-%S')}.txt"

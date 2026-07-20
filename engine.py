@@ -1895,7 +1895,7 @@ def debug_startup():
     if MONITOR_DIRS:
         log("MONITORED LIBRARY PATHS (allow-list):")
         for root in monitored_roots():
-            log(f"  {root} | exists={root.exists()}")
+            log(f"{root} | exists={root.exists()}")
     else:
         log("MONITORED LIBRARY PATHS: (none set — managing nothing)")
 
@@ -1925,10 +1925,10 @@ def debug_startup():
             "Redline deletes immediately, worst-scored first, whenever free space hits the floor.")
     _tok = ('*' * 8 + PLEX_TOKEN[-4:]) if PLEX_TOKEN else 'NOT SET'
     log(f"Tautulli: {TAUTULLI_URL}")
-    log(f"Plex:     {PLEX_URL} | token={_tok}")
+    log(f"Plex: {PLEX_URL} | token={_tok}")
     log(f"Last scheduled cleanup: {read_last_cleanup_date() or 'never'} | Cache: {CACHE_FILE}")
     if RADARR_OVERSEERR_SECTION_ID:
-        log(f"Radarr:    {RADARR_URL}")
+        log(f"Radarr: {RADARR_URL}")
         _section_note = " (auto-detected)" if RADARR_OVERSEERR_SECTION_ID_SOURCE == "auto" else ""
         log(f"Radarr cleanup enabled for section_id={RADARR_OVERSEERR_SECTION_ID}{_section_note}")
     else:
@@ -1937,19 +1937,19 @@ def debug_startup():
     # Scoring / filtering / balance settings — surfaced here so a submitted log
     # carries the exact tunables that shaped the run's decisions.
     log("SCORING & ORDERING:")
-    log(f"  Score balance: {SCORE_BALANCE}/100 "
+    log(f"Score balance: {SCORE_BALANCE}/100 "
         f"(watch+added history {HISTORY_WEIGHT * 100:.0f}% / IMDb quality {QUALITY_WEIGHT * 100:.0f}%)")
-    log(f"  Max staleness (recency window): {MAX_STALENESS_MONTHS} months")
-    log(f"  File size optimization: {f'{NEAR_TIE_PTS:g}-pt near-tie window' if NEAR_TIE_PTS else 'off'}")
-    log(f"  Scoring constants: {json.dumps(SCORING, separators=(',', ':'))}")
+    log(f"Max staleness (recency window): {MAX_STALENESS_MONTHS} months")
+    log(f"File size optimization: {f'{NEAR_TIE_PTS:g}-pt near-tie window' if NEAR_TIE_PTS else 'off'}")
+    log(f"Scoring constants: {json.dumps(SCORING, separators=(',', ':'))}")
     log("ELIGIBILITY FILTERS:")
-    log(f"  Minimum age (grace period): {GRACE_PERIOD_DAYS} days")
-    log(f"  Skip unplayed movies: {SKIP_UNPLAYED_MOVIES}")
-    log(f"  Max IMDb rating cutoff: {MAX_IMDB_RATING if MAX_IMDB_RATING is not None else 'off'}")
-    log(f"  Protect Jellyfin favorites: {PROTECT_JELLYFIN_FAVORITES}")
-    log(f"  Protected Plex collections: {', '.join(sorted(PROTECTED_COLLECTIONS)) if PROTECTED_COLLECTIONS else 'none'}")
-    log(f"  Protected Jellyfin collections: {', '.join(sorted(JELLYFIN_PROTECTED_COLLECTIONS)) if JELLYFIN_PROTECTED_COLLECTIONS else 'none'}")
-    log(f"  Eligible extensions: {', '.join(sorted(MOVIE_EXTENSIONS))}")
+    log(f"Minimum age (grace period): {GRACE_PERIOD_DAYS} days")
+    log(f"Skip unplayed movies: {SKIP_UNPLAYED_MOVIES}")
+    log(f"Max IMDb rating cutoff: {MAX_IMDB_RATING if MAX_IMDB_RATING is not None else 'off'}")
+    log(f"Protect Jellyfin favorites: {PROTECT_JELLYFIN_FAVORITES}")
+    log(f"Protected Plex collections: {', '.join(sorted(PROTECTED_COLLECTIONS)) if PROTECTED_COLLECTIONS else 'none'}")
+    log(f"Protected Jellyfin collections: {', '.join(sorted(JELLYFIN_PROTECTED_COLLECTIONS)) if JELLYFIN_PROTECTED_COLLECTIONS else 'none'}")
+    log(f"Eligible extensions: {', '.join(sorted(MOVIE_EXTENSIONS))}")
     log_blank()
 
 
@@ -2117,7 +2117,7 @@ def _abort_imdb_ratings(message, *, error_code="imdb_ratings_unavailable"):
     up manual setup steps instead of the user only seeing a dead run.
     """
     log(f"ABORT: {message}")
-    log("       Manual fix: download title.ratings.tsv.gz from "
+    log("Manual fix: download title.ratings.tsv.gz from "
         "https://datasets.imdbws.com/ (IMDb Non-Commercial Datasets) and place "
         "it in the MediaReducer config folder — the next run unpacks it "
         "automatically.")
@@ -2817,10 +2817,10 @@ def _jellyfin_boxset_children(box_id, user_id):
                 # Note it quietly, once per endpoint, so an empty run doesn't look
                 # like a failure.
                 if path not in _noted_405:
-                    log(f"    Jellyfin protection: {path} is not GET-able on this server (405) — using ParentId enumeration.")
+                    log(f"Jellyfin protection: {path} is not GET-able on this server (405) — using ParentId enumeration.")
                     _noted_405.add(path)
             else:
-                log(f"    Jellyfin protection: children query {path} {params} failed: {e}")
+                log(f"Jellyfin protection: children query {path} {params} failed: {e}")
             query_errors.append(f"{path} {params}: {e}")
             continue
         successful_queries += 1
@@ -2836,7 +2836,7 @@ def _jellyfin_boxset_children(box_id, user_id):
             found_imdbs.update(child_imdbs)
             found_tmdbs.update(child_tmdbs)
             found_paths |= _item_resolved_paths(child)
-        log(f"    Jellyfin protection: {path} box={box_id} -> {len(found)} id(s), {len(found_paths)} path(s), {len(found_imdbs)} imdb id(s), {len(found_tmdbs)} tmdb id(s).")
+        log(f"Jellyfin protection: {path} box={box_id} -> {len(found)} id(s), {len(found_paths)} path(s), {len(found_imdbs)} imdb id(s), {len(found_tmdbs)} tmdb id(s).")
         ids.update(found)
         paths.update(found_paths)
         imdb_ids.update(found_imdbs)
@@ -3276,11 +3276,11 @@ def get_all_movies():
             log("WARN merge near-miss: same filename identified on both servers but "
                 "paths did not match — this movie will be SKIPPED (not deleted) and the "
                 "run flagged with errors.")
-            log(f"    Jellyfin: title={r.get('title')!r} imdb={r.get('imdb_id')} "
-                f"tmdb={r.get('tmdb_id')} file={r.get('file')!r}")
-            log(f"              keys={sorted(_match_keys(r.get('file')))}")
-            log(f"    Plex:     title={prow.get('title')!r} file={prow.get('file')!r}")
-            log(f"              keys={sorted(_match_keys(prow.get('file')))}")
+            log(f"Jellyfin: title={r.get('title')!r} | imdb={r.get('imdb_id')} "
+                f"tmdb={r.get('tmdb_id')} | file={r.get('file')!r} | "
+                f"keys={sorted(_match_keys(r.get('file')))}")
+            log(f"Plex: title={prow.get('title')!r} | file={prow.get('file')!r} | "
+                f"keys={sorted(_match_keys(prow.get('file')))}")
     return merged
 
 
@@ -3564,7 +3564,7 @@ def _ensure_imdb_dataset_for_sample() -> None:
         if _extract_local_imdb_gz():
             log("Using manually-provided title.ratings.tsv.gz from the config folder.")
             return
-        log("       Manual fix: download title.ratings.tsv.gz from "
+        log("Manual fix: download title.ratings.tsv.gz from "
             "https://datasets.imdbws.com/ (IMDb Non-Commercial Datasets) and place "
             "it in the MediaReducer config folder, then press Refresh on the "
             "Filtering & Scoring page.")
@@ -4759,7 +4759,7 @@ def score_and_rank_candidates(candidates):
         log(f"All {len(candidates)} candidates sorted by deletion priority (lowest RetentionScore first):")
         for i, c in enumerate(candidates, 1):
             log(
-                f"  #{i} title={c['title']} | "
+                f"#{i} title={c['title']} | "
                 f"retention={c['retention_score']:.1f} | "
                 f"imdb={c['imdb_rating']} | votes={c['imdb_votes']} | year={c['release_year']} | "
                 f"plays={c['play_count']} | users={c.get('distinct_users', 0)} | "
@@ -5191,7 +5191,7 @@ def log_identity_mismatches(build_stats):
         f"their rating can't be trusted. They were NOT deleted. Re-identify each "
         f"movie on whichever server is wrong, then re-run.")
     for d in details:
-        log(f"• {d['title']} | path={d['path']} | "
+        log(f"{d['title']} | path={d['path']} | "
             f"Plex imdb={d['plex_imdb']} tmdb={d['plex_tmdb']} | "
             f"Jellyfin imdb={d['jellyfin_imdb']} tmdb={d['jellyfin_tmdb']}")
 
@@ -5203,14 +5203,16 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     """Write the end-of-run summary block for both Simulate and Live runs.
 
     One implementation, two label sets, so the two modes can never drift apart:
-    Simulate uses "(est.)" wording, a wider label column, a projected
-    library-after line, and the not-enough-candidates warnings; Live adds the
-    "Target freed" line.
+    Simulate uses "(est.)" wording, a projected library-after line, and the
+    not-enough-candidates warnings; Live adds the "Target freed" line.
+
+    Rows are plain "Label: value" with no column padding or leading indent —
+    padded alignment breaks as soon as the dashboard wraps a line on a phone,
+    and the gap after the timestamp read as noise.
     """
     log_identity_mismatches(build_stats)
-    pad = 20 if is_sim else 18
     def row(label, value):
-        log(f"  {label:<{pad}}{value}")
+        log(f"{label} {value}")
 
     est = " (est.)" if is_sim else ""
     log_blank()
@@ -5218,8 +5220,8 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     row("Trigger:", trigger)
     if not is_sim:
         row("Target freed:", f"{to_free_gb:.1f} GB")
-    row("Disk before:", f"{used_gb:.1f} GB used  |  {free_before_gb:.1f} GB free")
-    row(f"Disk after{est}:", f"{final_gb:.1f} GB used  |  {final_free_gb:.1f} GB free")
+    row("Disk before:", f"{used_gb:.1f} GB used | {free_before_gb:.1f} GB free")
+    row(f"Disk after{est}:", f"{final_gb:.1f} GB used | {final_free_gb:.1f} GB free")
     row(f"Space freed{est}:", f"{bytes_to_gb(freed_bytes):.2f} GB")
     if _redline_only_mode():
         row("Headroom limit:", f"disabled — redline-only (floor {REDLINE_GB} GB free)")
@@ -5228,24 +5230,24 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     if effective_library_gb is not None:
         row("Library before:", f"{effective_library_gb:.1f} GB{(' | cap: ' + str(MAX_LIBRARY_GB) + ' GB') if MAX_LIBRARY_GB else ''}")
         if is_sim:
-            log(f"  Library after (est.): {effective_library_gb - bytes_to_gb(freed_bytes):.1f} GB")
+            row("Library after (est.):", f"{effective_library_gb - bytes_to_gb(freed_bytes):.1f} GB")
     log_raw("-" * 34)
     path_issues = (build_stats["no_file_path"] + build_stats["bad_extension"]
                    + build_stats["missing_on_disk"] + build_stats["outside_monitored_dirs"])
     row("Movies scanned:", total_scanned)
-    row("Protected:", f"{build_stats['protected']}  (in Protected collection)")
+    row("Protected:", f"{build_stats['protected']} (in Protected collection)")
     if build_stats.get("jellyfin_favorite"):
-        row("JF favorites:", f"{build_stats['jellyfin_favorite']}  (favorited by a Jellyfin user — protected)")
+        row("JF favorites:", f"{build_stats['jellyfin_favorite']} (favorited by a Jellyfin user — protected)")
     if build_stats.get("identity_mismatch"):
-        row("Identity mismatch:", f"{build_stats['identity_mismatch']}  (Plex/Jellyfin disagree — skipped, not deleted)")
-    row("Recently added:", f"{build_stats['recently_added']}  (added within {GRACE_PERIOD_DAYS}-day grace period)")
+        row("Identity mismatch:", f"{build_stats['identity_mismatch']} (Plex/Jellyfin disagree — skipped, not deleted)")
+    row("Recently added:", f"{build_stats['recently_added']} (added within {GRACE_PERIOD_DAYS}-day grace period)")
     if SKIP_UNPLAYED_MOVIES or build_stats.get("unplayed"):
-        row("Unplayed:", f"{build_stats.get('unplayed', 0)}  (no play history)")
+        row("Unplayed:", f"{build_stats.get('unplayed', 0)} (no play history)")
     if MAX_IMDB_RATING is not None or build_stats.get("high_rated"):
-        row("High-rated:", f"{build_stats.get('high_rated', 0)}  (IMDb above {float(MAX_IMDB_RATING):.1f} cutoff — protected)" if MAX_IMDB_RATING is not None else f"{build_stats.get('high_rated', 0)}")
+        row("High-rated:", f"{build_stats.get('high_rated', 0)} (IMDb above {float(MAX_IMDB_RATING):.1f} cutoff — protected)" if MAX_IMDB_RATING is not None else f"{build_stats.get('high_rated', 0)}")
     if build_stats.get("no_imdb_data"):
-        row("No IMDb data:", f"{build_stats.get('no_imdb_data', 0)}  (no rating/votes found — not enough data to judge, skipped)")
-    row("Path/disk issues:", f"{path_issues}  (missing, bad extension, unmapped path)")
+        row("No IMDb data:", f"{build_stats.get('no_imdb_data', 0)} (no rating/votes found — not enough data to judge, skipped)")
+    row("Path/disk issues:", f"{path_issues} (missing, bad extension, unmapped path)")
     row("Duplicates merged:", build_stats.get('duplicates_merged', 0))
     row("Eligible:", build_stats['eligible'])
     log_raw("-" * 34)
@@ -5254,21 +5256,21 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     # untouched because the target was met first. When every candidate is acted
     # on (e.g. the cap is far below the library and can't be reached), the count
     # is 0 and the note would falsely imply the limit was hit.
-    row("Not needed:", f"{skipped_under_limit}  (limit reached before exhausting candidates)"
+    row("Not needed:", f"{skipped_under_limit} (limit reached before exhausting candidates)"
         if skipped_under_limit > 0 else "0")
     log_raw("=" * 34)
 
     if is_sim:
         if final_gb >= max_gb:
             log(
-                f"  WARNING: Even deleting all eligible candidates only reaches "
+                f"WARNING: Even deleting all eligible candidates only reaches "
                 f"{final_gb:.1f} GB, still above headroom limit of {max_gb:.1f} GB."
             )
         if library_cap_hit and effective_library_gb is not None:
             _lib_after = effective_library_gb - bytes_to_gb(freed_bytes)
             if _lib_after > MAX_LIBRARY_GB:
                 log(
-                    f"  WARNING: Even deleting all eligible candidates only reduces "
+                    f"WARNING: Even deleting all eligible candidates only reduces "
                     f"library to {_lib_after:.1f} GB, still above cap of {MAX_LIBRARY_GB} GB."
                 )
 
