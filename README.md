@@ -31,9 +31,7 @@ movie files at `/library`.
 
 > **Do not expose the web UI to the internet.** There is no login — anyone who
 > can reach port 7474 can reconfigure MediaReducer and delete your media. Keep
-> it on your LAN or behind a VPN. (It does block the common browser-based
-> attacks a malicious website could aim at your LAN, but that is a backstop,
-> not a reason to put it online.) If you reach it through a reverse-proxy
+> it on your LAN or behind a VPN. If you reach it through a reverse-proxy
 > domain, list that domain in `MEDIAREDUCER_TRUSTED_HOSTS`.
 
 ## What It Does
@@ -160,10 +158,9 @@ MEDIAREDUCER_CONFIG=~/.mediareducer/config.json \
 python3 app.py
 ```
 
-The library path stays the deletion boundary wherever you put it — monitored
-folders still have to live inside it. The appdata paths are only for
-auto-detecting API keys; if you'd rather just type your URLs and keys into the
-UI, you can skip them. These are set once at startup, not from the web UI.
+The library path stays the deletion boundary wherever you put it. The appdata
+paths are only for auto-detecting API keys — skip them if you'd rather type
+your URLs and keys into the UI.
 
 ## Container User & Health
 
@@ -186,35 +183,26 @@ Work through the Configuration tab from top to bottom.
 
 ### 1. Automatic Run Mode
 
-Leave this on **Paused** while setting up. Paused only disables scheduled Live
-cleanup — manual Dashboard actions still work once setup is valid. Live stays
-locked until a monitored path is saved and the health check passes, and
-switching to it takes a second confirming click.
+Leave this on **Paused** while setting up — you can still run everything
+manually from the Dashboard. Live stays locked until setup is complete and the
+health check passes.
 
 ### 2. Connections
 
 Pick your server software — Plex, Jellyfin, or both if they point at the same
-files. Both start off, and nothing works until you enable one and its API
-connects. **Auto Detect API Keys** fills the keys in from the mounted appdata;
-add anything it misses. You can usually leave the URL fields blank — MediaReducer
-uses your server's detected address on its standard port, and assumes `http://`.
-Fill one in only if yours is non-standard.
-
-The API key is the on/off switch for each service. Leave an optional service's
-key blank and that integration just stays off.
+files. **Auto Detect API Keys** fills the keys in from the mounted appdata;
+add anything it misses. The URL fields can usually stay blank — MediaReducer
+assumes your server's address on its standard port. The API key is the on/off
+switch for each service: leave an optional one blank and it just stays off.
 
 - Tautulli — required for Plex; default port 8181.
-- Plex token — optional, unlocks protected Plex collections; default port 32400.
+- Plex token — optional, unlocks protected Plex collections.
 - Jellyfin — required for Jellyfin; default port 8096.
 - Radarr — optional; default port 7878.
 
-Hit **Check for Errors** and MediaReducer confirms it can reach each API, read
-its appdata, write to `/config`, and match your server's paths to real files
-under `/library`. A broken connection never blocks a save — the save goes
-through and the features that need that connection lock instead. When something
-is failing, the Configuration tab turns red and jumps you to the bad fields.
-If a server's API fails the check (or its key is blank), that server is turned
-off automatically; fix it and turn it back on.
+Hit **Check for Errors** to confirm MediaReducer can reach each API and match
+your server's paths to real files under `/library`. When something is failing,
+the Configuration tab turns red and jumps you to the bad fields.
 
 ### 3. Movie Library Paths
 
@@ -226,73 +214,40 @@ Kids Movies
 Holiday Movies
 ```
 
-An empty list means MediaReducer manages nothing — intentional and safe, but
-Space Thresholds and run controls stay locked until at least one monitored
-path is saved.
+An empty list means MediaReducer manages nothing; run controls stay locked
+until at least one path is saved.
 
 When Plex or Jellyfin is connected, this section also shows protected
-collection pickers. Selected collections are always skipped. If a selected
-collection disappears from the server, it is dropped from the saved config.
-
-When Radarr is connected, **Optional Radarr cleanup** appears here as a single
-checkbox — the matching Plex section is detected automatically. When enabled,
-MediaReducer unmonitors a movie in Radarr only after deleting the last managed
-copy. It never asks Radarr to delete files.
+collection pickers — selected collections are always skipped. When Radarr is
+connected, **Optional Radarr cleanup** appears as a single checkbox: it
+unmonitors a movie in Radarr after the last managed copy is deleted, and never
+asks Radarr to delete files.
 
 ### 4. Space Thresholds
 
 Space Thresholds unlock after a monitored path is saved.
 
-- **Headroom target** — cleanup runs when free space drops below this amount,
-  freeing back up to it. 0 (the default) turns just this trigger off — the
-  Redline floor and Library Size Cap still work on their own, and with nothing
-  armed at all Live stays blocked until you set a target. Unticking the
-  checkbox is different: that switches to **redline-only mode** (below), which
-  requires a Redline floor.
-- **Redline emergency floor** — optional immediate-cleanup floor. When free
-  space drops below it, cleanup runs on the next tick and frees only enough to
-  get back to the floor (not up to the headroom target). It re-scores your
-  library and deletes lowest-value first, so it clears the already-marked movies
-  (which are the lowest-value ones) in order — and if you have since changed
-  monitored paths, filters, or scoring, it follows that updated order. It must
-  sit strictly below the Headroom value — for a Redline at or above it, use
-  redline-only mode instead.
-- **Library Size Cap** — optional cap on the total size of monitored movie
-  files. Shares the daily cleanup schedule and the deletion delay, and works
-  with the Headroom value at 0 (cap-only setups) — it's only unavailable in
-  redline-only mode.
+- **Headroom target** — cleanup runs when free space drops below this amount
+  and frees back up to it. 0 (the default) turns this trigger off; unticking
+  the checkbox instead switches to **redline-only mode** (below).
+- **Redline emergency floor** — optional. When free space drops below it,
+  cleanup runs immediately and frees just enough to get back above the floor.
+  It has to sit below the Headroom target.
+- **Library Size Cap** — optional cap on the total size of your monitored
+  movies, cleaned up on the same daily schedule as Headroom.
+- **Deletion delay** — how many whole days a movie stays marked before a
+  daily cleanup actually deletes it (Redline and manual runs skip the wait).
 
-- **Deletion delay** — whole days a movie stays marked before a daily
-  cleanup deletes it (minimum 1: never the same day it's marked — the earliest
-  is the next day's run; Redline and manual Live Runs ignore it).
+Anything that could delete more than you expect — or delete right away —
+tells you so and asks for a second confirming click.
 
 ### Redline-only mode
 
-For people who don't want the headroom concept at all and just want a big list
-of what will be deleted when space runs low: set a **Redline floor**, then
-untick **Headroom target** (the checkbox is the mode switch — a Redline floor
-must exist first). In this mode the Library Size Cap and the deletion delay
-are retired — Redline is the only thing that ever deletes.
-
-Simulate is still required before Live can be enabled (automatic or the manual
-button): it marks at least the first 50 movies in deletion order as a standing
-preview — the list Redline will work down, worst-scored first, whenever free
-space hits the floor. The preview refreshes on each Simulate, goes stale (and
-re-locks Live) when you change monitored paths, filters, or scoring, and each
-entry in the deletion history modal reads "#N — deletes when Redline hits."
-
-Optional fields can't be set to 0 — disabling is the off switch. A disabled
-field keeps its last value (greyed out), even across restarts.
-
-The Dashboard's storage numbers are cached and refresh every 15 minutes, after
-config saves, and whenever you hit the ↻ button — but every run re-checks the
-real numbers before it does anything.
-
-If a change would make MediaReducer delete more the next time it runs — say, a
-cap below your current library size, or lowering the deletion delay so movies
-already marked come due sooner — a persistent notice explains exactly what will
-happen and the save takes a second, confirming click. Anything that can delete
-right away takes two deliberate clicks.
+If you don't care about a headroom target and just want a standing list of
+what will go when space runs low: set a Redline floor, then untick Headroom.
+Redline becomes the only thing that ever deletes, and Simulate keeps a preview
+of at least the first 50 movies in deletion order, so you always know what's
+on the chopping block.
 
 ### 5. Advanced
 
@@ -317,8 +272,7 @@ keeps them.
 - **Jellyfin favorites** (Jellyfin setups) — optional; movies any user
   favorited are skipped.
 - **No IMDb data** (always on) — movies with no IMDb rating or votes are
-  skipped automatically: half the scoring evidence is missing, so there is
-  not enough data to judge them.
+  skipped; there isn't enough data to judge them.
 
 Protected collections also affect eligibility; they are configured on the
 Configuration tab.
@@ -329,46 +283,31 @@ Every eligible movie gets a score from 0 to 100 — higher means keep, and the
 lowest scores delete first. The score blends two things:
 
 - **Watch history** — how often it's been played, how recently, and by how
-  many people. A movie that's never been watched still gets "recency" credit
-  from when it was added, so a recent addition isn't judged as harshly as one
-  that's sat unwatched for years. **Max staleness** (in Scoring & Ordering)
-  sets how long that takes — a movie unwatched longer than this scores as
-  fully stale (default 36 months).
-- **IMDb rating** — the rating, weighted by how many votes back it up. A big
-  vote count on its own won't save a movie nobody watches.
+  many people. A never-watched movie still gets credit for being recently
+  added; **Max staleness** sets how long until it counts as fully stale.
+- **IMDb rating** — the rating, weighted by how many votes back it up.
 
-The dial starts centered at an even 50/50; slide it toward watch history or
-IMDb. If your library has little play history, lean on IMDb; if it has a lot,
-lean on watch history.
+The dial starts at an even 50/50. If your library has little play history,
+lean on IMDb; if it has a lot, lean on watch history.
 
 Deletions go in score order, lowest first. **File size optimization** (on by
-default) tweaks that only at the boundary where the choice actually matters:
-when the space you still need to free falls inside a group of near-tied
-movies, it deletes the bigger files first — and if one of them alone covers
-what's left, it takes that one — so you lose the fewest movies. Turn it off to
-delete in strict score order. And if you have two copies of the same movie
-scored about the same, the lower-quality copy goes first.
+default) breaks near-ties by deleting bigger files first, so you lose the
+fewest movies — and between two similar-scoring copies of the same movie, the
+lower-quality copy goes first.
 
 ### Library sample
 
-The sample table shows real movies pulled from your monitored paths with
-merged Plex/Jellyfin data, scored with the settings on screen. Each row shows
-its score breakdown and eligibility — filtered movies say exactly which rule
-filtered them. **Refresh** pulls a brand-new batch at the selected size
-(5–100 movies).
+The sample table shows real movies from your monitored paths, scored with the
+settings on screen — each row shows its score breakdown, and filtered movies
+say exactly which rule filtered them. The **#** column is the actual deletion
+order: type an **Over headroom** target and it reorders live, exactly as a
+real run would. **Refresh** pulls a brand-new batch.
 
-The **#** column is the actual deletion order. Type an **Over headroom**
-target and it reorders live, exactly as a real run would, with a bracket
-marking the group where file size optimization kicks in. The score is how much
-a movie deserves to stay; the # is when it would actually go.
-
-The first sample builds once a server is connected and a monitored path is
-saved. Scoring needs the IMDb ratings dataset, so the build downloads it if
-it's missing or stale — and if that download fails, you'll get a heads-up and
-the sample sits out until you add the dataset by hand and hit **Refresh**.
-Real runs hold to the same rule: they stop rather than score against stale
-ratings. Below the table, the movie-fact sliders let you dial up a
-hypothetical movie and watch its score react.
+Scoring needs the IMDb ratings dataset, which downloads automatically. If the
+download fails you'll get a heads-up with steps to add it by hand — real runs
+hold to the same rule and stop rather than score against stale ratings. Below
+the table, sliders let you dial up a hypothetical movie and watch its score
+react.
 
 ## Dashboard
 
@@ -391,97 +330,43 @@ delete nothing) — the tooltip always says which.
 
 ### Simulate
 
-Scans, filters, scores, and logs exactly what would be deleted. It never
-deletes files and does not consume the daily cleanup schedule.
+Scans, scores, and logs exactly what would be deleted, without deleting
+anything. This is also what writes the deletion plan Live runs work from.
 
 ### Live Run
 
-Deletes to every breached target (Headroom, Redline, Library Size Cap)
-**immediately** — the deletion delay and the once-per-day schedule pace
-automatic runs, not a deliberate button press. Because it deletes on the
-spot, the button is ghosted while over space limits until a Simulate has
-written the deletion plan for the current thresholds, so you always see
-what a run removes before it can. Within limits it deletes nothing.
+The manual button deletes to every breached target immediately — no delay, no
+daily schedule. It stays ghosted until a Simulate has shown you the plan for
+your current settings, so you always see what a run removes before it can.
+Within limits it deletes nothing.
 
 ### Automatic Live
 
 With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
 
-- **Headroom** and **Library Size Cap** cleanups trigger once per calendar
-  day when breached, at the **Daily run time** (Automatic Run Mode; default
-  midnight) — an eligible day waits for that time of day. The daily window
-  is only consumed by a cleanup that actually runs — a within-limits check
-  or one that's still waiting for the run time never blocks a breach later
-  that day. Moving the run time to a slot still ahead today keeps today's run
-  at the new time — even if today's run already happened, moving it to a later
-  slot lets it run once more today (safe: with the deletion delay a same-day
-  re-run only re-marks, deleting nothing extra). Moving it to a slot already
-  past skips today and starts at the new time tomorrow (it never triggers an
-  instant catch-up run).
-- **Redline** cleanups trigger immediately on any tick that finds free space
-  below the floor, ignoring the once-per-day schedule (and the deletion delay),
-  and free only enough to get back to the floor. With a **current** marked plan
-  (from Simulate or a daily run), the emergency takes a fast path: it deletes
-  straight down the marked queue in plan order — re-verifying each file fresh
-  against monitored paths, protected collections, and Jellyfin favorites, but
-  skipping the full library rescan, so space frees in seconds. It then rebuilds the preview with
-  a background Simulate. Without a current plan (rules or paths changed, queue
-  too small, or protection can't be verified) it falls back to a full re-scored
-  run, deleting lowest-value first.
-- **Redline-only mode** (Headroom unticked): the daily schedule never fires —
-  Redline is the only deletion trigger, and the marked queue is the standing
-  preview Simulate maintains, not a schedule.
-- **Deletion delay** (Space Thresholds) holds daily deletions for N whole
-  days (minimum 1 — a movie is never deleted the same day it's marked).
-  **Simulate writes the plan**: it marks the candidates (deleting nothing),
-  and each mark becomes eligible at the daily run N days later — a daily run
-  from then on deletes it (a manual Live Run ignores the delay entirely). Protecting a movie or changing the rules unmarks it
-  (protection clears within ~15 minutes; rule changes reconcile on the
-  next run). Marked movies show at the top of the Deleted Movie History
-  (with their eligibility dates) and as a count on the Lifetime pruned
-  button. 0 = eligible immediately: the next daily run (the next calendar
-  day at the Daily run time) deletes them.
-- **The plan must match the config.** A completed Simulate stamps every
-  deletion-affecting setting — thresholds, filters, scoring, and monitored
-  paths — into the queue (a stopped or partial Simulate never writes one).
-  While over space limits, changing ANY of those settings ghosts both Live
-  actions — arming automatic mode and the manual Live Run button — until a
-  fresh Simulate rebuilds the plan. The re-Simulate is always a full scan,
-  so it also picks up plays and last-played changes since the last run.
-  Existing marks keep their original mark date through a re-Simulate; only
-  movies newly entering the plan start a fresh delay clock. Automatic runs
-  are exempt: an armed scheduler recomputes and re-marks its own plan
-  every run.
-- **Time zone** (Automatic Run Mode) is the clock all of this runs on:
-  the Daily run time and calendar days mean that zone, and every timestamp
-  in the UI and logs displays in it. Auto follows the container clock
-  (often UTC in Docker) — set your zone so daily runs fire on your
-  calendar. The setting shows the server's current time and warns if the
-  host clock itself is off from your device by more than a couple of
-  minutes.
+- **Headroom** and **Library Size Cap** cleanups run at most once per calendar
+  day, at the **Daily run time** you pick (default midnight).
+- **Redline** fires immediately on any check that finds free space below the
+  floor, and frees only enough to get back above it. When the current plan is
+  still valid it deletes straight down the marked list without a full rescan
+  (still re-verifying each file's protections fresh), so space frees in
+  seconds.
+- **Deletion delay** holds daily deletions for N days: a run first *marks*
+  its candidates, and a daily run deletes each mark once it comes due.
+  Marked movies show at the top of the Deletion History with their dates, and
+  protecting a movie or changing the rules unmarks it.
+- **The plan must match the config.** Change any setting that affects what
+  gets deleted and Live locks until a fresh Simulate rebuilds the plan.
+- **Time zone** (Automatic Run Mode) is the clock all of this runs on. Auto
+  follows the container clock — often UTC in Docker — so set your zone if you
+  care when daily runs fire.
 
-While Paused, the same clock quietly refreshes storage stats instead, so the
-Dashboard never goes stale. Any Live↔Paused change resets the clock, so the
-first automatic run is always a full interval after Live is armed.
-
-After a container restart the app always starts Paused — re-enable Live
-explicitly when you are ready. Whenever MediaReducer pauses Live itself
-(restart safety, or a save that changed connections/paths), the reason shows
-on the Configuration page and on the Dashboard sub-line's hover.
-
-Stopping or restarting the container during an active run is safe. A run is
-never resumed — the next run recomputes its plan from a fresh scan — and a
-`docker stop` forwards the stop to the run so the engine finishes the file it
-is on (recording it to `deleted.log`) and archives its partial log before the
-app exits, the same clean shutdown as the Dashboard's Stop button. Files
-already deleted are permanent; nothing is left half-deleted, and no wrong file
-can be removed by an interrupted run.
-
-Every tick re-checks the thresholds against the current disk and library. If
-they stop being safe while Live is armed — say a bulk copy into the library
-pushes the cap past the safety percentage — the scheduler pauses Live with
-the reason instead of running, and the engine independently refuses such a
-run as a last line of defense.
+After a container restart the app always starts Paused — re-enable Live when
+you're ready. Stopping or restarting mid-run is safe: the engine finishes the
+file it's on, records it, and shuts down cleanly; the next run just starts
+fresh. And if the thresholds stop being safe while Live is armed — say a bulk
+copy pushes the cap past the safety percentage — the scheduler pauses Live
+with the reason instead of running.
 
 ## Safety Rules
 
@@ -490,36 +375,24 @@ MediaReducer is intentionally conservative:
 - No monitored paths means no scan and no deletion.
 - Every deletion must resolve inside `/library` *and* inside a monitored path.
 - Any API failure during a run aborts the run.
-- Protections fail closed: a configured protected collection that matches
-  nothing on the server (renamed or deleted) aborts the run rather than
-  running unprotected, and the Config page flags missing selections instead
-  of silently dropping them.
+- Protections fail closed: a protected collection that no longer matches
+  anything on the server aborts the run rather than running unprotected.
 - Plex/Jellyfin identity mismatches are skipped, never deleted.
 - Protected collections and filtered movies are hard exclusions, not score
   penalties.
-- Stop is safe but honest: deletions already made are permanent, the record
-  of each deletion always lands in `deleted.log` (even if the stop arrives
-  mid-deletion), and a stopped live run that deleted files always archives
-  its log.
-- Editing connection or monitoring settings while Live is on drops the mode to
-  Paused; re-enabling takes a deliberate double-click.
-- Run-affecting configuration is locked while a run is active.
-- Live requires a passing health check and valid thresholds, and every run
-  does a fresh pre-check before acting.
-- Simulate and Live never touch the Filtering & Scoring library sample.
+- Editing connection or monitoring settings while Live is on drops the mode
+  back to Paused, and run-affecting settings are locked while a run is active.
+- Every run does a fresh safety pre-check before acting. Stop is always safe:
+  deletions already made are permanent and always recorded in `deleted.log`,
+  but nothing is ever left half-done.
 
 ## Debug Mode
 
 **Debug mode** (Advanced) adds Debug buttons around the app that dump raw
-connection, collection, and run state into copyable popups. **Download report**
-builds a diagnostic snapshot and saves it through your browser — nothing is
-written to the container — so it's safe to attach to a bug report. Alongside
-config and live connection/API checks, the report captures the decision state
-that explains a run: the scheduler and effective clock (next tick, resolved
-time zone), the current space verdict and forecast, the deletion plan and why
-Live may be locked, protected-collection resolution, IMDb dataset age, and the
-last run's flagged errors. Everything identifying — titles, collection names,
-hosts, keys, paths, IPs — is scrubbed or replaced with stable hash tokens.
+connection and run state into copyable popups. **Download report** builds a
+diagnostic snapshot that's safe to attach to a bug report — everything
+identifying (titles, hosts, keys, paths, IPs) is scrubbed or replaced with
+anonymous tokens.
 
 ## Persistent Files
 
@@ -540,9 +413,8 @@ but always keeps the logs (`deleted.log`, `lastrun.log`, `logs/`) and the IMDb
 dataset.
 
 You can hand-edit `config.json`, but it's checked against the same rules the
-UI uses. If an edit is invalid, MediaReducer locks everything down and the
-Configuration page tells you exactly what's wrong, with a button to reset just
-the bad values. Easiest to change settings in the UI and leave the file alone.
+UI uses — an invalid edit locks things down until it's fixed. Easier to just
+use the UI and leave the file alone.
 
 ## Tests
 
