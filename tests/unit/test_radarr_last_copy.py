@@ -23,7 +23,7 @@ E.RADARR_URL = "http://radarr.test"
 E.RADARR_API_KEY = "key"
 
 deletes = []
-E.radarr_delete = lambda tmdb_id, title: deletes.append((tmdb_id, title))
+E.radarr_delete = lambda tmdb_id, title, movie=None: deletes.append((tmdb_id, title))
 
 tmp = Path(tempfile.mkdtemp())
 folder = tmp / "The Movie (2020)"

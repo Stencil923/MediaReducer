@@ -6,6 +6,13 @@ import tempfile
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import atexit
+import shutil
+import tempfile
+# Private per-run OUTPUT_DIR: a fixed shared path leaks window/pending
+# state between test files and suite runs (rest of the suite uses tempdirs).
+_OUT_DIR = tempfile.mkdtemp(prefix="mr-test-out.")
+atexit.register(shutil.rmtree, _OUT_DIR, True)
 import app as A
 
 _real_load_config = A.load_config  # capture before the fake replaces it
@@ -41,7 +48,7 @@ BASE = {
     "MAX_LIBRARY_GB": None, "MAX_HEADROOM_PCT": 15, "MONITOR_DIRS": [],
     "USE_PLEX": False, "USE_JELLYFIN": False,
     "IMDB_RATINGS_URL": "https://example.test/r.tsv.gz",
-    "OUTPUT_DIR": "/tmp/mr-test-out",
+    "OUTPUT_DIR": _OUT_DIR,
 }
 
 def save(payload_over):
@@ -124,13 +131,15 @@ with tempfile.TemporaryDirectory() as td:
     entries = {e["title"]: e for e in A.pending_deletion_entries()}
     check("shorter delay shrinks the countdown", entries["Movie A"]["days_remaining"] == 1)
 
-# ── Saving a config that satisfies every limit clears the orphaned queue ──────
+# ── A save that CHANGES a threshold and satisfies every limit clears the queue ─
 # Removing/lowering a cap leaves marks a run would never act on, and Simulate is
-# disabled once limits are satisfied — so the save must clear them itself.
+# disabled once limits are satisfied — so the save must clear them itself. An
+# unrelated save must NOT: it may be judging "satisfied" off a stale cached
+# library size, and clearing would silently reset the marks' delay clocks.
 _orig_limits = A._deletion_limits_exceeded
-_orig_disk = A.cached_disk_stats
+_orig_disk = A.disk_stats
 _orig_lib = A.library_stats
-A.cached_disk_stats = lambda s=None: {"total_gb": 1000, "used_gb": 100, "free_gb": 900, "pct_used": 10}
+A.disk_stats = lambda: {"total_gb": 1000, "used_gb": 100, "free_gb": 900, "pct_used": 10}
 A.library_stats = lambda: {"library_gb": 100.0}
 try:
     with tempfile.TemporaryDirectory() as td:
@@ -140,8 +149,8 @@ try:
                 "/library/movies/B/B.mkv": {"title": "Movie B", "marked_at": time.time()},
             }}), encoding="utf-8")
 
-        def _save_over(payload_over):
-            _state["cfg"] = dict(BASE, OUTPUT_DIR=td)
+        def _save_over(payload_over, saved_over=None):
+            _state["cfg"] = dict(BASE, OUTPUT_DIR=td, **(saved_over or {}))
             p = {"RUN_MODE": "paused", "HEADROOM_GB": 500, "REDLINE_GB": None,
                  "MAX_LIBRARY_GB": None, "MAX_HEADROOM_PCT": 15, "MONITOR_DIRS": [],
                  "USE_PLEX": False, "USE_JELLYFIN": False,
@@ -150,12 +159,18 @@ try:
             r = client.post("/api/config", json=p, headers={"X-MediaReducer": "1"})
             return r.status_code, r.get_json()
 
-        # Limits satisfied on save → the two marks clear and the count is reported.
+        # Removing the saved cap while limits are satisfied → marks clear.
         A._deletion_limits_exceeded = lambda *a, **k: False
         _write_queue()
-        code, body = _save_over({"MAX_LIBRARY_GB": None})
-        check("save clears the orphaned queue when limits are satisfied",
+        code, body = _save_over({"MAX_LIBRARY_GB": None}, saved_over={"MAX_LIBRARY_GB": 50})
+        check("threshold-removing save clears the orphaned queue",
               code == 200 and body.get("pending_cleared") == 2 and A.pending_count() == 0)
+
+        # An unrelated save (thresholds unchanged) keeps the marks even while satisfied.
+        _write_queue()
+        code, body = _save_over({})
+        check("unrelated save never clears the marks",
+              code == 200 and body.get("pending_cleared") == 0 and A.pending_count() == 2)
 
         # A limit still breached on save → marks are preserved (a re-Simulate refreshes them).
         A._deletion_limits_exceeded = lambda *a, **k: True
@@ -165,7 +180,7 @@ try:
               code == 200 and body.get("pending_cleared") == 0 and A.pending_count() == 2)
 finally:
     A._deletion_limits_exceeded = _orig_limits
-    A.cached_disk_stats = _orig_disk
+    A.disk_stats = _orig_disk
     A.library_stats = _orig_lib
 
 # ── Plan currency: EVERY deletion-affecting key must match the stamp ─────────

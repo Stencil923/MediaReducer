@@ -26,6 +26,9 @@ A._restart_schedule_clock = lambda: calls.__setitem__("clock", calls["clock"] + 
 A._run_active = False
 A._summary_active = False
 A._sample_pool_active = False
+# The tick skips daily-only breaches once today's window is used; these cases
+# test the launch flow itself, so hold the window open.
+A._headroom_window_used_today = lambda: False
 
 ok = True
 def check(name, cond):
@@ -64,6 +67,18 @@ A._deletion_limits_exceeded = lambda cfg, disk, lib: True
 A._scheduled_tick()
 check("safe breached tick launches the run", calls["run"] == 1
       and _state["cfg"].get("RUN_MODE") == "headroom")
+
+# 5. Daily-only breach with today's window already used: the engine would only
+#    say "waiting until tomorrow", so the tick skips the launch entirely.
+A._headroom_window_used_today = lambda: True
+A._scheduled_tick()
+check("used window skips the pointless engine launch", calls["run"] == 1)
+
+# 6. Same used window, but Redline is breached (free 500 <= 600): redline
+#    ignores the window, so the run launches.
+_state["cfg"] = {"RUN_MODE": "headroom", "REDLINE_GB": 600}
+A._scheduled_tick()
+check("redline breach launches despite the used window", calls["run"] == 2)
 
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

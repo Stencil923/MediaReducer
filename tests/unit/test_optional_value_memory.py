@@ -1,10 +1,18 @@
 """Disabled optional fields keep their last entered value (the _<key>_LAST
-memory), headroom saves blank as 0, and zero is rejected for the fields whose
-off switch is "disable" (Redline, Library cap, Max IMDb rating, staleness,
-file-size optimization)."""
+memory), headroom's disable toggle stores 0 (redline-only mode — needs a
+Redline floor, no cap), and zero is rejected for the fields whose off switch
+is "disable" (Redline, Library cap, Max IMDb rating, staleness, file-size
+optimization)."""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import atexit
+import shutil
+import tempfile
+# Private per-run OUTPUT_DIR: a fixed shared path leaks window/pending
+# state between test files and suite runs (rest of the suite uses tempdirs).
+_OUT_DIR = tempfile.mkdtemp(prefix="mr-test-out.")
+atexit.register(shutil.rmtree, _OUT_DIR, True)
 import app as A
 
 _state = {"cfg": {}}
@@ -38,7 +46,7 @@ BASE_SAVED = {
     "MAX_LIBRARY_GB": None, "MAX_HEADROOM_PCT": 15, "MONITOR_DIRS": [],
     "USE_PLEX": False, "USE_JELLYFIN": False,
     "IMDB_RATINGS_URL": "https://example.test/ratings.tsv.gz",
-    "OUTPUT_DIR": "/tmp/mr-test-out",
+    "OUTPUT_DIR": _OUT_DIR,
 }
 
 def base_payload(**over):
@@ -94,15 +102,52 @@ code, body, cfg = save_cfg(BASE_SAVED, base_payload(REDLINE_GB=None, _REDLINE_GB
 check("junk last value falls back to the disabled value",
       code == 200 and cfg.get("_REDLINE_GB_LAST") == 200)
 
-# ── /api/config: headroom blank = 0, silently ────────────────────────────────
+# ── /api/config: headroom 0 = the disable toggle (redline-only mode) ─────────
 
+# Blank means the ENABLED field was left empty — the form posts 0 when the
+# toggle is off, so blank is a validation error, not a silent 0.
 code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=None, REDLINE_GB=None))
-check("blank headroom saves as 0", code == 200 and cfg.get("HEADROOM_GB") == 0)
+check("blank headroom rejected", code == 400)
 code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB="abc"))
 check("non-numeric headroom rejected", code == 400)
-# Redline can't sit above a 0 headroom, so blank headroom + redline errors.
-code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=None, REDLINE_GB=200))
-check("blank headroom with redline enabled rejected", code == 400)
+# Disabling (0) with no Redline floor is the valid "no thresholds set" state
+# (the shipped default) — it saves fine; Live just stays blocked until a
+# target exists.
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=None,
+                                                    MONITOR_DIRS=["/library/movies"]))
+check("headroom 0 without redline saves (no thresholds set)",
+      code == 200 and cfg.get("HEADROOM_GB") == 0 and cfg.get("REDLINE_GB") is None)
+# Ticked-0 with a Redline above it is invalid — the ceiling covers 0 too;
+# arming Redline past the headroom value is what the mode (unticked) is for.
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=200))
+check("headroom 0 with redline but no mode flag rejected (ceiling)", code == 400)
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=200,
+                                                    REDLINE_ONLY_MODE=True))
+check("unticking headroom (mode) saves and stores memory",
+      code == 200 and cfg.get("HEADROOM_GB") == 0 and cfg.get("_HEADROOM_GB_LAST") == 500)
+# Redline-only mode (the explicit flag) can't carry a Library Size Cap; a
+# ticked-0 Headroom with a cap is a valid cap-only config.
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=200, MAX_LIBRARY_GB=5000,
+                                                    REDLINE_ONLY_MODE=True,
+                                                    MONITOR_DIRS=["/library/movies"]))
+check("redline-only mode with a cap rejected", code == 400)
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=None, MAX_LIBRARY_GB=5000,
+                                                    MONITOR_DIRS=["/library/movies"]))
+check("headroom 0 with a cap saves (cap-only config)",
+      code == 200 and cfg.get("MAX_LIBRARY_GB") == 5000)
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=None,
+                                                    REDLINE_ONLY_MODE=True,
+                                                    MONITOR_DIRS=["/library/movies"]))
+check("redline-only mode without a redline rejected", code == 400)
+# In the mode, Redline may exceed the remembered headroom (no ceiling there).
+code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=900,
+                                                    REDLINE_ONLY_MODE=True))
+check("redline above remembered headroom allowed in the mode", code == 200)
+# Re-enabling clears the memory key.
+saved = dict(BASE_SAVED, HEADROOM_GB=0, REDLINE_GB=200, _HEADROOM_GB_LAST=500)
+code, body, cfg = save_cfg(saved, base_payload(HEADROOM_GB=750, REDLINE_GB=200))
+check("re-enabled headroom clears its memory",
+      code == 200 and cfg.get("HEADROOM_GB") == 750 and "_HEADROOM_GB_LAST" not in cfg)
 
 # ── /api/config: score-field memory carried through config saves ─────────────
 

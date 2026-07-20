@@ -9,6 +9,13 @@ import tempfile
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import atexit
+import shutil
+import tempfile
+# Private per-run OUTPUT_DIR: a fixed shared path leaks window/pending
+# state between test files and suite runs (rest of the suite uses tempdirs).
+_OUT_DIR = tempfile.mkdtemp(prefix="mr-test-out.")
+atexit.register(shutil.rmtree, _OUT_DIR, True)
 import app as A
 
 _state = {"cfg": {}}
@@ -50,7 +57,7 @@ BASE = {
     "MAX_LIBRARY_GB": None, "MAX_HEADROOM_PCT": 15, "MONITOR_DIRS": [],
     "USE_PLEX": False, "USE_JELLYFIN": False,
     "IMDB_RATINGS_URL": "https://example.test/r.tsv.gz",
-    "OUTPUT_DIR": "/tmp/mr-test-out",
+    "OUTPUT_DIR": _OUT_DIR,
 }
 
 def save(payload_over, base_over=None):
