@@ -6473,14 +6473,15 @@ def api_run_progress():
 # ── Log section markers ───────────────────────────────────────────────────────
 # Match the engine's exact log strings (sim and live) so the dashboard's stat tiles
 # can deep-link into the run log. A section reports available only once the run has
-# genuinely written its marker. Each stage opens with a "  <TITLE>" banner from the
-# engine's log_stage() and the section starts there; the older content markers stay as
-# fallbacks so archived logs written before the banners still jump correctly.
+# genuinely written its marker. Each stage opens with a one-line
+# "====== <TITLE> ======" banner from the engine's log_stage() and the section starts
+# there; the older multi-line-banner and content markers stay as fallbacks so
+# archived logs written before the format change still jump correctly.
 _LOG_SECTION_RES = {
-    "scan":      re.compile(r"(?<![A-Za-z])SCAN$|Processing [\d,]+ unique movie entries\."),
-    "eligible":  re.compile(r"ELIGIBLE CANDIDATES$|Candidate stats:|candidates sorted by deletion priority"),
-    "deletions": re.compile(r"(?<![A-Za-z])(SIMULATION|DELETIONS)$|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: "),
-    "summary":   re.compile(r"SUMMARY  \["),
+    "scan":      re.compile(r"={3,} SCAN ={3,}|(?<![A-Za-z])SCAN$|Processing [\d,]+ unique movie entries\."),
+    "eligible":  re.compile(r"={3,} ELIGIBLE CANDIDATES ={3,}|ELIGIBLE CANDIDATES$|Candidate stats:|candidates sorted by deletion priority"),
+    "deletions": re.compile(r"={3,} (SIMULATION|DELETIONS) ={3,}|(?<![A-Za-z])(SIMULATION|DELETIONS)$|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: "),
+    "summary":   re.compile(r"SUMMARY {1,2}\["),
     "errors":    re.compile(r"ERROR|ABORT|WARN(ING)?[ :]|SKIP identity_mismatch|COMPLETED WITH ERRORS"),
 }
 _LOG_SECTION_MAX_LINES = 30000
@@ -6590,7 +6591,7 @@ def _extract_errors_report(lines: list, idx: dict):
     if abort_i is not None:
         # Present a run that died partway like the identity-mismatch report: a banner,
         # then the failure and its context.
-        banner = "!" * 55 + "\n  RUN FAILED — stopped before finishing\n" + "!" * 55 + "\n\n"
+        banner = "!!!!!! RUN FAILED — stopped before finishing !!!!!!\n\n"
         return True, banner + "".join(lines[abort_i:][:_LOG_SECTION_MAX_LINES])
 
     rx = _LOG_SECTION_RES["errors"]

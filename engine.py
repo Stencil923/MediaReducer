@@ -380,8 +380,7 @@ MAX_HEADROOM_PCT = 15  # percent of total filesystem capacity
 # HELPERS
 # =========================
 
-def log(msg):
-    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}"
+def _write_log_line(line):
     print(line, flush=True)
     # Best-effort file write: a full or unwritable log volume must never abort
     # a run mid-deletion. The console line above still reaches docker logs.
@@ -391,6 +390,16 @@ def log(msg):
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def log(msg):
+    _write_log_line(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}")
+
+
+def log_raw(msg):
+    """Un-timestamped log line — banners and rules, where a timestamp is noise
+    and would eat half a phone-width row before the content starts."""
+    _write_log_line(msg)
 
 
 def _find_appdata_file(base, *names):
@@ -848,12 +857,11 @@ def log_blank():
 
 
 def log_stage(title):
-    """Consistent full-width banner that opens each run stage, so the log reads
-    the same way from Startup through Summary."""
+    """One-line stage banner, short and un-timestamped so it fits a single row
+    on a phone. app.py's _LOG_SECTION_RES matches this exact shape for the
+    dashboard's section deep links — keep the two in sync."""
     log_blank()
-    log("=" * 55)
-    log(f"  {title}")
-    log("=" * 55)
+    log_raw(f"====== {title} ======")
 
 
 def reset_log():
@@ -5174,18 +5182,18 @@ def log_identity_mismatches(build_stats):
     if not details:
         return
     log_blank()
-    log("!" * 55)
-    log(f"  COMPLETED WITH ERRORS — {len(details)} file(s) skipped (identity mismatch)")
-    log("!" * 55)
-    log("  These files sit at the same path but Plex and Jellyfin identify them")
-    log("  as different movies, so their rating can't be trusted. They were NOT")
-    log("  deleted. Re-identify the movie on whichever server is wrong, then re-run.")
+    log_raw("!!!!!! COMPLETED WITH ERRORS !!!!!!")
+    # One paragraph per log line: the dashboard wraps long lines with a hanging
+    # indent, so a single flowing sentence reads better on a phone than text
+    # hand-wrapped for a wide terminal.
+    log(f"{len(details)} file(s) skipped (identity mismatch): they sit at the "
+        f"same path but Plex and Jellyfin identify them as different movies, so "
+        f"their rating can't be trusted. They were NOT deleted. Re-identify each "
+        f"movie on whichever server is wrong, then re-run.")
     for d in details:
-        log(f"  • {d['title']}")
-        log(f"      path:     {d['path']}")
-        log(f"      Plex:     imdb={d['plex_imdb']}  tmdb={d['plex_tmdb']}")
-        log(f"      Jellyfin: imdb={d['jellyfin_imdb']}  tmdb={d['jellyfin_tmdb']}")
-    log("!" * 55)
+        log(f"• {d['title']} | path={d['path']} | "
+            f"Plex imdb={d['plex_imdb']} tmdb={d['plex_tmdb']} | "
+            f"Jellyfin imdb={d['jellyfin_imdb']} tmdb={d['jellyfin_tmdb']}")
 
 
 def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
@@ -5206,9 +5214,7 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
 
     est = " (est.)" if is_sim else ""
     log_blank()
-    log("=" * 55)
-    log(f"  {'DRY RUN' if is_sim else 'CLEANUP'} SUMMARY  [{trigger.upper()}]")
-    log("=" * 55)
+    log_raw(f"====== {'DRY RUN' if is_sim else 'CLEANUP'} SUMMARY [{trigger.upper()}] ======")
     row("Trigger:", trigger)
     if not is_sim:
         row("Target freed:", f"{to_free_gb:.1f} GB")
@@ -5223,7 +5229,7 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
         row("Library before:", f"{effective_library_gb:.1f} GB{(' | cap: ' + str(MAX_LIBRARY_GB) + ' GB') if MAX_LIBRARY_GB else ''}")
         if is_sim:
             log(f"  Library after (est.): {effective_library_gb - bytes_to_gb(freed_bytes):.1f} GB")
-    log("-" * 55)
+    log_raw("-" * 34)
     path_issues = (build_stats["no_file_path"] + build_stats["bad_extension"]
                    + build_stats["missing_on_disk"] + build_stats["outside_monitored_dirs"])
     row("Movies scanned:", total_scanned)
@@ -5242,7 +5248,7 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     row("Path/disk issues:", f"{path_issues}  (missing, bad extension, unmapped path)")
     row("Duplicates merged:", build_stats.get('duplicates_merged', 0))
     row("Eligible:", build_stats['eligible'])
-    log("-" * 55)
+    log_raw("-" * 34)
     row("Would delete:" if is_sim else "Deleted:", removed_count)
     # The "limit reached" note only applies when candidates were actually left
     # untouched because the target was met first. When every candidate is acted
@@ -5250,7 +5256,7 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     # is 0 and the note would falsely imply the limit was hit.
     row("Not needed:", f"{skipped_under_limit}  (limit reached before exhausting candidates)"
         if skipped_under_limit > 0 else "0")
-    log("=" * 55)
+    log_raw("=" * 34)
 
     if is_sim:
         if final_gb >= max_gb:
@@ -5464,10 +5470,7 @@ def main():
         _lib_over = (library_gb is not None and MAX_LIBRARY_GB is not None
                      and library_gb > MAX_LIBRARY_GB)
 
-        log_blank()
-        log("=" * 55)
-        log("  STATUS (info mode — no scan performed)")
-        log("=" * 55)
+        log_stage("STATUS (info mode — no scan performed)")
         log(f"  Filesystem:   {used_gb:.1f} GB used / {_total_gb:.1f} GB total")
         log(f"  Headroom:     limit {max_gb:.1f} GB  |  {'OVER by ' + str(round(used_gb - max_gb, 1)) + ' GB' if over_limit else 'OK (' + str(free_gb) + ' GB free)'}")
         log(f"  Redline:      {REDLINE_GB} GB  |  {'HIT — only ' + str(free_gb) + ' GB free' if redline_hit else 'OK'}")
@@ -5492,7 +5495,7 @@ def main():
             log(f"  Would trigger: {' + '.join(triggers)}")
         else:
             log("  Would trigger: nothing — all limits satisfied")
-        log("=" * 55)
+        log_raw("=" * 34)
 
         # ── Readiness check for Live ──────────────────────────────────
         # We already know validate_connections() passed (we'd have exited if not).
@@ -5550,7 +5553,7 @@ def main():
             all_issues = _r_issues + (extra_issues or [])
             log_blank()
             log(f'  Ready to run as RUN_MODE = "{mode}"?')
-            log(f"  {'─' * 51}")
+            log_raw("─" * 34)
             log("  Connections:  ✓ validated")
             if all_issues:
                 for issue in all_issues:
@@ -5569,7 +5572,7 @@ def main():
         _show_ready("headroom", extra_issues=_r_cap_issues)
 
         log_blank()
-        log("=" * 55)
+        log_raw("=" * 34)
         log_blank()
         _info_triggers = []
         if redline_hit: _info_triggers.append("Redline")
