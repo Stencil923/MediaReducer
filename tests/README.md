@@ -16,13 +16,22 @@ lines and exits non-zero on failure):
 | `test_sample_annotate` | IMDb dataset gating: annotate from an on-disk file at any balance, download only when scoring needs it |
 | `test_score_config_trigger` | Sample rebuild fires exactly on IMDb-needed crossings of `/api/score-config` saves |
 | `test_refresh_flow` | Refresh commits the dial first; no download at 100% watch history; builds dedupe |
-| `test_delete_delay` | Deletion-delay config validation (whole days, blank = 0) and marked-for-deletion queue composition |
+| `test_mark_score_refresh` | Re-Simulating under a new balance keeps each mark's age (`marked_at`) but refreshes its displayed score/title/size |
+| `test_threshold_matrix` | Every (mode, headroom, redline, cap) combination gets the same verdict from all three validators — the `/api/config` save handler, the hand-edit file validator, and the engine — and valid states gate Live/Simulate the right way |
+| `test_redline_only` | Redline-only mode (`REDLINE_ONLY_MODE` + a Redline floor): validation rules, the always-on Simulate/plan gate, the standing preview queue |
+| `test_redline_fastpath` | A Redline emergency with a current plan deletes down the marked queue in plan order — re-verifying monitored roots and protections fresh — and falls back to a full scan on any doubt |
+| `test_optional_value_memory` | Disabled optional fields keep their last entered value across saves/restarts; unticking Headroom stores 0 and requires a Redline floor (redline-only mode); zero rejected where disabling is the off switch |
+| `test_delete_delay` | Deletion-delay config validation (whole days) and marked-for-deletion queue composition |
+| `test_time_zone` | `TIME_ZONE` drives the process clock — daily-run midnight, deletion-delay aging, log timestamps — with `auto` meaning the container clock |
 | `test_deleted_log` | deleted.log parser across every line generation; rationale fields surface in history lines |
+| `test_radarr_last_copy` | Radarr cleanup keeps a movie while another physical copy (multi-Version item) survives on disk |
 | `test_live_button_state` | Simulate/Live ghost when space limits are satisfied; fail open on unknowns; real problems keep their tooltips |
-| `test_optional_value_memory` | Disabled optional fields keep their last entered value across saves/restarts; blank Headroom saves as 0; zero rejected where disabling is the off switch |
 | `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs; sample builds warn |
 | `test_safety_autopause` | A Live tick with unsafe thresholds pauses Live with the reason; safe ticks still run |
 | `test_scheduler_pause` | Sample builds freeze the background clock; ticks defer; clock restarts after |
+| `test_graceful_shutdown` | SIGTERM to the app forwards the stop to the engine child and waits for it to exit before the app does |
+| `test_progress_phases` | Each progress step fills 0→100 exactly once; Plex+Jellyfin path resolution reports under the indeterminate "library" step |
+| `test_debug_report` | The sanitized debug report carries the decision-state sections and never leaks movie names, paths, or IPs |
 
 **Parity** (`tests/parity/`): `gen_py_scores.py` scores a balance × age ×
 distinct-users grid through the real engine; `parity_check.cjs` replays the
