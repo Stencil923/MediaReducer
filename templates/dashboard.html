@@ -1745,6 +1745,7 @@ const _DH_PAGE = 100;
 let _dhRows = [];       // the open view's rows, in display order
 let _dhPageIdx = 0;
 let _dhView = 'deleted';   // 'marked' | 'deleted' — set by whichever button opened the modal
+let _dhDeletedCount = 0;   // deleted.log entry count — Erase stays ghosted at 0
 
 function _dhCap(s) { s = String(s || ''); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; }
 
@@ -1876,6 +1877,7 @@ async function loadDeletedHistory() {
     _dhRenderPage();
     // Erase truncates deleted.log — history-view only. Download saves whichever
     // list is on screen.
+    _dhDeletedCount = count;
     if (eraseBtn) {
       eraseBtn.hidden = _dhView === 'marked';
       eraseBtn.disabled = _active || count <= 0;
@@ -1920,6 +1922,7 @@ async function clearDeletedHistory() {
     if (!r.ok || d.ok === false) throw new Error(d.message || 'Could not erase deleted.log.');
     // Erase only clears the deleted history — the marked-for-deletion queue
     // (still saveable) stays, so keep those rows in the table.
+    _dhDeletedCount = 0;
     _dhRows = _dhRows.filter(row => row._kind === 'marked');
     _dhPageIdx = 0;
     _dhRenderPage();
@@ -1936,7 +1939,10 @@ async function clearDeletedHistory() {
   } finally {
     // On success too — the button used to keep its busy spinner for the rest
     // of the session after a successful erase.
-    if (eraseBtn) { eraseBtn.disabled = false; eraseBtn.classList.remove('btn-busy'); }
+    if (eraseBtn) {
+      eraseBtn.classList.remove('btn-busy');
+      eraseBtn.disabled = _active || _dhDeletedCount <= 0;
+    }
   }
 }
 
@@ -2002,6 +2008,13 @@ function _applyButtonStates() {
   if (delDl) {
     delDl.disabled = _active || !_dhRows.length;
     delDl.title = _active ? 'Available when the run finishes' : '';
+  }
+  // Erase is also live-ghosted: the modal can be open when a run starts, and
+  // the engine appends to deleted.log while it runs.
+  const delErase = document.getElementById('btn-clear-deleted-log');
+  if (delErase && !delErase.classList.contains('btn-busy')) {
+    delErase.disabled = _active || _dhDeletedCount <= 0;
+    delErase.title = _active ? 'Available when the run finishes' : '';
   }
 }
 

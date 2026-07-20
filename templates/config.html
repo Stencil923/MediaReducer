@@ -1209,6 +1209,17 @@ function _applyAdvancedActionAvailability() {
   _applyClearCacheButtonState();
   _applyImdbDownloadButtonState();
 
+  // The debug report ghosts only while a run is active (it would capture a
+  // half-written run log) — NOT on filesystem problems, since diagnosing a
+  // broken setup is exactly what the report is for. The API debug popups stay
+  // available: they are read-only probes a run doesn't disturb.
+  const reportBtn = document.getElementById('btn-create-report');
+  if (reportBtn && !reportBtn.classList.contains('btn-busy')) {
+    const runLocked = _configActivityLocked();
+    reportBtn.disabled = runLocked;
+    reportBtn.title = runLocked ? 'Available when the run finishes' : '';
+  }
+
   // The headroom safety cap is the guardrail that blocks Live when Headroom is
   // set too high; ghost and lock it during a run so it can't be changed while
   // that run is relying on it.
@@ -3244,6 +3255,10 @@ function syncDebugModeVisibility() {
 }
 
 async function createDebugReport() {
+  if (_configActivityLocked()) {
+    showToast('A run is active. Try again when it finishes.', 'warning');
+    return;
+  }
   const btn = document.getElementById('btn-create-report');
   const status = document.getElementById('debug-report-status');
   if (btn) { btn.disabled = true; btn.classList.add('btn-busy'); btn.textContent = 'Building…'; }
