@@ -1,9 +1,26 @@
 # MediaReducer
 
+> [!WARNING]
+> **This is early, experimental software — use it at your own risk.**
+> MediaReducer is young, it is bound to have bugs I haven't found yet, and its
+> whole job is deleting files. Assume something will eventually go wrong: keep
+> backups, lean hard on Simulate, and don't point it at media you can't stand
+> to lose.
+
 MediaReducer is a Dockerized web app for keeping large movie libraries under
 control. It reads your library from Plex/Tautulli, Jellyfin, or both, scores
 every movie by watch history and IMDb rating, and deletes the lowest-value
 files first when your storage thresholds are crossed.
+
+It's built for one specific situation: a NAS where the media is secondary to
+everything else on the box — the backups, photos, and documents come first,
+and the movie library just lives in the leftover space. When that space starts
+running out, MediaReducer's job is to guess which movies you're least likely
+to miss and clear those first.
+
+It will probably always be exactly that. If you want fine-grained, rule-based
+control over what leaves your library and when, you probably want
+[Maintainerr](https://github.com/jorenn92/Maintainerr) instead.
 
 It is a normal Docker Compose app and runs anywhere the container can see your
 movie files at `/library`.
