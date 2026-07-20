@@ -71,11 +71,24 @@ watch/added history and IMDb quality; deletion order is score ascending, with
 documented tiebreaks. The Score Explorer's JS mirrors this exactly — the
 `tests/parity/` check fails if the two drift.
 
+**Space thresholds** — `HEADROOM_GB` (0 = trigger off) and `MAX_LIBRARY_GB`
+share the once-per-day window + `DAILY_RUN_TIME` and the deletion delay; either
+alone is a valid setup (cap-only included). `REDLINE_GB` fires immediately on
+any 15-minute tick and frees only back to its own floor; while Headroom is
+ticked it must sit strictly below the headroom value. `REDLINE_ONLY_MODE` (the
+GUI's Headroom checkbox unticked; requires a Redline floor, retires the cap and
+delay) makes Redline the only trigger, with Simulate maintaining a standing
+≥50-movie deletion-order preview. With a current plan, a Redline breach takes a
+fast path: it deletes straight down the marked queue — re-verifying monitored
+roots, protected collections, and Jellyfin favorites fresh — instead of a full
+rescan, then a background Simulate rebuilds the preview.
+
 **Deletion delay** (`DELETE_DELAY_DAYS`) — a daily Live run first *marks*
 candidates (into `pending_deletions.json`) and only deletes a mark once it has
-aged N calendar days. Marks are display-only; a deletion always re-derives
-eligibility from a fresh full scan, so a stale mark can never delete a protected
-movie. Redline emergencies and manual Live Runs bypass the delay.
+aged N calendar days. Marks never authorize a deletion on their own; a deletion
+re-verifies eligibility fresh (the full scan, or the Redline fast path's own
+protection re-fetch), so a stale mark can never delete a protected movie.
+Redline emergencies and manual Live Runs bypass the delay.
 
 **Plan currency** — Live (arming automatic mode or the manual button) is locked
 whenever the saved config changed in a way that affects *what* gets deleted. A
@@ -95,7 +108,7 @@ guessing.
 | File | Written by | Purpose |
 | --- | --- | --- |
 | `config.json` | app | Saved settings (single source of truth for both processes). |
-| `cache.json` | engine | Movie metadata cache, schedule state, storage stats, Score Explorer sample. |
+| `cache.json` | engine + app | Movie metadata cache, schedule state (the app burns/reopens the daily window under a shared flock), storage stats, Score Explorer sample. |
 | `pending_deletions.json` | engine | Marked-for-deletion queue + the plan-currency stamp. |
 | `lastrun.log` | engine | Most recent run log (overwritten each run). |
 | `logs/` | engine | Archived logs from runs that deleted something. |

@@ -9,6 +9,10 @@ RUN_MODE is forced Paused on every startup.
 
 import configparser
 import gzip
+try:
+    import fcntl
+except ImportError:          # non-POSIX dev box — engine.py degrades the same way
+    fcntl = None
 import ipaddress
 import hashlib
 import io
@@ -24,6 +28,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlencode, urlparse
@@ -470,13 +475,32 @@ def _config_file_issues(saved: dict) -> list[dict]:
     # either field is itself flagged: its range message already covers it, and
     # comparing garbage would double-flag.
     flagged = {i["key"] for i in issues}
-    if not ({"REDLINE_GB", "HEADROOM_GB"} & flagged):
+    if not ({"REDLINE_GB", "HEADROOM_GB", "MAX_LIBRARY_GB"} & flagged):
         redline = _config_num(saved.get("REDLINE_GB", _CONFIG_DEFAULTS.get("REDLINE_GB")))
         headroom = _config_num(saved.get("HEADROOM_GB", _CONFIG_DEFAULTS.get("HEADROOM_GB")))
-        if redline is not None and headroom is not None and redline > headroom:
-            bad("REDLINE_GB", "cannot be higher than HEADROOM_GB")
+        cap = _config_num(saved.get("MAX_LIBRARY_GB", _CONFIG_DEFAULTS.get("MAX_LIBRARY_GB")))
+        # The ceiling applies whenever the mode is off, STRICTLY: a Redline at
+        # or above the headroom value (0 included) is redline-only mode spelled
+        # wrong — REDLINE_ONLY_MODE is the supported way to run that.
+        if (not bool(saved.get("REDLINE_ONLY_MODE", _CONFIG_DEFAULTS.get("REDLINE_ONLY_MODE")))
+                and redline is not None and headroom is not None and redline >= headroom):
+            bad("REDLINE_GB", "must be lower than HEADROOM_GB (untick Headroom for redline-only mode)")
+        # REDLINE_ONLY_MODE (the GUI's Headroom checkbox unticked): Redline is
+        # the only trigger, so it must exist, the cap is off, and the headroom
+        # value is 0. WITHOUT the mode, HEADROOM_GB 0 just means the headroom
+        # trigger is off — Redline and/or the cap may still be armed alone.
+        has_dirs = bool(saved.get("MONITOR_DIRS", _CONFIG_DEFAULTS.get("MONITOR_DIRS")) or [])
+        rl_mode = bool(saved.get("REDLINE_ONLY_MODE", _CONFIG_DEFAULTS.get("REDLINE_ONLY_MODE")))
+        if rl_mode and has_dirs:
+            if redline is None:
+                bad("REDLINE_ONLY_MODE", "needs a REDLINE_GB floor")
+            if cap is not None:
+                bad("MAX_LIBRARY_GB", "is not used in REDLINE_ONLY_MODE — disable one of them")
+            if headroom not in (None, 0):
+                bad("HEADROOM_GB", "must be 0 in REDLINE_ONLY_MODE (the headroom trigger is retired)")
     for key in ("SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES", "USE_PLEX",
-                "USE_JELLYFIN", "KEEP_INTERRUPTED_LOGS", "DEBUG_MODE"):
+                "USE_JELLYFIN", "KEEP_INTERRUPTED_LOGS", "DEBUG_MODE",
+                "REDLINE_ONLY_MODE"):
         if key in saved and not isinstance(saved[key], bool):
             bad(key, "must be true or false")
     if "RUN_MODE" in saved and saved["RUN_MODE"] not in ("paused", "headroom"):
@@ -533,6 +557,17 @@ def _config_file_issues(saved: dict) -> list[dict]:
             bad("DAILY_RUN_TIME", "must be a 24-hour HH:MM time")
     return issues
 
+
+
+def _redline_only_mode_cfg(cfg: dict | None = None) -> bool:
+    """The explicit REDLINE_ONLY_MODE flag (Headroom checkbox unticked) with a
+    Redline floor set: Redline is the only deletion trigger. Simulate maintains
+    a standing preview of the deletion order and is always required before
+    Live; the deletion delay and Library Size Cap do not apply. A ticked
+    Headroom at 0 GB is NOT the mode — that is a normal config whose headroom
+    trigger is off (Redline and/or the cap may still be armed on their own)."""
+    c = cfg if cfg is not None else load_config()
+    return bool(c.get("REDLINE_ONLY_MODE")) and c.get("REDLINE_GB") is not None
 
 
 def _read_saved_config_file() -> dict | None:
@@ -619,17 +654,23 @@ def save_config(cfg: dict, *, overwrite_invalid: bool = False) -> bool:
                 print("WARNING: config.json holds invalid hand-edited values — save skipped "
                       "until they are reset.", file=sys.stderr)
                 return False
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = CONFIG_PATH.with_name(
-            f"{CONFIG_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-        )
-        try:
-            with open(tmp, "w") as f:
-                json.dump(cfg, f, indent=2)
-            tmp.replace(CONFIG_PATH)
-        finally:
-            tmp.unlink(missing_ok=True)
+        _atomic_write_json(CONFIG_PATH, cfg, indent=2)
     return True
+
+
+def _atomic_write_json(path: Path, data, *, indent: int | None = None) -> None:
+    """The one JSON write pattern for shared state files: a unique tmp then
+    os.replace, so readers never see a torn file. The tmp name carries pid AND
+    thread id — Flask threads and the engine subprocess can race on the same
+    target, and two writers sharing a tmp path would interleave into garbage.
+    Serialization (locks) is the caller's job; this only makes each write whole."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, indent=indent), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _radarr_section_method_label(method: str | None) -> str:
@@ -794,6 +835,27 @@ def output_dir() -> Path:
     return Path(load_config().get("OUTPUT_DIR", "/config"))
 
 
+@contextmanager
+def _cache_write_lock():
+    """Serialize cache.json read-modify-writes with EVERY other writer — the
+    engine subprocess takes the same flock (engine._cache_write_lock, same
+    cache.json.lock file) around its stats writes, and Flask request threads
+    each open their own fd so the flock serializes them too. Without it, a
+    window burn/reopen interleaving with another burn/reopen or an engine
+    stats write is last-writer-wins on the whole file."""
+    if fcntl is None:
+        yield
+        return
+    p = cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p.with_name(p.name + ".lock"), "w") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
 def burn_daily_window_on_startup(reason: str = "startup") -> None:
     """Safety reset: stamp today as the last daily-cleanup date.
 
@@ -804,24 +866,19 @@ def burn_daily_window_on_startup(reason: str = "startup") -> None:
     p = cache_path()
     today = time.strftime("%Y-%m-%d")
     try:
-        cache = {}
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    cache = data
-            except Exception:
-                cache = {}
-        if cache.get("last_cleanup_date") == today:
-            return
-        cache["last_cleanup_date"] = today
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            tmp.write_text(json.dumps(cache), encoding="utf-8")
-            tmp.replace(p)
-        finally:
-            tmp.unlink(missing_ok=True)
+        with _cache_write_lock():
+            cache = {}
+            if p.exists():
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        cache = data
+                except Exception:
+                    cache = {}
+            if cache.get("last_cleanup_date") == today:
+                return
+            cache["last_cleanup_date"] = today
+            _atomic_write_json(p, cache)
         print(f"Startup safety: daily-run window marked used for today ({reason}).", flush=True)
     except Exception as e:
         print(f"WARNING: could not stamp the daily-run window ({e})", flush=True)
@@ -837,19 +894,14 @@ def reopen_daily_window(reason: str = "daily run time moved later") -> None:
     p = cache_path()
     today = time.strftime("%Y-%m-%d")
     try:
-        if not p.exists():
-            return
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, dict) or data.get("last_cleanup_date") != today:
-            return
-        data.pop("last_cleanup_date", None)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            tmp.write_text(json.dumps(data), encoding="utf-8")
-            tmp.replace(p)
-        finally:
-            tmp.unlink(missing_ok=True)
+        with _cache_write_lock():
+            if not p.exists():
+                return
+            data = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or data.get("last_cleanup_date") != today:
+                return
+            data.pop("last_cleanup_date", None)
+            _atomic_write_json(p, data)
         print(f"Daily-run window reopened for today ({reason}).", flush=True)
     except Exception as e:
         print(f"WARNING: could not reopen the daily-run window ({e})", flush=True)
@@ -860,19 +912,43 @@ def progress_path()-> Path: return output_dir() / "progress.json"
 def logs_dir()     -> Path: return output_dir() / "logs"
 
 
+_cache_file_memo_lock = threading.Lock()
+_cache_file_memo = {"key": None, "data": {}}
+
+
+def _cache_file_data() -> dict:
+    """cache.json parsed, memoized by (path, mtime, size). One /api/status poll
+    consults this file several times (library stats, Live gating, the daily
+    window) and every open page polls every ~3s, while the file itself only
+    changes when a run, Summary, or window burn writes it — so parse once per
+    version, not once per consult."""
+    p = cache_path()
+    try:
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}
+    with _cache_file_memo_lock:
+        if _cache_file_memo["key"] == key:
+            return _cache_file_memo["data"]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        data = {}
+    with _cache_file_memo_lock:
+        _cache_file_memo["key"] = key
+        _cache_file_memo["data"] = data
+    return data
+
+
 def library_stats() -> dict:
     """Last-known dashboard storage stats (cache.json → dashboard_stats), written by
     Summary/run refreshes so the dashboard's frequent status poll reads cached values
     instead of touching the filesystem."""
-    cache = cache_path()
-    if cache.exists():
-        try:
-            data = json.loads(cache.read_text(encoding="utf-8"))
-            if isinstance(data, dict) and isinstance(data.get("dashboard_stats"), dict):
-                return data["dashboard_stats"]
-        except Exception:
-            pass
-    return {}
+    stats = _cache_file_data().get("dashboard_stats")
+    return stats if isinstance(stats, dict) else {}
 
 def cached_disk_stats(stats: dict | None = None) -> dict | None:
     """Last-known filesystem capacity, cache-only by design: /api/status polls often
@@ -895,12 +971,11 @@ def imdb_ratings_path() -> Path: return output_dir() / "title.ratings.tsv"
 
 
 def _headroom_window_used_today() -> bool:
-    """True when today's once-per-day headroom cleanup already ran. Mirrors the
-    engine's check (local-time date vs cache.json last_cleanup_date); redline/cap
-    triggers ignore the window."""
+    """True when today's once-per-day daily cleanup (headroom or cap trigger)
+    already ran. Mirrors the engine's check (local-time date vs cache.json
+    last_cleanup_date); only a Redline breach ignores the window."""
     try:
-        cache = json.loads(cache_path().read_text(encoding="utf-8"))
-        return cache.get("last_cleanup_date") == time.strftime("%Y-%m-%d")
+        return _cache_file_data().get("last_cleanup_date") == time.strftime("%Y-%m-%d")
     except Exception:
         return False
 
@@ -1078,7 +1153,7 @@ def _format_reclaimed_size(size_bytes: int | float | None) -> str:
         return f"{mb:.0f} MB"
     return "0 GB"
 
-def _api_connection_error() -> bool:
+def _api_connection_error(cfg: dict | None = None) -> bool:
     """True when the LAST connection probe found API problems.
 
     Reads only cached health (never probes), so it is cheap for the header on every
@@ -1090,7 +1165,7 @@ def _api_connection_error() -> bool:
         cached_sig = _connection_health_cache.get("signature")
     if not isinstance(cached, dict):
         return False
-    if cached_sig is not None and cached_sig != _connection_health_signature(load_config()):
+    if cached_sig is not None and cached_sig != _connection_health_signature(cfg or load_config()):
         return False
     return bool(cached.get("errors")) or not cached.get("critical_ok", True)
 
@@ -1104,7 +1179,7 @@ def inject_display_time_settings():
         "host_time_zone": _host_time_zone_name(),
         "server_epoch": time.time(),
         "connection_onboarding_needed": _connection_onboarding_needed(cfg),
-        "api_connection_error": _api_connection_error(),
+        "api_connection_error": _api_connection_error(cfg),
         "debug_mode": bool(cfg.get("DEBUG_MODE")),
         "welcome_needed": _welcome_guide_needed(cfg),
         # First-launch only: adopt the browser's time zone (client posts it to
@@ -1187,19 +1262,15 @@ def _write_progress_start_stub(mode_override: str | None):
     dashboard panel flips immediately — even before the subprocess has imported Python.
     The engine then overwrites this with real phase updates. Best-effort only."""
     try:
-        p = progress_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
         now = time.time()
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")   # pid-unique: engine writes progress too
-        tmp.write_text(json.dumps({
+        _atomic_write_json(progress_path(), {
             "schema": 1, "status": "starting", "phase": "checking",
             "mode": mode_override or load_config().get("RUN_MODE"),
             "scanned": 0, "total": 0, "eligible": 0, "protected": 0, "skipped": 0,
             "deleted": 0, "bytes_freed": 0, "target_bytes": 0,
             "trigger": "", "current_title": "", "message": "Starting…",
             "started_at": now, "updated_at": now,
-        }), encoding="utf-8")
-        tmp.replace(p)   # atomic: a progress poll must never see a torn file
+        })
     except Exception:
         pass
 
@@ -1229,12 +1300,77 @@ def _mark_progress_terminal(status: str, message: str, *, force: bool = False):
             "ended_at": now,
             })
         data.setdefault("started_at", now)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")   # pid-unique: engine writes progress too
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(p)
+        _atomic_write_json(p, data)
     except Exception:
         pass
+
+
+# Mirrors engine.REDLINE_PREVIEW_COUNT (the app never imports the engine).
+_REDLINE_PREVIEW_COUNT = 50
+
+
+def _preview_rebuild_needed(live_run: bool) -> bool:
+    """Should a background Simulate rebuild the standing preview after a run?
+
+    Two triggers: the engine's queue_rebuild progress flag (a Redline fast path
+    consumed marks), or — the invariant that catches every other path — any LIVE
+    run in redline-only mode that left the preview below full strength (manual
+    Live Runs and full-scan Redline fallbacks trim the queue too, and the mode
+    has no daily runs to replenish it). Sim runs never qualify on depth alone,
+    or a small library (fewer movies than the preview size) would rebuild in a
+    loop forever."""
+    try:
+        prog = json.loads(progress_path().read_text(encoding="utf-8"))
+        if prog.get("queue_rebuild"):
+            return True
+    except Exception:
+        pass
+    if not live_run:
+        return False
+    try:
+        return _redline_only_mode_cfg() and pending_count() < _REDLINE_PREVIEW_COUNT
+    except Exception:
+        return False
+
+
+def _maybe_rebuild_preview_after_run(live_run: bool = False) -> None:
+    """After a successful run, rebuild the standing preview when needed (see
+    _preview_rebuild_needed): kick a background Simulate so it grows back to
+    full strength. The post-run Summary owns the lock briefly, so retry for a
+    while rather than failing; any new engine run rewrites progress.json, which
+    clears the fast path's flag."""
+    if not _preview_rebuild_needed(live_run):
+        return
+
+    def _kick():
+        # The post-run Summary can legitimately take minutes on a large library
+        # (its own subprocess budget is 600 s) — wait past that, not under it.
+        for _ in range(140):           # up to ~11½ minutes
+            time.sleep(5)
+            if _run_active or _summary_active:
+                continue
+            # In headroom mode a within-limits Simulate would spin up just to
+            # no-op ("nothing to simulate") — the daily run replans anyway.
+            # Redline-only mode always rebuilds (the preview IS the plan).
+            cfg = load_config()
+            if not _redline_only_mode_cfg(cfg):
+                try:
+                    if not _deletion_limits_exceeded(cfg, disk_stats(),
+                                                     library_stats().get("library_gb")):
+                        print("Queue rebuild: skipped — limits are satisfied and the "
+                              "daily run replans on the next breach.", flush=True)
+                        return
+                except Exception:
+                    pass   # can't judge → let the Simulate decide
+            ok, msg = run_script(mode_override="debug_sim")
+            print(("Queue rebuild: background Simulate started to restore the marked "
+                   "preview after the Redline fast path."
+                   if ok else f"Queue rebuild: could not start the Simulate ({msg})."),
+                  flush=True)
+            return
+        print("Queue rebuild: gave up waiting for the post-run refresh to finish.", flush=True)
+
+    threading.Thread(target=_kick, daemon=True, name="queue-rebuild").start()
 
 
 def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[bool, str]:
@@ -1282,6 +1418,11 @@ def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[
             stopped = _run_stop_requested.is_set()
             if stopped:
                 _mark_progress_terminal("stopped", "Run stopped.", force=True)
+            elif returncode == 0:
+                # A completed Redline fast path asks for its preview to be rebuilt;
+                # any live run in redline-only mode that thinned the preview does too.
+                _maybe_rebuild_preview_after_run(
+                    live_run=_is_live_mode(mode_override or load_config().get("RUN_MODE")))
             elif returncode != 0:
                 _mark_progress_terminal("error", "Run failed — see the detailed log.")
                 # Runs fail closed on any API error, so re-probe now: the cached
@@ -1534,7 +1675,9 @@ def _ensure_sample_imdb_dataset() -> bool:
     target = imdb_ratings_path()
     if _imdb_dataset_ready():
         return True
-    tmp = target.with_name(target.name + ".tmp")
+    # pid+thread tmp name, same scheme as _atomic_write_json (bytes payload here):
+    # two concurrent sample builds must never interleave writes into one tmp.
+    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         url = _validate_imdb_url(load_config().get("IMDB_RATINGS_URL"))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1771,8 +1914,12 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
         if not redline_ok or redline_gb is None or redline_gb <= 0:
             hard_errors.append("Redline must be greater than zero, or disabled.")
             redline_ok = False
-        elif headroom_ok and redline_gb > headroom_gb:
-            hard_errors.append("Redline cannot be higher than Headroom.")
+        elif (headroom_ok and not _redline_only_mode_cfg(cfg)
+              and redline_gb >= headroom_gb):
+            # STRICT ceiling while Headroom is ticked, at ANY value including
+            # 0 — a tie or above is what redline-only mode (unticked) is for.
+            hard_errors.append("Redline must be lower than Headroom — untick "
+                               "Headroom for redline-only mode.")
             redline_ok = False
 
     cap_gb = None
@@ -1796,9 +1943,15 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     safety_message = ""
     if headroom_ok and max_pct_ok and total_gb and total_gb > 0:
         limit_gb = round(total_gb * max_pct / 100, 1)
-        safety_ok = headroom_gb <= limit_gb
+        # The safety cap bounds the free-space floor the system maintains: the
+        # Headroom target normally, the Redline floor in redline-only mode.
+        _maintained_gb = headroom_gb if headroom_gb > 0 else (
+            redline_gb if (redline_ok and redline_gb) else None)
+        safety_ok = _maintained_gb is None or _maintained_gb <= limit_gb
         if not safety_ok:
-            safety_message = "Headroom target is over the safety percentage."
+            safety_message = ("Redline floor is over the safety percentage."
+                              if headroom_gb == 0 else
+                              "Headroom target is over the safety percentage.")
             safety_errors.append(safety_message)
 
     # The same safety percentage caps how much a Library Size Cap may delete in a Live
@@ -1847,8 +2000,14 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     simulate_required = False
     if not headroom_errors:
         try:
-            simulate_required = (_deletion_limits_exceeded(cfg, disk, library_gb_val)
-                                 and not _pending_plan_current(cfg))
+            if _redline_only_mode_cfg(cfg):
+                # Redline deletes immediately when hit, so Live always needs a
+                # current plan (the standing deletion-order preview) — not just
+                # when a limit is already breached.
+                simulate_required = not _pending_plan_current(cfg)
+            else:
+                simulate_required = (_deletion_limits_exceeded(cfg, disk, library_gb_val)
+                                     and not _pending_plan_current(cfg))
         except Exception:
             simulate_required = False
 
@@ -3551,7 +3710,7 @@ def _build_debug_report() -> str:
     add("=" * 60)
     try:
         data = _pending_file_data()
-        forecast = pending_delete_forecast()
+        forecast = pending_delete_forecast(cfg)
         plan_current = _pending_plan_current(cfg)
         add(f"  pending plan file: {'present' if data else 'missing'}")
         add(f"  plan current under saved config: {plan_current}"
@@ -3584,7 +3743,7 @@ def _build_debug_report() -> str:
                 f"{_format_reclaimed_size(forecast['event_bytes'])} on {forecast['event_on']}")
         # Sample rows carry NO title, NO path, NO host — only non-identifying
         # score / size / schedule fields, per the privacy requirement.
-        entries = pending_deletion_entries()
+        entries = pending_deletion_entries(cfg)
         if entries:
             add(f"  sample marked entries (up to 5, de-identified):")
             for e in entries[:5]:
@@ -4263,6 +4422,15 @@ def _detect_radarr_plex_section(cfg: dict | None = None) -> dict:
 NO_MONITORED_DIRS_MESSAGE = "No monitored library paths are set — add one on the Configuration page."
 SIMULATE_REQUIRED_MESSAGE = "Over space limits — run Simulate to review the deletion plan first."
 
+
+def _simulate_required_message(cfg: dict | None = None) -> str:
+    """Why Live is ghosted pending a Simulate — redline-only mode has its own
+    reason (the standing preview), everything else is the over-limits message."""
+    if _redline_only_mode_cfg(cfg):
+        return ("Run Simulate to build the Redline deletion-order preview "
+                "before enabling Live.")
+    return SIMULATE_REQUIRED_MESSAGE
+
 def _has_monitored_dirs(cfg: dict | None = None) -> bool:
     """Return True when at least one monitored library path is configured."""
     cfg = cfg or load_config()
@@ -4325,17 +4493,23 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
     # Over limits without a plan computed under these exact thresholds, the manual Live
     # Run ghosts too — it deletes immediately, so the user must have seen what a run
     # would remove. Simulate stays available: running it is how Live gets un-ghosted.
-    simulate_required = bool(threshold_state.get("simulate_required")) and not satisfied_msg
+    # Redline-only mode inverts two pieces: being within limits is the NORMAL state
+    # (so it never ghosts Simulate — that's how the standing preview is built or
+    # refreshed) and never masks the plan requirement.
+    rl_only = _redline_only_mode_cfg(cfg)
+    simulate_required = bool(threshold_state.get("simulate_required")) and (rl_only or not satisfied_msg)
 
     return {
         "summary_disabled": False,
         "summary_tooltip": "",
-        "simulate_disabled": not threshold_state["ok_for_simulate"] or bool(satisfied_msg),
-        "simulate_tooltip": threshold_state["simulate_tooltip"] or satisfied_msg,
+        "simulate_disabled": not threshold_state["ok_for_simulate"] or (bool(satisfied_msg) and not rl_only),
+        "simulate_tooltip": threshold_state["simulate_tooltip"] or ("" if rl_only else satisfied_msg),
         "live_disabled": (not threshold_state["ok_for_live"] or bool(satisfied_msg)
                           or simulate_required),
-        "live_tooltip": (threshold_state["live_tooltip"] or satisfied_msg
-                         or (SIMULATE_REQUIRED_MESSAGE if simulate_required else "")),
+        "live_tooltip": (threshold_state["live_tooltip"]
+                         or (_simulate_required_message(cfg) if simulate_required and rl_only else "")
+                         or satisfied_msg
+                         or (_simulate_required_message(cfg) if simulate_required else "")),
         "space_satisfied": bool(satisfied_msg),
         "space_thresholds": threshold_state,
         "connection_health": health,
@@ -4564,12 +4738,34 @@ def pending_path() -> Path:
     return output_dir() / "pending_deletions.json"
 
 
+_pending_file_memo_lock = threading.Lock()
+_pending_file_memo = {"key": None, "data": None}
+
+
 def _pending_file_data() -> dict | None:
+    """pending_deletions.json parsed, memoized by (path, mtime, size) — the same
+    pattern as _deleted_log_lines and _cache_file_data, and for the same reason:
+    /api/status consults the marked queue every ~3s per open page, while the
+    file only changes when the engine (or a queue clear) writes it."""
+    p = pending_path()
     try:
-        data = json.loads(pending_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+    with _pending_file_memo_lock:
+        if _pending_file_memo["key"] == key:
+            return _pending_file_memo["data"]
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+    if not isinstance(data, dict):
+        data = None
+    with _pending_file_memo_lock:
+        _pending_file_memo["key"] = key
+        _pending_file_memo["data"] = data
+    return data
 
 
 def _pending_raw() -> dict:
@@ -4586,7 +4782,8 @@ def pending_count() -> int:
 def _clear_pending_deletions() -> bool:
     """Drop the whole marked-for-deletion queue. Callers must ensure no run is
     active (the engine owns the file during a run); the config-save path guards
-    that with _run_active. Missing file already means an empty queue."""
+    that by re-checking _run_active/_summary_active under _run_lock right at
+    the clear. Missing file already means an empty queue."""
     try:
         pending_path().unlink(missing_ok=True)
         return True
@@ -4609,7 +4806,7 @@ def _normalized_monitor_dirs(cfg: dict) -> list[str]:
 # manual Live Run button — until a fresh Simulate rebuilds the plan. Mirrored in
 # engine.py (_PLAN_CONFIG_KEYS); keep the two lists identical.
 _PLAN_CONFIG_KEYS = (
-    "HEADROOM_GB", "REDLINE_GB", "MAX_LIBRARY_GB",
+    "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
     "GRACE_PERIOD_DAYS", "SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES",
     "MAX_IMDB_RATING", "SCORE_BALANCE", "NEAR_TIE_PTS", "MAX_STALENESS_MONTHS",
     "PROTECTED_COLLECTIONS", "JELLYFIN_PROTECTED_COLLECTIONS", "MOVIE_EXTENSIONS",
@@ -4646,17 +4843,23 @@ def _pending_plan_current(cfg: dict) -> bool:
                for key in _PLAN_CONFIG_KEYS)
 
 
-def pending_deletion_entries() -> list[dict]:
+def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
     """Marked-for-deletion entries, newest first, with days remaining computed against
-    the CURRENT delay setting (shortening the delay moves every pending deletion up)."""
+    the CURRENT delay setting (shortening the delay moves every pending deletion up).
+    Redline-only mode instead keeps the file's own order — the queue IS the deletion
+    order — and labels entries "deletes when Redline hits" (nothing is scheduled;
+    only a Redline breach deletes). Pass an already-loaded cfg when you have one —
+    the default reloads config.json."""
     raw = _pending_raw()
     if not raw:
         return []
-    delay = _delete_delay_days()
+    cfg = cfg or load_config()
+    rl_only = _redline_only_mode_cfg(cfg)
+    delay = _delete_delay_days(cfg)
     now = time.time()
     today = datetime.now().date()
     out = []
-    for path, e in raw.items():
+    for i, (path, e) in enumerate(raw.items(), start=1):
         if not isinstance(e, dict):
             continue
         try:
@@ -4672,8 +4875,11 @@ def pending_deletion_entries() -> list[dict]:
         size_label = _format_reclaimed_size(size_bytes) if size_bytes else ""
         # Eligibility starts at midnight of delete_on: that day's daily run, or any
         # manual Live Run from then on.
-        when = ("deletable now" if remaining <= 0
-                else f"deletable from {delete_on.isoformat()}")
+        if rl_only:
+            when = f"#{i} — deletes when Redline hits"
+        else:
+            when = ("deletable now" if remaining <= 0
+                    else f"deletable from {delete_on.isoformat()}")
         marked_disp = _format_log_timestamp_for_display(
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(marked_at)))
         line_parts = [marked_disp, title]
@@ -4692,11 +4898,12 @@ def pending_deletion_entries() -> list[dict]:
             "size": size_label,
             "score": e.get("score"),
             "when": when,
-            "days_remaining": remaining,
-            "delete_on": delete_on.isoformat(),
+            "days_remaining": None if rl_only else remaining,
+            "delete_on": None if rl_only else delete_on.isoformat(),
             "line": " | ".join(line_parts),
         })
-    out.sort(key=lambda x: x["marked_at"], reverse=True)
+    if not rl_only:
+        out.sort(key=lambda x: x["marked_at"], reverse=True)
     return out
 
 
@@ -4734,12 +4941,19 @@ def _run_time_moved_ahead_today(old_time: str, new_time: str, now_hhmm: str) -> 
     return new_time != old_time and now_hhmm < new_time
 
 
-def pending_delete_forecast() -> dict:
+def pending_delete_forecast(cfg: dict | None = None) -> dict:
     """For the dashboard's breach note and red countdown: queue size, marks ripe now,
     and the next deletion EVENT — the exact batch the next deleting daily run removes
     (ripe marks, or failing any, the earliest upcoming eligibility date's batch) with
-    its true movie count and bytes."""
-    entries = pending_deletion_entries()
+    its true movie count and bytes. Pass an already-loaded cfg when you have one."""
+    cfg = cfg or load_config()
+    entries = pending_deletion_entries(cfg)
+    # Redline-only mode schedules nothing: the queue is the deletion-order preview
+    # and only a Redline breach deletes, so there is no ripe set, no next event,
+    # and no delay to age against.
+    if _redline_only_mode_cfg(cfg):
+        return {"count": len(entries), "ripe": 0, "event_on": None,
+                "event_count": 0, "event_bytes": 0, "waiting_ages": []}
     ripe = [e for e in entries if e["days_remaining"] <= 0]
     if ripe:
         event_on, batch = None, ripe   # deletable at the next daily run
@@ -4780,6 +4994,7 @@ def dashboard():
                            thresholds_configured=_has_monitored_dirs(cfg),
                            headroom_gb=cfg.get("HEADROOM_GB"),
                            redline_gb=cfg.get("REDLINE_GB"),
+                           redline_only=_redline_only_mode_cfg(cfg),
                            max_library_gb=cfg.get("MAX_LIBRARY_GB"),
                            headroom_window_used_today=_headroom_window_used_today(),
                            disk=disk,
@@ -4792,7 +5007,7 @@ def dashboard():
                            deleted_reclaimed_bytes=deleted["reclaimed_bytes"],
                            deleted_reclaimed_label=deleted["reclaimed_label"],
                            marked_count=pending_count(),
-                           delete_forecast=pending_delete_forecast(),
+                           delete_forecast=pending_delete_forecast(cfg),
                            delete_delay_days=_delete_delay_days(cfg),
                            daily_run_time=_daily_run_time(cfg),
                            library_root=FILESYSTEM_CHECK_PATH)
@@ -4937,7 +5152,7 @@ def api_status():
     ):
         next_run = job.next_run_time.isoformat()
     deleted = deleted_stats()
-    _forecast = pending_delete_forecast()
+    _forecast = pending_delete_forecast(cfg)
     _delay_days = _delete_delay_days(cfg)
     resp = jsonify({
         "run_active":              _run_active,
@@ -4957,6 +5172,9 @@ def api_status():
         "marked_event_count":      _forecast["event_count"],
         "marked_event_bytes":      _forecast["event_bytes"],
         "delete_delay_days":       _delay_days,
+        # Redline-only mode (Headroom disabled): the marked queue is a standing
+        # deletion-order preview, not a schedule — drives UI wording.
+        "redline_only":            _redline_only_mode_cfg(cfg),
         # Time of day (24h HH:MM, operating zone) the daily cleanup may fire; drives the
         # dashboard breach-note wording and red-countdown gating.
         "daily_run_time":          _daily_run_time(cfg),
@@ -4972,6 +5190,9 @@ def api_status():
         "headroom_gb":             _threshold_gb_or_none(cfg.get("HEADROOM_GB")),
         "redline_gb":              _threshold_gb_or_none(cfg.get("REDLINE_GB")),
         "library_cap_gb":          _threshold_gb_or_none(cfg.get("MAX_LIBRARY_GB")),
+        # Monitored dirs exist — the dashboard's Cleanup Targets card renders
+        # real values ("Off"/"Disabled" included) instead of "Not set".
+        "thresholds_configured":   _has_monitored_dirs(cfg),
         # Once-per-day headroom window: a headroom-only breach won't prune again today
         # once it's used (redline/cap ignore it); the dashboard red countdown keys off
         # this.
@@ -4979,7 +5200,7 @@ def api_status():
         "live_state":              live_state,
         # Drives the red Configuration tab live (no reload): onboarding cue or an API
         # error in the saved config's cached health.
-        "config_attention":        _connection_onboarding_needed(cfg) or _api_connection_error(),
+        "config_attention":        _connection_onboarding_needed(cfg) or _api_connection_error(cfg),
         # A sample build that failed for the IMDb dataset shows a one-shot toast on
         # whatever page is open; the timestamp keys it to once per failure.
         "sample_imdb_failed_at":   (_sample_pool_last.get("failed_at")
@@ -5460,6 +5681,20 @@ def api_save_config():
                     cfg.pop(_last_key, None)
             else:
                 cfg.pop(_last_key, None)
+        # Headroom's value memory works the same way, with 0 (its disable toggle,
+        # redline-only mode) as the off spelling instead of null.
+        _hr_last_key = "_HEADROOM_GB_LAST"
+        if _config_num(cfg.get("HEADROOM_GB")) == 0:
+            _hr_last = next((n for n in (_config_num(cfg.get(_hr_last_key)),
+                                         _config_num(saved_cfg.get("HEADROOM_GB")),
+                                         _config_num(saved_cfg.get(_hr_last_key)))
+                             if n is not None and n > 0), None)
+            if _hr_last is not None:
+                cfg[_hr_last_key] = int(_hr_last) if float(_hr_last).is_integer() else _hr_last
+            else:
+                cfg.pop(_hr_last_key, None)
+        else:
+            cfg.pop(_hr_last_key, None)
         # Compare signatures on a copy normalized EXACTLY like the save below (and like
         # api_config_check) — the form posts RADARR_OVERSEERR_SECTION_ID='auto' and raw
         # URL text, while the saved file holds the concrete detected section id and
@@ -5500,14 +5735,16 @@ def api_save_config():
             return {
                 "HEADROOM_GB": _number_or_none(config_obj.get("HEADROOM_GB")),
                 "REDLINE_GB": _number_or_none(config_obj.get("REDLINE_GB")),
+                "REDLINE_ONLY_MODE": bool(config_obj.get("REDLINE_ONLY_MODE")),
                 "MAX_LIBRARY_GB": _number_or_none(config_obj.get("MAX_LIBRARY_GB")),
                 "DELETE_DELAY_DAYS": _number_or_none(config_obj.get("DELETE_DELAY_DAYS", 1)),
             }
 
-        # A blank Headroom means 0 — "keep no headroom" is valid, so it saves silently
-        # instead of complaining about the empty field.
+        # The form posts a number while Headroom is enabled and 0 when its toggle is
+        # off — blank means the enabled field was left empty.
         if _is_blank(cfg.get("HEADROOM_GB")):
-            cfg["HEADROOM_GB"] = 0
+            return jsonify({"ok": False, "error": "Enter a Headroom target in GB "
+                                                  "(0 = trigger off)."}), 400
 
         if _is_live_mode(saved_cfg.get("RUN_MODE")) and _threshold_snapshot(cfg) != _threshold_snapshot(saved_cfg):
             return jsonify({
@@ -5529,8 +5766,31 @@ def api_save_config():
                 return jsonify({"ok": False, "error": "Enter a Redline value or disable it."}), 400
             if redline_gb <= 0:
                 return jsonify({"ok": False, "error": "REDLINE_GB must be greater than zero, or disabled."}), 400
-            if redline_gb > headroom_gb:
-                return jsonify({"ok": False, "error": "Redline cannot be higher than the Headroom target."}), 400
+            # While Headroom is ticked, Redline must sit STRICTLY below its
+            # value — a tie would enforce the full target on every check, which
+            # is redline-only mode spelled wrong (untick Headroom for that).
+            # At 0 any Redline trips this.
+            if not _coerce_bool(cfg.get("REDLINE_ONLY_MODE")) and redline_gb >= headroom_gb:
+                return jsonify({"ok": False, "error": "Redline must be lower than the Headroom "
+                                                      "target — untick Headroom for redline-only "
+                                                      "mode instead."}), 400
+
+        # REDLINE_ONLY_MODE (the Headroom checkbox unticked): Redline is the only
+        # trigger, so it must exist, the cap is off, and the headroom value is 0.
+        # WITHOUT the mode, HEADROOM_GB 0 just means the headroom trigger is off
+        # — Redline and/or the Library Size Cap may still be armed on their own,
+        # and 0/null/null is the valid "no thresholds set" default.
+        cfg["REDLINE_ONLY_MODE"] = _coerce_bool(cfg.get("REDLINE_ONLY_MODE"))
+        if cfg["REDLINE_ONLY_MODE"] and (cfg.get("MONITOR_DIRS") or []):
+            if cfg.get("REDLINE_GB") is None:
+                return jsonify({"ok": False, "error": "Redline-only mode needs a Redline floor — "
+                                                      "set one or re-tick Headroom."}), 400
+            if cfg.get("MAX_LIBRARY_GB") is not None:
+                return jsonify({"ok": False, "error": "The Library Size Cap is not used in "
+                                                      "redline-only mode — disable it first."}), 400
+            if headroom_gb != 0:
+                return jsonify({"ok": False, "error": "Redline-only mode retires the headroom "
+                                                      "trigger — its value must be 0."}), 400
 
         try:
             max_headroom_pct = float(cfg.get("MAX_HEADROOM_PCT", 15))
@@ -5681,8 +5941,9 @@ def api_save_config():
                     and thresholds.get("simulate_required")):
                 return jsonify({
                     "ok": False,
-                    "error": "Over space limits — run Simulate to review the deletion plan, "
-                             "then enable Live.",
+                    "error": (_simulate_required_message(cfg) if _redline_only_mode_cfg(cfg)
+                              else "Over space limits — run Simulate to review the deletion plan, "
+                                   "then enable Live."),
                 }), 400
 
         # An empty MONITOR_DIRS is valid and means "manage nothing" until the
@@ -5838,18 +6099,31 @@ def api_save_config():
         # the queue the same way during its periodic Summary, but a threshold-only save
         # skips that refresh — and once every limit is satisfied Simulate is disabled,
         # so the marks would otherwise be stuck with no way to clear them. Reconcile
-        # here, immediately, whenever the saved config leaves nothing over any limit.
-        # (No run can be active — the entry guard rejects saves during one.)
+        # here ONLY when this save actually changed a threshold: an unrelated save
+        # judging "satisfied" off a stale cached library size would wipe current
+        # marks and silently reset their delay clocks. Disk figures are read fresh
+        # for the same reason (statvfs is cheap; only the library walk is cached).
+        # Redline-only mode is exempt: within-limits is its normal state and the
+        # queue is its standing deletion-order preview, not an orphaned plan.
+        # The whole check-and-clear runs under _run_lock: the entry guard's
+        # _run_active check is stale by now (the connection probes above take
+        # seconds), and a run or Summary starting mid-clear does its own
+        # load→modify→save of the same file — it would resurrect a queue cleared
+        # mid-flight. Holding the lock keeps runs from starting until the clear
+        # lands; if one is already active, the next Summary reconciles instead.
         pending_cleared = 0
-        if pending_count():
-            try:
-                _disk = cached_disk_stats()
-                _lib_gb = library_stats().get("library_gb")
-            except Exception:
-                _disk, _lib_gb = None, None
-            if not _deletion_limits_exceeded(cfg, _disk, _lib_gb):
-                pending_cleared = pending_count()
-                _clear_pending_deletions()
+        with _run_lock:
+            if (not _run_active and not _summary_active and pending_count()
+                    and not _redline_only_mode_cfg(cfg)
+                    and _threshold_snapshot(cfg) != _threshold_snapshot(saved_cfg)):
+                try:
+                    _disk = disk_stats()
+                    _lib_gb = library_stats().get("library_gb")
+                except Exception:
+                    _disk, _lib_gb = None, None
+                if not _deletion_limits_exceeded(cfg, _disk, _lib_gb):
+                    pending_cleared = pending_count()
+                    _clear_pending_deletions()
 
         # Storage stats only refresh when the saved config changes what the size scan
         # measures. Runs do their own precheck, so threshold-only saves stay quick and
@@ -6093,7 +6367,7 @@ def api_run():
     # A manual Live Run deletes immediately (no delay, no daily window), so it needs a
     # deletion plan computed under the current thresholds.
     if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
-        return jsonify({"ok": False, "message": SIMULATE_REQUIRED_MESSAGE}), 400
+        return jsonify({"ok": False, "message": _simulate_required_message(cfg)}), 400
 
     # Same pre-check the automatic Live tick uses: if every space limit is already
     # satisfied (nothing over Headroom/Redline against the current filesystem, library
@@ -6117,8 +6391,12 @@ def api_run():
                         "message": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
                     }), 400
                 if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
-                    return jsonify({"ok": False, "message": SIMULATE_REQUIRED_MESSAGE}), 400
-            if not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
+                    return jsonify({"ok": False, "message": _simulate_required_message(cfg)}), 400
+            # Redline-only Simulate is exempt from the satisfied skip: being within
+            # limits is its normal state, and the run's job is to build/refresh the
+            # standing deletion-order preview.
+            _rl_only_sim = effective_mode == "debug_sim" and _redline_only_mode_cfg(cfg)
+            if not _rl_only_sim and not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
                 return jsonify({
                     "ok": True,
                     "started": False,
@@ -6152,16 +6430,37 @@ def api_stop():
     return jsonify({"ok": stopped, "message":
                     ("Stopped — deletions already made are permanent." if stopped else "No active run.")})
 
+_progress_file_memo_lock = threading.Lock()
+_progress_file_memo = {"key": None, "data": {}}
+
+
 @app.route("/api/run/progress")
 def api_run_progress():
-    """Structured run progress for the dashboard panel (see engine.emit_progress)."""
+    """Structured run progress for the dashboard panel (see engine.emit_progress).
+    Parsed once per file version ((path, mtime, size) memo): during a run every
+    write changes the key, and on an idle server the polls all hit the memo."""
     p = progress_path()
     data = {}
-    if p.exists():
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:
-            data = {}
+    try:
+        st = p.stat()
+        key = (str(p), st.st_mtime_ns, st.st_size)
+        with _progress_file_memo_lock:
+            memo_hit = _progress_file_memo["key"] == key
+            if memo_hit:
+                data = _progress_file_memo["data"]
+        if not memo_hit:
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            with _progress_file_memo_lock:
+                _progress_file_memo["key"] = key
+                _progress_file_memo["data"] = data
+        data = dict(data)   # the fallbacks below may mutate; never edit the memo copy
+    except OSError:
+        data = {}
     # If the process is gone but the file never reached a terminal state (crash/kill),
     # show the last phase as failed instead of a phantom running state.
     if not _run_active and data.get("status") in ("starting", "running"):
@@ -6630,6 +6929,22 @@ def _scheduled_tick():
         # Nothing to delete? Don't launch a Live run. The Summary precheck above already
         # refreshed both filesystem capacity and media library size.
         if not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
+            return
+        # Daily-only breach (headroom/cap, no redline) with today's window already
+        # used, or before the configured run time: the engine would do its full
+        # startup — connection checks, IMDb check, another library walk — just to
+        # log "waiting until tomorrow". Skip the launch; up to ~96 pointless engine
+        # spins a day otherwise while marks wait out the delay. Redline breaches
+        # always launch (they ignore the window), and any doubt fails toward
+        # launching — the engine stays the authority.
+        try:
+            _free_gb = float((disk or {}).get("free_gb"))
+            _redline = cfg.get("REDLINE_GB")
+            _redline_hit = _redline is not None and _free_gb <= float(_redline)
+        except (TypeError, ValueError):
+            _redline_hit = True
+        if not _redline_hit and (_headroom_window_used_today()
+                                 or time.strftime("%H:%M") < _daily_run_time(cfg)):
             return
         # run_script() owns the lock and rejects overlaps.
         run_script()

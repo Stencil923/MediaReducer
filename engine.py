@@ -70,14 +70,22 @@ Radarr does not monitor — the best copy survives longest.
 SCHEDULING (invoked every few minutes by the web UI's scheduler)
 ----------
   - Headroom: once per calendar day when usage exceeds HEADROOM_GB. Frees back
-    to the HEADROOM_GB target.
+    to the HEADROOM_GB target. HEADROOM_GB 0 turns just this trigger off —
+    Redline and/or the Library Size Cap may still be armed on their own, and
+    0 with nothing else armed is the valid "no thresholds set" default (the
+    app blocks Live until a target exists).
+  - REDLINE_ONLY_MODE (the GUI's Headroom checkbox unticked): requires a
+    Redline floor, retires the deletion delay and Library Size Cap; Simulate
+    maintains a standing preview of the first REDLINE_PREVIEW_COUNT movies in
+    deletion order.
   - Redline: immediate on every tick if free space drops below REDLINE_GB. Frees
     only back to the REDLINE_GB floor (just enough to clear the emergency),
     deleting lowest-value first from a fresh re-score — which clears the
     already-marked movies (the lowest-value ones) in order, reflecting the
     current paths/filters/scoring.
-  - Library cap: immediate on every tick if on-disk size exceeds MAX_LIBRARY_GB
-    (same trigger cadence as redline).
+  - Library cap: shares the once-per-day window and run time with Headroom
+    (and the deletion delay) — a cap breach is paced, never immediate; only
+    Redline bypasses the schedule.
   - RUN_MODE="debug_sim": full simulation, no deletions, ignores schedule.
   - RUN_MODE="debug_info": status and library size vs. limits, then exits.
   - RUN_MODE="headroom": live mode; enforces the space limits and MAX_LIBRARY_GB
@@ -195,22 +203,37 @@ EXECUTABLE_RUN_MODES = ("debug_info", "debug_sim", "headroom")
 
 # ── Space thresholds ───────────────────────────────────────────────────────────
 HEADROOM_GB = 1000  # free space to maintain (once-per-day cleanup trigger). ~1 TB
-                    # is a reasonable start on a 20 TB array.
+                    # is a reasonable start on a 20 TB array. 0 disables the target
+                    # entirely (redline-only mode — requires REDLINE_GB).
+REDLINE_ONLY_MODE = False  # the Headroom checkbox unticked: Redline is the only trigger
 REDLINE_GB  = 200   # emergency floor: immediate cleanup when free space drops below
                     # this, freeing only back to this floor (not the headroom target).
-                    # Cannot exceed HEADROOM_GB. Set equal to HEADROOM_GB for a single
-                    # threshold enforced every run ("redline-only"); None disables.
+                    # Cannot exceed HEADROOM_GB. None disables.
+
+# Redline-only mode: HEADROOM_GB set to 0 (its disable toggle) with a Redline
+# floor. Redline is the only deletion trigger; Simulate maintains a standing
+# preview of at least the first REDLINE_PREVIEW_COUNT movies in deletion order.
+REDLINE_PREVIEW_COUNT = 50
+
+
+def _redline_only_mode() -> bool:
+    """The explicit REDLINE_ONLY_MODE flag (the Headroom checkbox unticked in
+    the GUI) with a Redline floor set — the deletion delay and Library Size Cap
+    do not apply; only a Redline breach deletes. A ticked Headroom at 0 GB is
+    NOT the mode: it is a normal config whose headroom trigger is simply off
+    (Redline and/or the cap may still be armed on their own)."""
+    return REDLINE_ONLY_MODE and REDLINE_GB is not None
 
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ── Library size cap ──────────────────────────────────────────────────────────
 # Caps the total size of movie files under MONITOR_DIRS. Measured from disk using
 # MOVIE_EXTENSIONS, so dashboard storage, run triggers, and deletion targets share
-# one source of truth. Over the cap, cleanup runs on every cron tick without
-# consuming the daily headroom window (same as REDLINE_GB). Enforced automatically
-# whenever it is set; RetentionScore ordering bounds the blast radius (lowest-value
-# movies delete first). To size it, read "Library size: X.X GB" from a debug_info
-# run before setting a value at or below it.
+# one source of truth. Over the cap, cleanup shares the once-per-day window (and
+# the deletion delay) with the headroom trigger — only Redline is immediate.
+# Enforced whenever it is set; RetentionScore ordering bounds the blast radius
+# (lowest-value movies delete first). To size it, read "Library size: X.X GB"
+# from a debug_info run before setting a value at or below it.
 MAX_LIBRARY_GB = None  # maximum on-disk library size in GB. None = disabled.
 
 # Deletion delay in whole calendar days, minimum 1. A daily cleanup first MARKS
@@ -954,9 +977,16 @@ def log_deleted(title, path, size_bytes=None, *, score=None, plays=None, last_pl
     except Exception:
         pass   # rationale is best-effort; the deletion record itself must land
     entry = f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {title} | {path}{size_part}{why}\n"
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(DELETED_LOG, "a", encoding="utf-8") as f:
-        f.write(entry)
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(DELETED_LOG, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except OSError as e:
+        # The file is already unlinked by the time this runs — a full disk or
+        # permission blip on OUTPUT_DIR must not crash the run mid-deletion.
+        # Shout in the run log instead (its own writer is best-effort too).
+        log(f"ERROR: could not record deletion in deleted.log ({e}) — "
+            f"missing entry: {entry.strip()}")
 
 
 # Structured run-progress for the web UI. This is PURELY additive observability:
@@ -1466,7 +1496,7 @@ def _load_config_from_file():
             pass
 
     global CONFIG_ERRORS
-    global RUN_MODE, HEADROOM_GB, REDLINE_GB, MAX_LIBRARY_GB, MAX_HEADROOM_PCT, DELETE_DELAY_DAYS
+    global RUN_MODE, HEADROOM_GB, REDLINE_GB, REDLINE_ONLY_MODE, MAX_LIBRARY_GB, MAX_HEADROOM_PCT, DELETE_DELAY_DAYS
     global DAILY_RUN_TIME
     global MONITOR_DIRS, MOVIE_EXTENSIONS
     global PROTECTED_COLLECTIONS, GRACE_PERIOD_DAYS, SKIP_UNPLAYED_MOVIES, PROTECT_JELLYFIN_FAVORITES, MAX_IMDB_RATING
@@ -1490,6 +1520,7 @@ def _load_config_from_file():
     if "RUN_MODE"                   in _c: RUN_MODE                   = _c["RUN_MODE"]
     if "HEADROOM_GB"                in _c: HEADROOM_GB                = _coerce_config_number(_c["HEADROOM_GB"], "HEADROOM_GB", min_value=0, default=0)
     if "REDLINE_GB"                 in _c: REDLINE_GB                 = _coerce_config_number(_c["REDLINE_GB"], "REDLINE_GB", allow_none=True, min_value=0, default=None)
+    if "REDLINE_ONLY_MODE"          in _c: REDLINE_ONLY_MODE          = _coerce_config_bool(_c["REDLINE_ONLY_MODE"])
     if "MAX_LIBRARY_GB"             in _c: MAX_LIBRARY_GB             = _coerce_config_positive_or_none(_c["MAX_LIBRARY_GB"], "MAX_LIBRARY_GB", default=None)
     # Defensive floor of 1 so a run never deletes the same day, whatever
     # config.json holds (the app rejects a below-1 value before a run starts).
@@ -1501,6 +1532,19 @@ def _load_config_from_file():
     if "GRACE_PERIOD_DAYS"          in _c: GRACE_PERIOD_DAYS          = _coerce_config_number(_c["GRACE_PERIOD_DAYS"], "GRACE_PERIOD_DAYS", min_value=0, default=GRACE_PERIOD_DAYS)
     if "SKIP_UNPLAYED_MOVIES"       in _c: SKIP_UNPLAYED_MOVIES       = _coerce_config_bool(_c["SKIP_UNPLAYED_MOVIES"])
     if "MAX_IMDB_RATING"            in _c: MAX_IMDB_RATING            = _coerce_config_number(_c["MAX_IMDB_RATING"], "MAX_IMDB_RATING", allow_none=True, min_value=0, max_value=10, default=None)
+    # A cutoff of 0 matches nothing, so it reads as disabled — the same as
+    # null. The app clamps it identically (_clamp_max_imdb_rating) and its
+    # file validator deliberately accepts a hand-edited 0; without this mirror
+    # the engine would treat 0 as a real cutoff and skip every rated movie.
+    # The plan-stamp copy normalizes too, so both sides compare like with like.
+    if MAX_IMDB_RATING is not None and float(MAX_IMDB_RATING) <= 0:
+        MAX_IMDB_RATING = None
+    try:
+        _raw_rating = _PLAN_CONFIG_RAW.get("MAX_IMDB_RATING")
+        if _raw_rating is not None and float(_raw_rating) <= 0:
+            _PLAN_CONFIG_RAW["MAX_IMDB_RATING"] = None
+    except (TypeError, ValueError):
+        pass
     if "PROTECT_JELLYFIN_FAVORITES" in _c: PROTECT_JELLYFIN_FAVORITES = _coerce_config_bool(_c["PROTECT_JELLYFIN_FAVORITES"])
 
     # SCORE_BALANCE is the only scoring knob; unknown keys are ignored.
@@ -1716,7 +1760,7 @@ def load_pending() -> dict:
 # longer matches, forcing a fresh Simulate. Mirrored in app.py
 # (_PLAN_CONFIG_KEYS); keep the two lists identical.
 _PLAN_CONFIG_KEYS = (
-    "HEADROOM_GB", "REDLINE_GB", "MAX_LIBRARY_GB",
+    "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
     "GRACE_PERIOD_DAYS", "SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES",
     "MAX_IMDB_RATING", "SCORE_BALANCE", "NEAR_TIE_PTS", "MAX_STALENESS_MONTHS",
     "PROTECTED_COLLECTIONS", "JELLYFIN_PROTECTED_COLLECTIONS", "MOVIE_EXTENSIONS",
@@ -1767,12 +1811,29 @@ def write_plan_to_queue(planned, trigger) -> tuple[dict, int, int]:
     resets how long a movie has been marked; only movies newly entering the
     plan start a fresh clock. Marks not in this plan drop off."""
     mark_store = load_pending()
+    # Leaving redline-only mode: preview entries were shown as "deletes when
+    # Redline hits" — no countdown ever ran for the user — so carrying their
+    # (possibly months-old) marked_at into delay mode would let the first daily
+    # run delete them all with zero effective grace. Start every clock fresh.
+    _fresh_clocks = False
+    if mark_store and not _redline_only_mode():
+        try:
+            _old_stamp = json.loads(PENDING_FILE.read_text(encoding="utf-8")).get("plan_config")
+            _fresh_clocks = isinstance(_old_stamp, dict) and bool(_old_stamp.get("REDLINE_ONLY_MODE"))
+        except Exception:
+            # Can't prove the old plan was NOT a redline-only preview — fail
+            # toward fresh clocks (the marks wait the full delay again) rather
+            # than toward possibly-ancient clocks that delete immediately.
+            _fresh_clocks = True
+    if _fresh_clocks:
+        log("Left redline-only mode — existing marks restart their deletion-delay "
+            "clocks (no countdown was running while they were a Redline preview).")
     kept: dict = {}
     new_marks = 0
     now_ts = time.time()
     for cand, size in planned:
         key = str(cand["path"])
-        entry = mark_store.get(key)
+        entry = mark_store.get(key) if not _fresh_clocks else None
         if isinstance(entry, dict):
             # Existing mark: preserve how long it has been marked (marked_at) and
             # its original trigger, but refresh the display fields to THIS plan —
@@ -1789,7 +1850,11 @@ def write_plan_to_queue(planned, trigger) -> tuple[dict, int, int]:
         kept[key] = entry
     dropped = len(mark_store) - sum(1 for k in mark_store if k in kept)
     save_pending(kept, stamp_thresholds=True)
-    if DELETE_DELAY_DAYS > 0:
+    if _redline_only_mode():
+        log(f"Marked in Redline deletion order: {len(kept)} movie(s) ({new_marks} new"
+            f"{f', {dropped} unmarked' if dropped else ''}) — they delete only when "
+            f"free space hits the Redline floor, worst-scored first.")
+    elif DELETE_DELAY_DAYS > 0:
         log(f"Marked for deletion: {len(kept)} movie(s) ({new_marks} new"
             f"{f', {dropped} unmarked' if dropped else ''}) — each deletable "
             f"{DELETE_DELAY_DAYS} day(s) after its mark; only eligible marks delete.")
@@ -1837,7 +1902,8 @@ def debug_startup():
         )
 
     _i = get_usage_info()
-    log(f"Headroom: {HEADROOM_GB} GB | Redline: {REDLINE_GB} GB | Library cap: {str(MAX_LIBRARY_GB) + ' GB' if MAX_LIBRARY_GB is not None else 'disabled'} | Safety cap: {MAX_HEADROOM_PCT}% | Max usage: {_i['max_gb']:.1f} GB | Filesystem: {bytes_to_gb(_i['total']):.1f} GB | Current: {_i['used_gb']:.1f} GB")
+    _hr_disp = "disabled (redline-only)" if _redline_only_mode() else f"{HEADROOM_GB} GB"
+    log(f"Headroom: {_hr_disp} | Redline: {REDLINE_GB} GB | Library cap: {str(MAX_LIBRARY_GB) + ' GB' if MAX_LIBRARY_GB is not None else 'disabled'} | Safety cap: {MAX_HEADROOM_PCT}% | Max usage: {_i['max_gb']:.1f} GB | Filesystem: {bytes_to_gb(_i['total']):.1f} GB | Current: {_i['used_gb']:.1f} GB")
     # Redline is the only trigger that bypasses the deletion delay. Without it, a
     # fast-filling library can run out of space before marks age out. 1 day is
     # the minimum grace everyone has; flag only a longer delay (2+), where that
@@ -1846,6 +1912,9 @@ def debug_startup():
         log(f"NOTE: {DELETE_DELAY_DAYS}-day delay with no Redline floor — a fast-filling library "
             f"could run out of space before marks age out. Redline deletes immediately when space "
             f"is critically low.")
+    elif _redline_only_mode():
+        log("NOTE: Redline-only mode — the deletion delay and daily schedule do not apply; "
+            "Redline deletes immediately, worst-scored first, whenever free space hits the floor.")
     _tok = ('*' * 8 + PLEX_TOKEN[-4:]) if PLEX_TOKEN else 'NOT SET'
     log(f"Tautulli: {TAUTULLI_URL}")
     log(f"Plex:     {PLEX_URL} | token={_tok}")
@@ -2350,31 +2419,36 @@ def radarr_lookup_movie(tmdb_id, title):
     return data[0]
 
 
-def radarr_delete(tmdb_id, title):
+def radarr_delete(tmdb_id, title, movie=None):
     """
     Find the movie in Radarr by TMDB ID and delete it without deleting files
     (the file was already removed by this script) and without adding an import
     exclusion (so it can be re-requested and re-grabbed normally).
+    Pass `movie` (a dict already fetched by radarr_lookup_movie) to skip the
+    lookup — cleanup_radarr's off-section path has one in hand, and re-issuing
+    the identical tmdbId query would double the Radarr calls per deletion.
     Returns True if deleted or not found, False on error.
     """
     headers = {"X-Api-Key": RADARR_API_KEY}
 
-    try:
-        status, data = http_request(
-            "GET",
-            f"{RADARR_URL.rstrip('/')}/api/v3/movie?tmdbId={tmdb_id}",
-            headers=headers,
-        )
-    except Exception as e:
-        _abort_api_failure(f"Radarr lookup failed during post-delete cleanup | title={title} | tmdb_id={tmdb_id} | error={e}", phase="deleting")
+    if movie is None:
+        try:
+            status, data = http_request(
+                "GET",
+                f"{RADARR_URL.rstrip('/')}/api/v3/movie?tmdbId={tmdb_id}",
+                headers=headers,
+            )
+        except Exception as e:
+            _abort_api_failure(f"Radarr lookup failed during post-delete cleanup | title={title} | tmdb_id={tmdb_id} | error={e}", phase="deleting")
 
-    if status != 200:
-        _abort_api_failure(f"Radarr lookup failed during post-delete cleanup | title={title} | tmdb_id={tmdb_id} | status={status}", phase="deleting")
-    if not isinstance(data, list) or len(data) == 0:
-        log(f"Radarr: movie not found, nothing to clean up | title={title} | tmdb_id={tmdb_id} | status={status}")
-        return True  # not an error — just not in Radarr (e.g. manually added movie)
+        if status != 200:
+            _abort_api_failure(f"Radarr lookup failed during post-delete cleanup | title={title} | tmdb_id={tmdb_id} | status={status}", phase="deleting")
+        if not isinstance(data, list) or len(data) == 0:
+            log(f"Radarr: movie not found, nothing to clean up | title={title} | tmdb_id={tmdb_id} | status={status}")
+            return True  # not an error — just not in Radarr (e.g. manually added movie)
+        movie = data[0]
 
-    radarr_id = data[0].get("id")
+    radarr_id = movie.get("id")
     if not radarr_id:
         log(f"Radarr: could not extract movie id | title={title} | tmdb_id={tmdb_id}")
         return False
@@ -2477,7 +2551,7 @@ def cleanup_radarr(candidate, section1_paths_by_tmdb):
     )
 
     if RADARR_URL and RADARR_API_KEY:
-        radarr_delete(tmdb_id, title)
+        radarr_delete(tmdb_id, title, movie=radarr_movie)
     else:
         _abort_api_failure(f"Radarr cleanup is enabled, but Radarr URL/API key are not available | title={title} | tmdb_id={tmdb_id}", phase="deleting")
 
@@ -2872,6 +2946,29 @@ def _jellyfin_protected_items():
                 phase="scanning")
         log(f"WARN {_msg}")
     return protected_ids, protected_paths, protected_imdb_ids, protected_tmdb_ids
+
+
+def _jellyfin_favorite_paths():
+    """Resolved file paths of movies ANY Jellyfin user has favorited.
+
+    Favorites are per-movie user state that never touches config.json, so a
+    favorite added after Simulate cannot stale the plan stamp — anything that
+    deletes from the marked queue without a full scan must re-fetch them here.
+    Errors propagate: callers treat an unverifiable fetch as fail-closed."""
+    if not (USE_JELLYFIN and PROTECT_JELLYFIN_FAVORITES):
+        return set()
+    paths = set()
+    for uid in _jellyfin_user_ids():
+        items = (_jellyfin_request(f"Users/{uid}/Items", {
+            "IncludeItemTypes": "Movie",
+            "Recursive": "true",
+            "Filters": "IsFavorite",
+            "Fields": "Path,MediaSources",
+        }) or {}).get("Items", [])
+        for item in items:
+            if isinstance(item, dict):
+                paths |= _item_resolved_paths(item)
+    return paths
 
 
 def get_all_movies_from_jellyfin():
@@ -4738,7 +4835,11 @@ def remove_empty_movie_folder(file_path):
         log(f"WARNING: Could not remove directory {movie_dir}: {e}")
 
 
-def delete_candidate(candidate, section1_paths_by_tmdb):
+def delete_candidate(candidate, section1_paths_by_tmdb) -> bool:
+    """Delete one candidate's file. Returns True only when THIS call unlinked
+    it — a file already gone (vanished externally), a safety abort, a dry run,
+    or an unlink error all return False so the caller's deleted/freed
+    accounting matches deleted.log, which records only real deletions here."""
     path = candidate["path"]
 
     log(
@@ -4754,12 +4855,12 @@ def delete_candidate(candidate, section1_paths_by_tmdb):
 
     if not is_safe_to_delete(path):
         log(f"ABORT safety_check_failed: path is not under a known safe prefix | path={path}")
-        return
+        return False
 
     if RUN_MODE.startswith("debug_"):
         log(f"DRY RUN: Would delete file: {path}")
         remove_empty_movie_folder(path)
-        return
+        return False
 
     delete_size = candidate.get("file_size")
     try:
@@ -4782,10 +4883,10 @@ def delete_candidate(candidate, section1_paths_by_tmdb):
             path.unlink()
         except FileNotFoundError:
             log(f"WARN: file already gone when attempting deletion (skipping): {path}")
-            return
+            return False
         except OSError as e:
             log(f"ERROR: could not delete {path}: {e}")
-            return
+            return False
         _RUN_DELETED_FILES = True
         log(f"Deleted file: {path}")
         log_deleted(candidate["title"], path, delete_size,
@@ -4802,6 +4903,7 @@ def delete_candidate(candidate, section1_paths_by_tmdb):
     # defined by RADARR_OVERSEERR_SECTION_ID, and only when this was the last
     # surviving copy of this TMDB ID in that section.
     cleanup_radarr(candidate, section1_paths_by_tmdb)
+    return True
 
 
 # =========================
@@ -4812,13 +4914,16 @@ def _revalidate_pending_marks(limits_breached: bool) -> None:
     """15-minute upkeep of the marked-for-deletion queue, run inside the quiet
     Summary: drop marks whose files are gone or that joined a protected
     collection, and clear the whole queue once space limits are satisfied.
-    Display upkeep only — an actual deletion always re-derives eligibility
-    from a full scan, so a stale mark can never delete a protected movie.
-    Favorites and filter-rule changes reconcile on the next daily run."""
+    Display upkeep only — an actual deletion always re-verifies hard
+    protections fresh (the full scan, or the redline fast path's own re-fetch
+    of collections and favorites), so a stale mark can never delete a
+    protected movie. Filter-rule changes reconcile on the next daily run."""
     store = load_pending()
     if not store:
         return
-    if not limits_breached:
+    # Redline-only mode: within-limits is the queue's NORMAL state — it is the
+    # standing deletion-order preview, so only file/protection upkeep applies.
+    if not limits_breached and not _redline_only_mode():
         log(f"Space limits satisfied — clearing {len(store)} marked-for-deletion entrie(s).")
         save_pending({})
         return
@@ -4841,12 +4946,199 @@ def _revalidate_pending_marks(limits_breached: bool) -> None:
                 log(f"Unmarked (protected now): {store[key].get('title') or key}")
                 store.pop(key)
                 changed = True
-    except (SystemExit, Exception) as e:
+    except SystemExit:
+        raise   # a Stop (SIGTERM) mid-fetch exits promptly instead of finishing upkeep
+    except Exception as e:
         # Can't verify protection right now — keep the marks (harmless: marks
         # never authorize a deletion on their own).
         log(f"Mark upkeep: protection could not be verified ({e}); keeping marks.")
     if changed:
         save_pending(store)
+
+
+def _plan_stamp_current() -> bool:
+    """True when the marked queue's plan stamp matches the CURRENT deletion-affecting
+    config and monitored paths — the engine-side mirror of the app's
+    _pending_plan_current, comparing raw config.json values on both sides (the stamp
+    was written from _PLAN_CONFIG_RAW at Simulate time)."""
+    try:
+        data = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict) or not data["entries"]:
+        return False
+    dirs = data.get("monitor_dirs")
+    if (not isinstance(dirs, list)
+            or sorted(str(d) for d in dirs) != sorted(str(d) for d in (MONITOR_DIRS or []))):
+        return False
+    stamp = data.get("plan_config")
+    if not isinstance(stamp, dict) or set(stamp) != set(_PLAN_CONFIG_KEYS):
+        return False
+
+    def _norm(value):
+        if value is None or isinstance(value, (bool, str)):
+            return value
+        if isinstance(value, list):
+            return sorted(str(x) for x in value)
+        try:
+            return round(float(value), 3)
+        except (TypeError, ValueError):
+            return "invalid"
+
+    return all(_norm(stamp.get(key)) == _norm(_PLAN_CONFIG_RAW.get(key))
+               for key in _PLAN_CONFIG_KEYS)
+
+
+def _redline_fast_path(to_free_bytes) -> bool:
+    """Try to clear a Redline breach straight from the standing marked queue, in
+    its order, WITHOUT the full library rescan — the expensive part of a run, and
+    the worst thing to spend minutes on while the disk is critically low.
+
+    Only safe when the plan is CURRENT (same rules and paths as when it was
+    computed — a stale plan falls back to the full scan). Per file it re-verifies
+    the cheap, high-stakes facts fresh: still under a monitored root, not a
+    symlink, and not freshly protected — collections AND Jellyfin favorites are
+    re-fetched, since neither lives in config.json where the plan stamp could
+    catch a change (fail-closed: if protection can't be verified, full scan).
+    Scoring/order is trusted from the plan — watch-history drift since the
+    Simulate is accepted; config changes are not (they stale the stamp). Radarr
+    cleanup needs scan data, so it is skipped here and reconciles on the next
+    full run.
+
+    Returns True when the emergency was fully handled (deletions + summary +
+    terminal progress written); False to fall back to the full scan — the reason
+    is already logged."""
+    store = load_pending()
+    if not store:
+        log("Fast path unavailable: no marked queue — running the full scan.")
+        return False
+    if not _plan_stamp_current():
+        log("Fast path unavailable: the marked plan is stale (rules or paths changed "
+            "since Simulate) — running the full scan.")
+        return False
+    try:
+        plex_paths, _k, _i, _t = fetch_protected_paths()
+        _jids, jf_paths, _ji, _jt = _jellyfin_protected_items()
+        jf_favorites = _jellyfin_favorite_paths()
+    except SystemExit:
+        raise   # a Stop (SIGTERM) mid-fetch ends the run — it must never reroute into the full scan
+    except Exception as e:
+        log(f"Fast path unavailable: protection could not be verified ({e}) — "
+            f"running the full scan.")
+        return False
+    protected = {str(p) for p in set(plex_paths) | set(jf_paths) | set(jf_favorites)}
+
+    # One pass to build the deletable work list (in plan order) and prove the
+    # queue covers the target. The list deliberately spans the WHOLE queue, not
+    # just the minimal covering prefix: a file whose unlink later fails (say,
+    # permissions changed since Simulate) must be routed around by consuming
+    # later entries, never silently shorting the emergency.
+    work = []          # (key, Path, size_bytes, entry)
+    covered = 0
+    for key, entry in store.items():
+        if not isinstance(entry, dict):
+            continue
+        p = Path(key)
+        if str(p) in protected:
+            log(f"Fast path: skipping (protected since marked): {entry.get('title') or key}")
+            continue
+        if not is_safe_to_delete(p):
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError:
+            continue
+        work.append((key, p, size, entry))
+        covered += size
+    if covered < to_free_bytes:
+        log(f"Fast path unavailable: the marked queue covers only "
+            f"{bytes_to_gb(covered):.1f} GB of the {bytes_to_gb(to_free_bytes):.1f} GB "
+            f"target — running the full scan.")
+        return False
+
+    log(f"REDLINE fast path: deleting from the marked queue in plan order — "
+        f"no library rescan. Radarr cleanup reconciles on the next full run.")
+    log_blank()
+    emit_progress(phase="deleting", trigger="REDLINE", target_bytes=to_free_bytes,
+                  deleted=0, bytes_freed=0, current_title="",
+                  message="Redline — freeing space from the marked queue…")
+
+    global _IN_DELETE_CRITICAL, _RUN_DELETED_FILES
+    deleted_count = 0
+    bytes_freed = 0
+    # A Stop (SIGTERM → SystemExit) between deletions still saves the queue as
+    # trimmed so far — otherwise already-deleted files would linger as marked
+    # until the next revalidation pass noticed them missing.
+    try:
+        for key, p, size, entry in work:
+            if bytes_freed >= to_free_bytes:
+                break
+            title = str(entry.get("title") or p.name)
+            emit_progress(phase="deleting", current_title=title,
+                          deleted=deleted_count, bytes_freed=bytes_freed)
+            # Same SIGTERM critical section as delete_candidate: a Stop between
+            # unlink() and the deleted.log append defers until the record lands.
+            _IN_DELETE_CRITICAL = True
+            try:
+                try:
+                    p.unlink()
+                except FileNotFoundError:
+                    log(f"WARN: file already gone when attempting deletion (skipping): {p}")
+                    store.pop(key, None)   # dead mark — never leave it in the queue
+                    continue
+                except OSError as e:
+                    log(f"ERROR: could not delete {p}: {e}")
+                    continue
+                _RUN_DELETED_FILES = True
+                log(f"Deleted (queue #{deleted_count + 1}): {title} | "
+                    f"score={entry.get('score')} | size={bytes_to_gb(size):.2f} GB | path={p}")
+                log_deleted(title, p, size, score=entry.get("score"))
+            finally:
+                _IN_DELETE_CRITICAL = False
+                if _SIGTERM_DEFERRED:
+                    raise SystemExit(143)
+            remove_empty_movie_folder(p)
+            store.pop(key, None)
+            deleted_count += 1
+            bytes_freed += size
+    except SystemExit:
+        save_pending(store)
+        log("Stopped mid-emergency — the trimmed marked queue was saved.")
+        raise
+
+    # Trim-only save: the surviving marks keep the original plan stamp, exactly
+    # like the full-scan redline path.
+    save_pending(store)
+
+    # Nothing deletable at all (every covering file failed to unlink) must NOT
+    # read as "handled" — that would retry the same dead end every tick while
+    # the floor stays breached. Fall back to the full scan, which skips past
+    # undeletable files with fresh candidates until the target is met.
+    if deleted_count == 0 and to_free_bytes > 0:
+        log("Fast path could not delete anything from the queue — running the full scan.")
+        return False
+
+    final = get_usage_info()
+    log_blank()
+    if bytes_freed < to_free_bytes:
+        log(f"NOTE: freed {bytes_to_gb(bytes_freed):.1f} GB of the "
+            f"{bytes_to_gb(to_free_bytes):.1f} GB target — some queued files could not "
+            f"be deleted. Redline re-checks within ~15 minutes and continues past them.")
+    log(f"REDLINE fast path complete: deleted {deleted_count} movie(s), freed "
+        f"{bytes_to_gb(bytes_freed):.1f} GB (target {bytes_to_gb(to_free_bytes):.1f} GB) | "
+        f"free now {bytes_to_gb(final['free']):.1f} GB | {len(store)} movie(s) still marked.")
+    # queue_rebuild tells the web app to kick a background Simulate so the
+    # standing preview grows back to full strength after the emergency — only
+    # when marks were actually consumed (a knife-edge free==floor firing has a
+    # 0-byte deficit and must not spawn rebuild runs every tick).
+    emit_progress(status="done", phase="done", deleted=deleted_count,
+                  bytes_freed=bytes_freed, target_bytes=to_free_bytes,
+                  current_title="", queue_rebuild=deleted_count > 0,
+                  message=(f"Redline cleared from the marked queue — deleted {deleted_count} "
+                           f"movie(s), ~{bytes_to_gb(bytes_freed):.1f} GB (no rescan)."
+                           if deleted_count else
+                           "Free space is exactly at the Redline floor — nothing needed deleting."))
+    return True
 
 
 def _space_threshold_errors(usage_info=None, *, enforce_headroom_safety=True):
@@ -4869,12 +5161,29 @@ def _space_threshold_errors(usage_info=None, *, enforce_headroom_safety=True):
     if REDLINE_GB is not None:
         if not _is_number(REDLINE_GB) or REDLINE_GB < 0:
             errors.append("REDLINE_GB must be zero or greater, or None to disable it.")
-        elif _is_number(HEADROOM_GB) and REDLINE_GB > HEADROOM_GB:
-            errors.append(f"REDLINE_GB ({REDLINE_GB}) cannot be higher than HEADROOM_GB ({HEADROOM_GB}).")
+        elif not REDLINE_ONLY_MODE and _is_number(HEADROOM_GB) and REDLINE_GB >= HEADROOM_GB:
+            # STRICT, at ANY headroom value including 0 — a Redline at or above
+            # the headroom value is exactly what REDLINE_ONLY_MODE is for.
+            errors.append(f"REDLINE_GB ({REDLINE_GB}) must be lower than HEADROOM_GB ({HEADROOM_GB}) — "
+                          f"use REDLINE_ONLY_MODE instead.")
 
     if MAX_LIBRARY_GB is not None:
         if not _is_number(MAX_LIBRARY_GB) or MAX_LIBRARY_GB <= 0:
             errors.append("MAX_LIBRARY_GB must be greater than zero, or None to disable it.")
+
+    # REDLINE_ONLY_MODE (the GUI's Headroom checkbox unticked): Redline is the
+    # only trigger, so it must exist, the cap is off, and the headroom value is
+    # 0. WITHOUT the mode, HEADROOM_GB 0 just means the headroom trigger is off
+    # — Redline and/or the Library Size Cap may still be armed on their own.
+    # Matches the app's file validator exactly, so both sides refuse the same
+    # hand-edited states. Not enforced before monitored directories exist.
+    if REDLINE_ONLY_MODE and MONITOR_DIRS:
+        if REDLINE_GB is None:
+            errors.append("REDLINE_ONLY_MODE needs a REDLINE_GB floor.")
+        if MAX_LIBRARY_GB is not None:
+            errors.append("REDLINE_ONLY_MODE does not use MAX_LIBRARY_GB — disable one of them.")
+        if _is_number(HEADROOM_GB) and HEADROOM_GB != 0:
+            errors.append("REDLINE_ONLY_MODE retires the headroom trigger — HEADROOM_GB must be 0.")
 
     _total_gb = None
     _max_headroom_gb = None
@@ -4882,12 +5191,18 @@ def _space_threshold_errors(usage_info=None, *, enforce_headroom_safety=True):
         try:
             _total_gb = bytes_to_gb(usage_info["total"])
             _max_headroom_gb = round(_total_gb * MAX_HEADROOM_PCT / 100, 1)
-            if enforce_headroom_safety and HEADROOM_GB > _max_headroom_gb:
+            # The safety cap bounds the free-space floor the system maintains: the
+            # headroom target when one exists, else the Redline floor (whether or
+            # not redline-only mode is on — the emergency maintains it either way).
+            _floor_gb = HEADROOM_GB if HEADROOM_GB > 0 else (
+                REDLINE_GB if _is_number(REDLINE_GB) else None)
+            _floor_key = "HEADROOM_GB" if HEADROOM_GB > 0 else "REDLINE_GB"
+            if enforce_headroom_safety and _floor_gb is not None and _floor_gb > _max_headroom_gb:
                 errors.append(
-                    f"HEADROOM_GB={HEADROOM_GB} GB exceeds the safety cap of "
+                    f"{_floor_key}={_floor_gb} GB exceeds the safety cap of "
                     f"{MAX_HEADROOM_PCT}% of total filesystem capacity "
                     f"({_total_gb:.1f} GB × {MAX_HEADROOM_PCT}% = {_max_headroom_gb:.1f} GB). "
-                    f"Lower HEADROOM_GB or — with caution — raise MAX_HEADROOM_PCT."
+                    f"Lower {_floor_key} or — with caution — raise MAX_HEADROOM_PCT."
                 )
         except Exception:
             pass
@@ -4944,7 +5259,10 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     row("Disk before:", f"{used_gb:.1f} GB used  |  {free_before_gb:.1f} GB free")
     row(f"Disk after{est}:", f"{final_gb:.1f} GB used  |  {final_free_gb:.1f} GB free")
     row(f"Space freed{est}:", f"{bytes_to_gb(freed_bytes):.2f} GB")
-    row("Headroom limit:", f"{max_gb:.1f} GB ({HEADROOM_GB} GB)")
+    if _redline_only_mode():
+        row("Headroom limit:", f"disabled — redline-only (floor {REDLINE_GB} GB free)")
+    else:
+        row("Headroom limit:", f"{max_gb:.1f} GB ({HEADROOM_GB} GB)")
     if effective_library_gb is not None:
         row("Library before:", f"{effective_library_gb:.1f} GB{(' | cap: ' + str(MAX_LIBRARY_GB) + ' GB') if MAX_LIBRARY_GB else ''}")
         if is_sim:
@@ -5368,6 +5686,10 @@ def main():
         _triggers.append("LIBRARY CAP")
     if over_limit and (_manual_live or not immediate_trigger) and "scheduled daily" not in _triggers:
         _triggers.insert(0, "HEADROOM" if _manual_live else "scheduled daily")
+    if not _triggers and _is_sim and _redline_only_mode():
+        # Nothing breached, but a redline-only Simulate still runs: it builds the
+        # standing preview of what Redline will delete first.
+        _triggers.append("REDLINE ORDER PREVIEW")
     if not _triggers:
         _triggers.append("scheduled daily")
     trigger = " + ".join(_triggers)
@@ -5399,18 +5721,37 @@ def main():
         # Redline runs on every cron tick, bypassing the daily schedule AND
         # the deletion delay — waiting defeats an emergency floor. Does not
         # write the daily state file so the headroom/cap window is unaffected.
+        # (A Simulate can land here too when Redline is already breached — it
+        # previews the emergency, so keep its wording a dry run.)
         log(
             f"REDLINE: only {free_gb:.1f} GB free, below emergency threshold of "
-            f"{REDLINE_GB} GB. Running cleanup immediately."
+            f"{REDLINE_GB} GB. "
+            + ("Previewing the emergency cleanup (dry run)." if _is_sim
+               else "Running cleanup immediately.")
         )
         log(f"Target: free at least {to_free_gb:.1f} GB.")
         log_blank()
+        # Emergency fast path: with a current plan, delete from the marked queue
+        # instead of rescanning the whole library first (Simulate is the audit;
+        # the sim branch below never takes this). Falls back to the full scan
+        # whenever it can't proceed safely — the reason is logged.
+        if not _is_sim and _redline_fast_path(to_free_bytes):
+            return
 
     else:
         # Headroom and Library Size Cap share the once-per-day window;
         # debug_sim bypasses the schedule.
         if _is_sim:
-            if not daily_breach:
+            if not daily_breach and _redline_only_mode():
+                # Redline-only mode: within-limits is the NORMAL state and this
+                # run's whole job is the standing preview — never skip it.
+                log(
+                    f"DRY RUN [REDLINE ORDER PREVIEW]: {free_gb:.1f} GB free, above the "
+                    f"{REDLINE_GB} GB Redline floor — building the standing preview of "
+                    f"what Redline will delete first (ignoring daily schedule)."
+                )
+                log_blank()
+            elif not daily_breach:
                 log(
                     f"DRY RUN: Usage is {used_gb:.1f} GB ({free_gb:.1f} GB free), "
                     f"below limit of {max_gb:.1f} GB and under the cap. "
@@ -5419,17 +5760,18 @@ def main():
                 emit_progress(status="done", phase="done",
                               message="Dry run — space limits are satisfied, nothing to simulate.")
                 return
-            log(
-                f"DRY RUN [{trigger}]: over space limits "
-                f"({used_gb:.1f} GB used, {free_gb:.1f} GB free). "
-                f"Simulating cleanup (ignoring daily schedule)."
-            )
-            if DELETE_DELAY_DAYS > 0:
+            else:
                 log(
-                    f"Deletion delay: {DELETE_DELAY_DAYS} day(s) — a live run MARKS new "
-                    f"candidates and only deletes marks older than {DELETE_DELAY_DAYS} day(s)."
+                    f"DRY RUN [{trigger}]: over space limits "
+                    f"({used_gb:.1f} GB used, {free_gb:.1f} GB free). "
+                    f"Simulating cleanup (ignoring daily schedule)."
                 )
-            log_blank()
+                if DELETE_DELAY_DAYS > 0 and not _redline_only_mode():
+                    log(
+                        f"Deletion delay: {DELETE_DELAY_DAYS} day(s) — a live run MARKS new "
+                        f"candidates and only deletes marks older than {DELETE_DELAY_DAYS} day(s)."
+                    )
+                log_blank()
 
         else:
             # Live mode — enforce the once-per-day window.
@@ -5521,7 +5863,16 @@ def main():
         simulated_count = 0
         _sim_planned: list = []   # (candidate, size) — becomes the marked queue when a delay is set
 
+        # Redline-only mode: the plan is a standing preview — at least the first
+        # REDLINE_PREVIEW_COUNT movies in deletion order (more when a current
+        # Redline breach needs more to clear), even with nothing breached.
+        _sim_min_count = REDLINE_PREVIEW_COUNT if _redline_only_mode() else 0
+
         log(f"DRY RUN [{trigger}]: Simulating deletions — target: free {to_free_gb:.1f} GB.")
+        if _sim_min_count:
+            log(f"Redline-only mode: marking the first {min(_sim_min_count, len(candidates))} movies "
+                f"in deletion order. When free space drops below {REDLINE_GB} GB, Redline deletes "
+                f"down this list (re-scored fresh at that moment) until back at the floor.")
         emit_progress(phase="simulating", trigger=trigger, target_bytes=to_free_bytes,
                       deleted=0, bytes_freed=0, current_title="",
                       message="Simulating cleanup — no files touched…")
@@ -5532,7 +5883,7 @@ def main():
             # Target check at the TOP, exactly like the live loop below — a
             # bottom-of-loop check would pop (and report) one extra movie
             # whenever the target is already met, diverging from a real run.
-            if simulated_freed_bytes >= to_free_bytes:
+            if simulated_freed_bytes >= to_free_bytes and simulated_count >= _sim_min_count:
                 break
             candidate = _pop_next_deletion(pending, tie_group, to_free_bytes - simulated_freed_bytes)
             try:
@@ -5592,7 +5943,10 @@ def main():
 
         log_blank()
         _mm = build_stats.get("identity_mismatch", 0)
-        if DELETE_DELAY_DAYS > 0:
+        if _redline_only_mode():
+            _sim_msg = (f"Dry run — marked {simulated_count} movie(s) in Redline deletion order, "
+                        f"~{bytes_to_gb(simulated_freed_bytes):.1f} GB. They delete only when Redline hits.")
+        elif DELETE_DELAY_DAYS > 0:
             _sim_msg = (f"Dry run — marked {simulated_count} movie(s) for deletion "
                         f"({DELETE_DELAY_DAYS}-day delay), ~{bytes_to_gb(simulated_freed_bytes):.1f} GB.")
         else:
@@ -5624,6 +5978,24 @@ def main():
     # delay paces automatic runs, not a deliberate button press.
     use_delay = DELETE_DELAY_DAYS > 0 and not immediate_trigger and not _manual_live
     mark_store = load_pending()
+    # Same guard as write_plan_to_queue: marks written by a redline-only
+    # preview never ran a delay countdown the user could see, so if that
+    # queue somehow survives into a normal-mode LIVE run (the save-time clear
+    # can be skipped while a Summary is active, and the re-arm Simulate gate
+    # only fires when limits are already breached), their ancient marked_at
+    # must not count as served delay time — reset the clocks in memory here.
+    if mark_store and use_delay and not _redline_only_mode():
+        try:
+            _old_stamp = json.loads(PENDING_FILE.read_text(encoding="utf-8")).get("plan_config")
+            _stale_mode_marks = isinstance(_old_stamp, dict) and bool(_old_stamp.get("REDLINE_ONLY_MODE"))
+        except Exception:
+            _stale_mode_marks = True    # unverifiable — fail toward full grace
+        if _stale_mode_marks:
+            log("Marked queue carries redline-only preview clocks — restarting "
+                "their deletion-delay countdowns for this run.")
+            for _e in mark_store.values():
+                if isinstance(_e, dict):
+                    _e["marked_at"] = time.time()
     mark_store_dirty = False
     kept_marks: dict = {}
     now_ts = time.time()
@@ -5645,69 +6017,90 @@ def main():
     _emergency = immediate_trigger and not _manual_live
     pending = list(candidates)
     tie_group = []
-    while pending or tie_group:
-        if planned_bytes >= to_free_bytes:
-            break
-        candidate = pending.pop(0) if _emergency \
-            else _pop_next_deletion(pending, tie_group, to_free_bytes - planned_bytes)
-        # A transient filesystem error mid-loop (mount hiccup, permission
-        # change, file vanishing between exists() and stat()) must not abort
-        # the run after some files are already gone — that would skip the
-        # summary, Radarr cleanup, and the terminal progress update.
-        try:
-            log_usage()
-        except OSError as e:
-            log(f"WARN: storage check failed mid-run ({e}); continuing.")
-        emit_progress(phase="deleting", current_title=candidate["title"],
-                      deleted=deleted_count, bytes_freed=bytes_freed, target_bytes=to_free_bytes)
-        try:
-            size_before = candidate["path"].stat().st_size if candidate["path"].exists() else 0
-        except OSError as e:
-            log(f"WARN: could not stat {candidate['path']} ({e}); skipping this candidate.")
-            continue
-        key = str(candidate["path"])
-        if use_delay:
-            entry = mark_store.get(key)
-            age_days = (_mark_age_days(entry.get("marked_at", now_ts), now_ts)
-                        if isinstance(entry, dict) else 0)
-            if not isinstance(entry, dict) or age_days < DELETE_DELAY_DAYS:
-                # Mark (or keep the existing mark) instead of deleting.
-                if not isinstance(entry, dict):
-                    entry = {"title": candidate["title"],
-                             "score": round(candidate["retention_score"], 3),
-                             "marked_at": now_ts, "trigger": trigger}
-                    log(f"MARKED for deletion (deletes on {_mark_delete_on(now_ts)} "
-                        f"unless protected or the rules change): {candidate['title']} | path={key}")
-                else:
-                    log(f"Still marked (day {age_days}/{DELETE_DELAY_DAYS}, "
-                        f"deletes on {_mark_delete_on(entry.get('marked_at'))}): {candidate['title']}")
+    # A Stop (SIGTERM → SystemExit) between deletions must not discard this
+    # run's mark bookkeeping: without the except below, marks created or
+    # refreshed before the Stop would never be written, restarting their delay
+    # clocks from day 0, and already-deleted files would linger as marked until
+    # the next revalidation. The partial save merges the untouched remainder of
+    # the old store with everything this run processed (deleted entries were
+    # popped) and keeps the EXISTING plan stamp — a partial pass is not a new
+    # plan, so it must not refresh plan currency.
+    try:
+        while pending or tie_group:
+            if planned_bytes >= to_free_bytes:
+                break
+            candidate = pending.pop(0) if _emergency \
+                else _pop_next_deletion(pending, tie_group, to_free_bytes - planned_bytes)
+            # A transient filesystem error mid-loop (mount hiccup, permission
+            # change, file vanishing between exists() and stat()) must not abort
+            # the run after some files are already gone — that would skip the
+            # summary, Radarr cleanup, and the terminal progress update.
+            try:
+                log_usage()
+            except OSError as e:
+                log(f"WARN: storage check failed mid-run ({e}); continuing.")
+            emit_progress(phase="deleting", current_title=candidate["title"],
+                          deleted=deleted_count, bytes_freed=bytes_freed, target_bytes=to_free_bytes)
+            try:
+                size_before = candidate["path"].stat().st_size if candidate["path"].exists() else 0
+            except OSError as e:
+                log(f"WARN: could not stat {candidate['path']} ({e}); skipping this candidate.")
+                continue
+            key = str(candidate["path"])
+            if use_delay:
+                entry = mark_store.get(key)
+                age_days = (_mark_age_days(entry.get("marked_at", now_ts), now_ts)
+                            if isinstance(entry, dict) else 0)
+                if not isinstance(entry, dict) or age_days < DELETE_DELAY_DAYS:
+                    # Mark (or keep the existing mark) instead of deleting.
+                    if not isinstance(entry, dict):
+                        entry = {"title": candidate["title"],
+                                 "score": round(candidate["retention_score"], 3),
+                                 "marked_at": now_ts, "trigger": trigger}
+                        log(f"MARKED for deletion (deletes on {_mark_delete_on(now_ts)} "
+                            f"unless protected or the rules change): {candidate['title']} | path={key}")
+                    else:
+                        log(f"Still marked (day {age_days}/{DELETE_DELAY_DAYS}, "
+                            f"deletes on {_mark_delete_on(entry.get('marked_at'))}): {candidate['title']}")
+                    entry["size_bytes"] = size_before
+                    kept_marks[key] = entry
+                    marked_count += 1
+                    planned_bytes += size_before
+                    continue
+                log(f"Mark aged {age_days} day(s) (delay {DELETE_DELAY_DAYS}) — deleting: {candidate['title']}")
+            if delete_candidate(candidate, section1_paths_by_tmdb):
+                deleted_count += 1
+                bytes_freed += size_before
+                planned_bytes += size_before
+                if mark_store.pop(key, None) is not None:
+                    mark_store_dirty = True
+            elif not candidate["path"].exists():
+                # Gone, but not by us (vanished externally between the scan and
+                # this loop). Drop any mark — the file no longer needs one — but
+                # don't claim the deletion: deleted.log has no record of it, and
+                # this run freed nothing by it.
+                planned_bytes += size_before
+                if mark_store.pop(key, None) is not None:
+                    mark_store_dirty = True
+            elif use_delay:
+                # The file survived delete_candidate (permission error, safety
+                # abort, mount hiccup). Carry the EXISTING mark forward with its
+                # original marked_at so the retry next run doesn't reset the delay
+                # clock — otherwise a transient error silently re-arms the full wait.
+                existing = mark_store.get(key)
+                entry = existing if isinstance(existing, dict) else {
+                    "title": candidate["title"],
+                    "score": round(candidate["retention_score"], 3),
+                    "marked_at": now_ts, "trigger": trigger}
                 entry["size_bytes"] = size_before
                 kept_marks[key] = entry
-                marked_count += 1
-                planned_bytes += size_before
-                continue
-            log(f"Mark aged {age_days} day(s) (delay {DELETE_DELAY_DAYS}) — deleting: {candidate['title']}")
-        delete_candidate(candidate, section1_paths_by_tmdb)
-        if not candidate["path"].exists():
-            deleted_count += 1
-            bytes_freed += size_before
-            planned_bytes += size_before
-            if mark_store.pop(key, None) is not None:
-                mark_store_dirty = True
-        elif use_delay:
-            # The file survived delete_candidate (permission error, safety
-            # abort, mount hiccup). Carry the EXISTING mark forward with its
-            # original marked_at so the retry next run doesn't reset the delay
-            # clock — otherwise a transient error silently re-arms the full wait.
-            existing = mark_store.get(key)
-            entry = existing if isinstance(existing, dict) else {
-                "title": candidate["title"],
-                "score": round(candidate["retention_score"], 3),
-                "marked_at": now_ts, "trigger": trigger}
-            entry["size_bytes"] = size_before
-            kept_marks[key] = entry
-            log(f"WARN: deletion did not remove {candidate['title']}; "
-                f"keeping its existing mark (will retry next run).")
+                log(f"WARN: deletion did not remove {candidate['title']}; "
+                    f"keeping its existing mark (will retry next run).")
+    except SystemExit:
+        if use_delay or mark_store_dirty:
+            save_pending({**mark_store, **kept_marks})
+            log("Stopped mid-run — marked-queue changes so far were saved.")
+        raise
 
     # Reconcile the marked-for-deletion queue with THIS run's plan.
     if use_delay:
@@ -5722,7 +6115,7 @@ def main():
             log(f"Marked for deletion: {marked_count} movie(s), "
                 f"{bytes_to_gb(planned_bytes - bytes_freed):.1f} GB — deletes after "
                 f"{DELETE_DELAY_DAYS} day(s) unless protected or the rules change.")
-    elif _manual_live or not immediate_trigger:
+    elif (_manual_live or not immediate_trigger) and not _redline_only_mode():
         # Delay disabled, or a manual Live Run that pruned to every breached
         # target: everything planned was deleted outright, so the queue is
         # done — whether entries remain (stale from an earlier delay) or were
@@ -5731,7 +6124,9 @@ def main():
             save_pending({})
     elif mark_store_dirty:
         # Redline runs never reshape the daily plan — they only drop entries
-        # whose files they deleted.
+        # whose files they deleted. Redline-only mode lands here for EVERY live
+        # run, including manual: the queue is the standing preview, so runs only
+        # ever trim it (the app tops it back up afterwards).
         save_pending(mark_store)
 
     final_info = get_usage_info()

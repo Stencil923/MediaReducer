@@ -227,19 +227,42 @@ copy. It never asks Radarr to delete files.
 Space Thresholds unlock after a monitored path is saved.
 
 - **Headroom target** — cleanup runs when free space drops below this amount,
-  freeing back up to it. Blank saves as 0.
+  freeing back up to it. 0 (the default) turns just this trigger off — the
+  Redline floor and Library Size Cap still work on their own, and with nothing
+  armed at all Live stays blocked until you set a target. Unticking the
+  checkbox is different: that switches to **redline-only mode** (below), which
+  requires a Redline floor.
 - **Redline emergency floor** — optional immediate-cleanup floor. When free
   space drops below it, cleanup runs on the next tick and frees only enough to
   get back to the floor (not up to the headroom target). It re-scores your
   library and deletes lowest-value first, so it clears the already-marked movies
   (which are the lowest-value ones) in order — and if you have since changed
-  monitored paths, filters, or scoring, it follows that updated order.
+  monitored paths, filters, or scoring, it follows that updated order. It must
+  sit strictly below the Headroom value — for a Redline at or above it, use
+  redline-only mode instead.
 - **Library Size Cap** — optional cap on the total size of monitored movie
-  files.
+  files. Shares the daily cleanup schedule and the deletion delay, and works
+  with the Headroom value at 0 (cap-only setups) — it's only unavailable in
+  redline-only mode.
 
 - **Deletion delay** — whole days a movie stays marked before a daily
   cleanup deletes it (minimum 1: never the same day it's marked — the earliest
   is the next day's run; Redline and manual Live Runs ignore it).
+
+### Redline-only mode
+
+For people who don't want the headroom concept at all and just want a big list
+of what will be deleted when space runs low: set a **Redline floor**, then
+untick **Headroom target** (the checkbox is the mode switch — a Redline floor
+must exist first). In this mode the Library Size Cap and the deletion delay
+are retired — Redline is the only thing that ever deletes.
+
+Simulate is still required before Live can be enabled (automatic or the manual
+button): it marks at least the first 50 movies in deletion order as a standing
+preview — the list Redline will work down, worst-scored first, whenever free
+space hits the floor. The preview refreshes on each Simulate, goes stale (and
+re-locks Live) when you change monitored paths, filters, or scoring, and each
+entry in the deletion history modal reads "#N — deletes when Redline hits."
 
 Optional fields can't be set to 0 — disabling is the off switch. A disabled
 field keeps its last value (greyed out), even across restarts.
@@ -379,11 +402,18 @@ With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
   past skips today and starts at the new time tomorrow (it never triggers an
   instant catch-up run).
 - **Redline** cleanups trigger immediately on any tick that finds free space
-  below the floor, ignoring the once-per-day schedule (and the deletion delay).
-  A redline frees only enough to get back to the floor. It re-scores your
-  library at run time and deletes lowest-value first, so it clears the
-  already-marked movies (the lowest-value ones) in order — always reflecting
-  your latest paths, filters, and scoring rather than a stale snapshot.
+  below the floor, ignoring the once-per-day schedule (and the deletion delay),
+  and free only enough to get back to the floor. With a **current** marked plan
+  (from Simulate or a daily run), the emergency takes a fast path: it deletes
+  straight down the marked queue in plan order — re-verifying each file fresh
+  against monitored paths, protected collections, and Jellyfin favorites, but
+  skipping the full library rescan, so space frees in seconds. It then rebuilds the preview with
+  a background Simulate. Without a current plan (rules or paths changed, queue
+  too small, or protection can't be verified) it falls back to a full re-scored
+  run, deleting lowest-value first.
+- **Redline-only mode** (Headroom unticked): the daily schedule never fires —
+  Redline is the only deletion trigger, and the marked queue is the standing
+  preview Simulate maintains, not a schedule.
 - **Deletion delay** (Space Thresholds) holds daily deletions for N whole
   days (minimum 1 — a movie is never deleted the same day it's marked).
   **Simulate writes the plan**: it marks the candidates (deleting nothing),
