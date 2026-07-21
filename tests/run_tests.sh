@@ -65,24 +65,6 @@ PY
   run e2e_smoke node tests/e2e/smoke_all.mjs
   run e2e_runlock node tests/e2e/e2e_runlock.mjs
 
-  # Build a first sample (unrated: balance 0, no dataset in OUTPUT_DIR yet).
-  curl -sf -X POST -H "Content-Type: application/json" -H "X-MediaReducer: 1" \
-       -d '{"n":10}' "$MR_BASE_URL/api/score-sample/refresh" >/dev/null
-  for _ in $(seq 1 60); do
-    curl -sf "$MR_BASE_URL/api/score-sample/refresh/status" | grep -q '"active":false' && break
-    sleep 1
-  done
-  run e2e_annotate_nofile node tests/e2e/e2e_annotate.mjs nofile
-  cp "$TMP/e2e/ratings/title.ratings.tsv" "$TMP/e2e/config/title.ratings.tsv"
-  touch -d "30 days ago" "$TMP/e2e/config/title.ratings.tsv" 2>/dev/null || true
-  run e2e_annotate_file node tests/e2e/e2e_annotate.mjs file
-
-  # Refresh-commits-dial needs the saved balance off 0 first.
-  curl -sf -X POST -H "Content-Type: application/json" -H "X-MediaReducer: 1" \
-       -d '{"SCORE_BALANCE":50}' "$MR_BASE_URL/api/score-config" >/dev/null
-  sleep 8
-  run e2e_refresh node tests/e2e/e2e_refresh.mjs
-
   kill "$APP_PID" "$MOCK_PID" 2>/dev/null
  else
   echo "SKIP e2e — playwright not installed (set PLAYWRIGHT_MODULE, or run: npm i playwright)"

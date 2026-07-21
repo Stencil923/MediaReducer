@@ -12,23 +12,19 @@ lines and exits non-zero on failure):
 
 | Test | Guards |
 |---|---|
-| `test_sample_merge` | Dual-source (Plex+Jellyfin) sample merge is order-independent, including the twin-never-scanned case |
-| `test_sample_annotate` | IMDb dataset gating: annotate from an on-disk file at any balance, download only when scoring needs it |
-| `test_score_config_trigger` | Sample rebuild fires exactly on IMDb-needed crossings of `/api/score-config` saves |
-| `test_refresh_flow` | Refresh commits the dial first; no download at 100% watch history; builds dedupe |
+| `test_library_snapshot` | The library snapshot survives engine cache clears and interrupted runs; completed scans replace it; the app reads it back |
 | `test_mark_score_refresh` | Re-Simulating under a new balance keeps each mark's age (`marked_at`) but refreshes its displayed score/title/size |
 | `test_threshold_matrix` | Every (mode, headroom, redline, cap) combination gets the same verdict from all three validators — the `/api/config` save handler, the hand-edit file validator, and the engine — and valid states gate Live/Simulate the right way |
 | `test_redline_only` | Redline-only mode (`REDLINE_ONLY_MODE` + a Redline floor): validation rules, the always-on Simulate/plan gate, the standing preview queue |
 | `test_redline_fastpath` | A Redline emergency with a current plan deletes down the marked queue in plan order — re-verifying monitored roots and protections fresh — and falls back to a full scan on any doubt |
 | `test_optional_value_memory` | Disabled optional fields keep their last entered value across saves/restarts; unticking Headroom stores 0 and requires a Redline floor (redline-only mode); zero rejected where disabling is the off switch |
-| `test_delete_delay` | Deletion-delay config validation (whole days) and marked-for-deletion queue composition |
+| `test_delete_delay` | Deletion-delay config validation (whole days), queue composition, plan currency (raw-stamp + candidate-config comparison), and the save reconciliation: a threshold-changing save that satisfies every limit unschedules clocks but keeps the queue |
 | `test_time_zone` | `TIME_ZONE` drives the process clock — daily-run midnight, deletion-delay aging, log timestamps — with `auto` meaning the container clock |
-| `test_deleted_log` | deleted.log parser across every line generation; rationale fields surface in history lines |
-| `test_radarr_cleanup` | Radarr forgets a movie the moment its copy in Radarr's section is deleted (duplicates elsewhere don't block it); off-section deletions leave Radarr alone unless Radarr owns the deleted folder |
-| `test_live_button_state` | Simulate/Live ghost when space limits are satisfied; fail open on unknowns; real problems keep their tooltips |
-| `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs; sample builds warn |
+| `test_deleted_log` | deleted.log parser across lines with and without the optional rationale fields; the why surfaces in history lines |
+| `test_radarr_cleanup` | Radarr forgets a movie the moment its copy in Radarr's section is deleted (duplicates elsewhere don't block it); a copy known to be in a different section never touches Radarr, and only unknown-section rows fall back to the Radarr-owns-folder match |
+| `test_live_button_state` | Live ghosts when space limits are satisfied while Simulate always stays available (it maintains the standing queue); fail open on unknowns; real problems keep their tooltips |
+| `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs, warns-and-continues in the quiet Summary, and proceeds normally on a real match |
 | `test_safety_autopause` | A Live tick with unsafe thresholds pauses Live with the reason; safe ticks still run |
-| `test_scheduler_pause` | Sample builds freeze the background clock; ticks defer; clock restarts after |
 | `test_graceful_shutdown` | SIGTERM to the app forwards the stop to the engine child and waits for it to exit before the app does |
 | `test_progress_phases` | Each progress step fills 0→100 exactly once; Plex+Jellyfin path resolution reports under the indeterminate "library" step |
 | `test_debug_report` | The sanitized debug report carries the decision-state sections and never leaks movie names, paths, or IPs |
@@ -47,9 +43,6 @@ at a dead port so any accidental network fetch fails loudly.
 
 - `smoke_all.mjs` — all three pages load with zero JS errors
 - `e2e_runlock.mjs` — Filtering & Scoring locks/unlocks with run state
-- `e2e_annotate.mjs nofile|file` — unrated-sample banners and the on-disk
-  dataset auto-annotate flow
-- `e2e_refresh.mjs` — Refresh saves a moved dial before rebuilding
 
 ## Environment knobs
 
