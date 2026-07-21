@@ -13,6 +13,7 @@ lines and exits non-zero on failure):
 | Test | Guards |
 |---|---|
 | `test_library_snapshot` | The library snapshot survives engine cache clears and interrupted runs; completed scans replace it; the app reads it back |
+| `test_config_cache` | `load_config()`'s mtime-keyed memo is invisible: every call returns an isolated copy, a file write invalidates it, `_CONFIG_FILE_ISSUES` still surfaces, and the missing-file onboarding state is stable |
 | `test_mark_score_refresh` | Re-Simulating under a new balance keeps each mark's age (`marked_at`) but refreshes its displayed score/title/size |
 | `test_threshold_matrix` | Every (mode, headroom, redline, cap) combination gets the same verdict from all three validators — the `/api/config` save handler, the hand-edit file validator, and the engine — and valid states gate Live/Simulate the right way |
 | `test_redline_only` | Redline-only mode (`REDLINE_ONLY_MODE` + a Redline floor): validation rules, the always-on Simulate/plan gate, the standing preview queue |
@@ -22,6 +23,11 @@ lines and exits non-zero on failure):
 | `test_time_zone` | `TIME_ZONE` drives the process clock — daily-run midnight, deletion-delay aging, log timestamps — with `auto` meaning the container clock |
 | `test_deleted_log` | deleted.log parser across lines with and without the optional rationale fields; the why surfaces in history lines |
 | `test_radarr_cleanup` | Radarr forgets a movie the moment its copy in Radarr's section is deleted (duplicates elsewhere don't block it); a copy known to be in a different section never touches Radarr, and only unknown-section rows fall back to the Radarr-owns-folder match |
+| `test_media_server_integration` | The Plex / Jellyfin / Radarr integrations over their REAL HTTP request functions, against an in-process localhost mock (`tests/mocks/mock_services.py`): a protected Plex collection and a Jellyfin favorite resolve to on-disk movie paths, a section-match deletion actually issues the Radarr DELETE, and an unreachable Plex aborts a deleting run — the URL/auth/parse layer the monkeypatched tests skip |
+| `test_source_merge` | The Plex + Jellyfin source merge (`get_all_movies`): the same file on both servers collapses to one candidate with summed plays, oldest added date, most-recent last-played, unioned protection, and distinct-users = the higher of the two (never the sum); single-server passthrough; and a same-filename path divergence is flagged as an unreconciled twin and skipped, not double-counted or wrongly deleted |
+| `test_jellyfin_fetch` | `get_all_movies_from_jellyfin()` over a canned `_jellyfin_request`: Jellyfin's per-user/bits-per-second/ISO-8601 shapes normalize to Tautulli-shaped rows (bitrate→kbps, resolution, provider ids, DateCreated→epoch); plays SUM across users while last-played takes the most recent and distinct-watchers count Played-with-zero-plays; BoxSet protection applies by movie id, IMDb id, and TMDb id; a missing protected BoxSet fails closed |
+| `test_engine_helpers` | Engine internals no scenario test drives: Tautulli intra-source dedup (highest plays / newest last-played / Radarr section preserved), the config coercion helpers (numbers incl. non-finite rejection, string lists, extensions, booleans, library-path normalization), `compute_config_hash` metadata-source sensitivity, and the IMDb pipeline (`_bounded_gunzip` decompression-bomb caps, `_load_imdb_ratings_from_disk` header/row validation, `imdb_dataset_needed`) |
+| `test_app_coverage` | App-layer safety the scenarios skip: `/api/run`'s missing/garbled-mode → Simulate safety default (never a live deletion) plus the unknown-mode 400 and run-active 409 guards; run-log section/error extraction (COMPLETED-WITH-ERRORS report served whole, content sections stop before it, early ABORT → synthetic RUN FAILED); and the hand-editable pending-queue's hostile-input guards (garbage size / out-of-range epoch read as safe defaults, never a 500) |
 | `test_live_button_state` | Live ghosts when space limits are satisfied while Simulate always stays available (it maintains the standing queue); fail open on unknowns; real problems keep their tooltips |
 | `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs, warns-and-continues in the quiet Summary, and proceeds normally on a real match |
 | `test_safety_autopause` | A Live tick with unsafe thresholds pauses Live with the reason; safe ticks still run |
@@ -43,6 +49,8 @@ at a dead port so any accidental network fetch fails loudly.
 
 - `smoke_all.mjs` — all three pages load with zero JS errors
 - `e2e_runlock.mjs` — Filtering & Scoring locks/unlocks with run state
+- `e2e_fullrun.mjs` — a real Simulate runs to completion against the mock and
+  writes the library snapshot + eligible queue; a second run reuses the cache
 
 ## Environment knobs
 

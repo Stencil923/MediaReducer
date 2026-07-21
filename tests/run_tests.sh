@@ -64,6 +64,7 @@ PY
 
   run e2e_smoke node tests/e2e/smoke_all.mjs
   run e2e_runlock node tests/e2e/e2e_runlock.mjs
+  run e2e_fullrun node tests/e2e/e2e_fullrun.mjs
 
   kill "$APP_PID" "$MOCK_PID" 2>/dev/null
  else
