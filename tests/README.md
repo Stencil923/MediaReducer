@@ -1,9 +1,17 @@
 # MediaReducer tests
 
 ```bash
-tests/run_tests.sh          # unit + scoring-parity (hermetic, no network, no browser)
-tests/run_tests.sh --e2e    # + browser end-to-end against a real app instance
+tests/run_tests.sh                # unit + scoring-parity (hermetic, no network, no browser)
+tests/run_tests.sh --integration  # + the full run pipeline over real HTTP under every
+                                  # server profile (Plex / Jellyfin / both). No browser.
+tests/run_tests.sh --e2e          # everything --integration does + the browser page tests
 ```
+
+Three tiers, cheapest first. `--integration` boots a real app + mock servers
+and drives the scan→score→queue pipeline over `fetch` — no browser, so it needs
+only python + node and runs anywhere. `--e2e` adds the two chromium page tests
+on top (`smoke_all`, `e2e_runlock`), which are the only tests that need
+playwright.
 
 ## What runs
 
@@ -28,6 +36,7 @@ lines and exits non-zero on failure):
 | `test_jellyfin_fetch` | `get_all_movies_from_jellyfin()` over a canned `_jellyfin_request`: Jellyfin's per-user/bits-per-second/ISO-8601 shapes normalize to Tautulli-shaped rows (bitrate→kbps, resolution, provider ids, DateCreated→epoch); plays SUM across users while last-played takes the most recent and distinct-watchers count Played-with-zero-plays; BoxSet protection applies by movie id, IMDb id, and TMDb id; a missing protected BoxSet fails closed |
 | `test_engine_helpers` | Engine internals no scenario test drives: Tautulli intra-source dedup (highest plays / newest last-played / Radarr section preserved), the config coercion helpers (numbers incl. non-finite rejection, string lists, extensions, booleans, library-path normalization), `compute_config_hash` metadata-source sensitivity, and the IMDb pipeline (`_bounded_gunzip` decompression-bomb caps, `_load_imdb_ratings_from_disk` header/row validation, `imdb_dataset_needed`) |
 | `test_app_coverage` | App-layer safety the scenarios skip: `/api/run`'s missing/garbled-mode → Simulate safety default (never a live deletion) plus the unknown-mode 400 and run-active 409 guards; run-log section/error extraction (COMPLETED-WITH-ERRORS report served whole, content sections stop before it, early ABORT → synthetic RUN FAILED); and the hand-editable pending-queue's hostile-input guards (garbage size / out-of-range epoch read as safe defaults, never a 500) |
+| `test_candidate_sources` | The candidate stage (`build_candidates`) under all three server configurations — Plex-only, Jellyfin-only, both — driving the real filter/protection/merge branches that no other test reaches: a protected Plex collection and a protected Jellyfin BoxSet each exclude their movie, a Jellyfin favorite is excluded only with favorites-protection on, the same file on both servers collapses to ONE candidate with summed plays, and a cross-server provider-id conflict (or an unmerged twin) is skipped, never deleted |
 | `test_live_button_state` | Live ghosts when space limits are satisfied while Simulate always stays available (it maintains the standing queue); fail open on unknowns; real problems keep their tooltips |
 | `test_protection_failclosed` | A configured protected collection matching nothing aborts deleting runs, warns-and-continues in the quiet Summary, and proceeds normally on a real match |
 | `test_safety_autopause` | A Live tick with unsafe thresholds pauses Live with the reason; safe ticks still run |
@@ -41,16 +50,27 @@ same grid through the Score Explorer's actual JS (extracted from the
 template) and fails on drift > 0.01 points. This is the guard for the
 "engine and preview must never disagree" invariant.
 
-**E2E** (`tests/e2e/`, needs `node` + playwright + chromium): boots the mock
-Tautulli (`tests/mocks/`) and a real app instance against a disposable
-library tree, config, and ratings TSV built by `tests/fixtures/make_fixtures.py`
-— nothing outside the temp dir is touched, and the fixture's IMDb URL points
-at a dead port so any accidental network fetch fails loudly.
+**Integration + E2E** (`tests/e2e/`): both tiers boot the mock Tautulli and
+mock Jellyfin (`tests/mocks/`), which serve the SAME disposable library tree,
+config, and ratings TSV built by `tests/fixtures/make_fixtures.py` — nothing
+outside the temp dir is touched, and the fixture's IMDb URL points at a dead
+port so any accidental network fetch fails loudly.
+
+Integration (`--integration`, plain `fetch`, no browser — needs only `node`):
+
+- `e2e_fullrun.mjs` — a real Simulate runs to completion and writes the library
+  snapshot + eligible queue. Run against a fresh app instance under **each
+  server profile** — `e2e_fullrun_plex`, `e2e_fullrun_jellyfin`, and
+  `e2e_fullrun_both` (`make_fixtures.py <dir> plex|jellyfin|both`) — so the
+  whole scan→score→queue pipeline is exercised with Plex/Tautulli only, Jellyfin
+  only, and both servers merging. Plex also does a second Simulate to prove the
+  metadata-cache-reuse path (`MR_E2E_SECOND_RUN=0` skips it for the others,
+  whose cache is Plex-keyed).
+
+Browser (`--e2e` only, needs playwright + chromium — the sole browser tests):
 
 - `smoke_all.mjs` — all three pages load with zero JS errors
 - `e2e_runlock.mjs` — Filtering & Scoring locks/unlocks with run state
-- `e2e_fullrun.mjs` — a real Simulate runs to completion against the mock and
-  writes the library snapshot + eligible queue; a second run reuses the cache
 
 ## Environment knobs
 
@@ -58,4 +78,5 @@ at a dead port so any accidental network fetch fails loudly.
 |---|---|
 | `PLAYWRIGHT_MODULE` | import specifier/path for playwright (default `playwright`) |
 | `PW_CHROMIUM` | explicit chromium binary for playwright |
-| `MR_E2E_PORT` | app port for e2e (default 5057) |
+| `MR_E2E_PORT` | base app port for the opt-in tiers (default 5057; +1/+2 also used) |
+| `MR_E2E_SECOND_RUN` | `0` skips `e2e_fullrun`'s second (cache-reuse) Simulate |
