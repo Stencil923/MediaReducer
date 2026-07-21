@@ -208,28 +208,35 @@ with tempfile.TemporaryDirectory() as td:
     check("marks still trimmed when the audit write fails",
           list(data["entries"]) == [str(paths[2]), str(paths[3])])
 
-# ── Leaving redline-only mode restarts the delay clocks on surviving marks ───
-# The stamp setup() writes is a redline-only plan (HEADROOM_GB 0) with ancient
-# marked_at values; a re-Simulate after re-enabling Headroom must not let those
-# ages count as already-served delay time.
+# ── Delay clocks and the eligible queue ──────────────────────────────────────
+# Redline-only plans never carry delay clocks (nothing is scheduled), so
+# leaving the mode can never smuggle already-served delay time into a normal-
+# mode plan: an eligible (unclocked) entry entering the marked prefix starts
+# its clock fresh, and a clocked entry keeps its running age.
 _hr_saved = (engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE)
 try:
     with tempfile.TemporaryDirectory() as td:
         paths = setup(td)
-        engine.HEADROOM_GB, engine.REDLINE_GB = 500, 200        # mode exited
-        engine.REDLINE_ONLY_MODE = False
-        cand = {"path": paths[0], "title": "Movie A", "retention_score": 1.0}
-        engine.write_plan_to_queue([(cand, 2 * MB)], "test")
-        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
-        check("mode exit restarts the mark clock", e["marked_at"] > 1700000000)
-    with tempfile.TemporaryDirectory() as td:
-        paths = setup(td)
-        engine.HEADROOM_GB, engine.REDLINE_GB = 0, 200          # still redline-only
+        engine.HEADROOM_GB, engine.REDLINE_GB = 0, 200          # redline-only
         engine.REDLINE_ONLY_MODE = True
         cand = {"path": paths[0], "title": "Movie A", "retention_score": 1.0}
-        engine.write_plan_to_queue([(cand, 2 * MB)], "test")
+        engine.write_plan_to_queue([(cand, 2 * MB)], "test")    # scheduled_count 0
         e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
-        check("same-mode re-simulate keeps the original clock", e["marked_at"] == 1000000000)
+        check("redline-only plans carry no delay clocks", e["marked_at"] is None)
+        # Mode exits and a normal-mode plan schedules the same entry: its clock
+        # starts NOW — the eligible time never counted as served delay.
+        engine.HEADROOM_GB, engine.REDLINE_GB = 500, 200
+        engine.REDLINE_ONLY_MODE = False
+        engine.write_plan_to_queue([(cand, 2 * MB)], "test", scheduled_count=1)
+        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        check("entering the marked prefix starts a fresh clock", e["marked_at"] > 1700000000)
+        _first_clock = e["marked_at"]
+        engine.write_plan_to_queue([(cand, 2 * MB)], "test", scheduled_count=1)
+        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        check("re-simulate keeps a running clock", e["marked_at"] == _first_clock)
+        engine.write_plan_to_queue([(cand, 2 * MB)], "test")    # left the prefix
+        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        check("leaving the marked prefix stops the clock", e["marked_at"] is None)
 finally:
     engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE = _hr_saved
 

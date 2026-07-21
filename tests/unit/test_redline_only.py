@@ -21,7 +21,6 @@ def fake_save_config(cfg, **k):
 
 A.load_config = fake_load_config
 A.save_config = fake_save_config
-A.refresh_sample_pool = lambda *a, **k: (True, "ok")
 A.run_summary = lambda *a, **k: (False, "skip")
 A._invalid_config_response = lambda: None
 A._refresh_connection_health_cache = lambda cfg, probe=True: {
@@ -104,21 +103,32 @@ _disk = {"total_gb": 1000, "used_gb": 500, "free_gb": 500, "pct_used": 50}
 
 _orig_limits = A._deletion_limits_exceeded
 _orig_plan = A._pending_plan_current
+_orig_evidence = A._simulate_evidence
 A._deletion_limits_exceeded = lambda *a, **k: False    # everything satisfied
-A._pending_plan_current = lambda cfg: False            # no plan yet
+A._pending_plan_current = lambda cfg, **k: False            # no plan yet
+A._simulate_evidence = lambda *a, **k: False                   # no snapshot yet either
 try:
     st = A._space_threshold_state(dict(BASE, **RL_CFG), _disk, library_gb=100.0)
     check("mode: simulate required even within limits", st["simulate_required"] is True)
     st = A._space_threshold_state(dict(BASE, **HR_CFG), _disk, library_gb=100.0)
-    check("normal: within limits needs no simulate", st["simulate_required"] is False)
-    A._pending_plan_current = lambda cfg: True
+    check("normal: within limits still needs first-Simulate proof", st["simulate_required"] is True)
+    # A completed scan (library snapshot) is that proof in normal modes…
+    A._simulate_evidence = lambda *a, **k: True
+    st = A._space_threshold_state(dict(BASE, **HR_CFG), _disk, library_gb=100.0)
+    check("normal: library snapshot proves a Simulate ran", st["simulate_required"] is False)
+    # …but never in redline-only, which needs the current standing plan itself.
+    st = A._space_threshold_state(dict(BASE, **RL_CFG), _disk, library_gb=100.0)
+    check("mode: snapshot alone is not a standing plan", st["simulate_required"] is True)
+    A._simulate_evidence = lambda *a, **k: False
+    A._pending_plan_current = lambda cfg, **k: True
     st = A._space_threshold_state(dict(BASE, **RL_CFG), _disk, library_gb=100.0)
     check("mode: current plan satisfies the gate", st["simulate_required"] is False)
 
-    # Button states: satisfied ghosts Simulate normally, but never in the mode.
+    # Button states: satisfied never ghosts Simulate in any mode (it builds
+    # the standing queue); Live still ghosts while satisfied.
     # Needs a healthy connection probe — an unhealthy one disables everything
     # before the threshold logic is reached.
-    A._pending_plan_current = lambda cfg: False
+    A._pending_plan_current = lambda cfg, **k: False
     _orig_health = A._refresh_connection_health_cache
     A._refresh_connection_health_cache = lambda cfg, probe=True: {
         "critical_ok": True, "tautulli_connected": True,
@@ -133,12 +143,14 @@ try:
     check("mode: Live ghosts pending the preview plan", lb["live_disabled"] is True)
     check("mode: tooltip names the preview requirement", "preview" in lb["live_tooltip"])
     lb = A._live_button_state(dict(BASE, USE_PLEX=True, **HR_CFG), _disk)
-    check("normal: satisfied ghosts Simulate", lb["simulate_disabled"] is True)
+    check("normal: satisfied keeps Simulate enabled, ghosts Live",
+          lb["simulate_disabled"] is False and lb["live_disabled"] is True)
     A.library_stats = _orig_lib_stats
     A._refresh_connection_health_cache = _orig_health
 finally:
     A._deletion_limits_exceeded = _orig_limits
     A._pending_plan_current = _orig_plan
+    A._simulate_evidence = _orig_evidence
 
 # ── The preview queue: display + never auto-cleared while satisfied ──────────
 with tempfile.TemporaryDirectory() as td:
@@ -148,12 +160,30 @@ with tempfile.TemporaryDirectory() as td:
         "/library/movies/A/A.mkv": {"title": "Worst", "size_bytes": 1000, "marked_at": now - 86400},
         "/library/movies/B/B.mkv": {"title": "Next", "size_bytes": 1000, "marked_at": now},
     }}), encoding="utf-8")
+    # Pin the disk read: the marked/eligible split keys on real free space vs
+    # the Redline floor, and the test machine's disk must not decide the case.
+    _orig_ds = A.disk_stats
+    A.disk_stats = lambda check=None: {"total_gb": 1000.0, "used_gb": 500.0,
+                                       "free_gb": 500.0, "pct_used": 50.0}
     entries = A.pending_deletion_entries()
     check("mode: entries keep the queue's own (deletion) order",
           [e["title"] for e in entries] == ["Worst", "Next"])
     check("mode: entries read as Redline-order, not dates",
           entries[0]["when"] == "#1 — deletes when Redline hits"
+          and entries[0]["marked"] is False
           and entries[0]["days_remaining"] is None and entries[0]["delete_on"] is None)
+
+    # Below the floor, the deficit-covering prefix reads as marked-to-delete-now
+    # and the rest stays queued (deficit of 500 bytes < the first 1000-byte entry).
+    A.disk_stats = lambda check=None: {"total_gb": 1000.0, "used_gb": 800.0,
+                                       "free_gb": 200.0 - 5e-7, "pct_used": 80.0}
+    entries = A.pending_deletion_entries()
+    check("mode breached: deficit prefix is marked, rest queued",
+          entries[0]["marked"] is True
+          and entries[0]["when"] == "#1 — deletes on the next Live Run (Redline breached)"
+          and entries[1]["marked"] is False
+          and entries[1]["when"] == "#2 — deletes when Redline hits")
+    A.disk_stats = _orig_ds
     f = A.pending_delete_forecast()
     check("mode: forecast schedules nothing",
           f["count"] == 2 and f["ripe"] == 0 and f["event_on"] is None
@@ -175,7 +205,7 @@ with tempfile.TemporaryDirectory() as td:
         r = client.post("/api/config", json=p, headers={"X-MediaReducer": "1"})
         body = r.get_json()
         check("mode: save keeps the preview queue",
-              r.status_code == 200 and body.get("pending_cleared") == 0 and A.pending_count() == 2)
+              r.status_code == 200 and body.get("pending_unscheduled") == 0 and A.pending_count() == 2)
     finally:
         A._deletion_limits_exceeded = _orig_limits
         A.cached_disk_stats = _orig_disk_stats
@@ -226,10 +256,15 @@ try:
         engine.Path.exists = lambda self: True   # queue files all still on disk
         engine._revalidate_pending_marks(limits_breached=False)
         check("engine upkeep: satisfied does NOT clear the preview", "v" not in _saved_pending)
+        # Normal mode: satisfied stops any running delay clocks but KEEPS the
+        # queue — it is the standing eligible deletion order in every mode now.
         engine.HEADROOM_GB, engine.REDLINE_ONLY_MODE = 500, False
+        _store["/x/A.mkv"]["marked_at"] = 123.0   # a running clock
         engine._revalidate_pending_marks(limits_breached=False)
-        check("engine upkeep: normal mode still clears when satisfied",
-              _saved_pending.get("v") == {})
+        _v = _saved_pending.get("v") or {}
+        check("engine upkeep: normal mode unschedules clocks but keeps the queue",
+              set(_v) == {"/x/A.mkv", "/x/B.mkv"}
+              and _v["/x/A.mkv"].get("marked_at") is None)
     finally:
         engine.Path.exists = _orig_exists
         engine.load_pending, engine.save_pending = _orig_lp, _orig_sp
@@ -239,26 +274,23 @@ finally:
     (engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE,
      engine.MAX_LIBRARY_GB, engine.MONITOR_DIRS) = _eng_saved
 
-# ── Rebuild decision: any live run that thins the preview tops it back up ────
-_orig_pc = A.pending_count
+# ── Rebuild decision: a live run that consumed queue entries tops it back up ──
 _orig_pp = A.progress_path
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, **RL_CFG, OUTPUT_DIR=td)
     A.progress_path = lambda: Path(td, "progress.json")
     try:
-        A.pending_count = lambda: 30
-        check("live run below preview strength rebuilds", A._preview_rebuild_needed(True) is True)
-        check("sim run never rebuilds on depth alone", A._preview_rebuild_needed(False) is False)
-        A.pending_count = lambda: 50
-        check("full preview needs no rebuild", A._preview_rebuild_needed(True) is False)
+        Path(td, "progress.json").write_text(json.dumps({"deleted": 3}))
+        check("live run that deleted rebuilds", A._preview_rebuild_needed(True) is True)
+        check("sim run never rebuilds (it IS the rebuild)", A._preview_rebuild_needed(False) is False)
+        Path(td, "progress.json").write_text(json.dumps({"deleted": 0}))
+        check("live run that deleted nothing needs no rebuild", A._preview_rebuild_needed(True) is False)
         Path(td, "progress.json").write_text(json.dumps({"queue_rebuild": True}))
         check("fast-path flag rebuilds regardless", A._preview_rebuild_needed(False) is True)
-        Path(td, "progress.json").unlink()
-        _state["cfg"] = dict(BASE, **HR_CFG, OUTPUT_DIR=td)   # normal mode: depth is moot
-        A.pending_count = lambda: 3
-        check("normal mode never rebuilds on depth", A._preview_rebuild_needed(True) is False)
+        Path(td, "progress.json").write_text(json.dumps({"deleted": 3}))
+        _state["cfg"] = dict(BASE, **HR_CFG, OUTPUT_DIR=td)   # normal mode: no standing queue
+        check("normal mode never rebuilds", A._preview_rebuild_needed(True) is False)
     finally:
-        A.pending_count = _orig_pc
         A.progress_path = _orig_pp
 
 # ── No-thresholds state (headroom 0, no redline): valid but Live-blocked ─────

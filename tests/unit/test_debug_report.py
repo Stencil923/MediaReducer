@@ -82,7 +82,7 @@ PRIVATE_COLLECTION = "Keep Forever"
 SPACED_TITLE = "The Grey (2012)"
 SPACED_FOLDER = "Movies LQ"
 (tmp / "lastrun.log").write_text(
-    "2026-07-15 06:59:11 - Building sample pool (info line).\n"
+    "2026-07-15 06:59:11 - Scanning library (info line).\n"
     f"2026-07-15 06:59:11 - ABORT: Plex protected collection(s) ['{PRIVATE_COLLECTION}'] not found.\n"
     f"2026-07-15 06:59:11 - SKIP identity_mismatch | path=/library/{SPACED_FOLDER}/{SPACED_TITLE}/{SPACED_TITLE}.avi\n",
     encoding="utf-8")

@@ -1,6 +1,6 @@
 """A configured protected collection that matches NOTHING on the server must
-abort deleting runs (fail closed), warn-and-continue in the sample build,
-and proceed normally when it matches."""
+abort deleting runs (fail closed), warn-and-continue in the quiet summary
+(debug_info mark upkeep), and proceed normally when it matches."""
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -28,12 +28,12 @@ for mode in ("headroom", "debug_sim"):
     except SystemExit:
         check(f"{mode}: aborted on missing protection", True)
 
-engine.RUN_MODE = "sample_pool"
+engine.RUN_MODE = "debug_info"
 try:
     r = engine.fetch_protected_paths()
-    check("sample_pool: warns and continues", r == (set(), set(), set(), set()))
+    check("debug_info: warns and continues", r == (set(), set(), set(), set()))
 except SystemExit:
-    check("sample_pool: warns and continues", False)
+    check("debug_info: warns and continues", False)
 
 engine.RUN_MODE = "headroom"
 def _req(p):

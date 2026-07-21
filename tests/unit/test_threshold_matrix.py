@@ -28,7 +28,6 @@ def fake_save_config(cfg, **k):
 
 A.load_config = fake_load_config
 A.save_config = fake_save_config
-A.refresh_sample_pool = lambda *a, **k: (True, "ok")
 A.run_summary = lambda *a, **k: (False, "skip")
 A._invalid_config_response = lambda: None
 A._refresh_connection_health_cache = lambda cfg, probe=True: {

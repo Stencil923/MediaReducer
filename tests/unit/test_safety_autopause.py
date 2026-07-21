@@ -25,7 +25,6 @@ A.run_script = lambda *a, **k: calls.__setitem__("run", calls["run"] + 1)
 A._restart_schedule_clock = lambda: calls.__setitem__("clock", calls["clock"] + 1)
 A._run_active = False
 A._summary_active = False
-A._sample_pool_active = False
 # The tick skips daily-only breaches once today's window is used; these cases
 # test the launch flow itself, so hold the window open.
 A._headroom_window_used_today = lambda: False

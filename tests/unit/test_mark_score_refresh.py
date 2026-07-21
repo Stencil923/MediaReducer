@@ -43,7 +43,7 @@ planned = [
     (cand("/library/m/B.mkv", "B", 42.5, 250), 250),
     (cand("/library/m/C.mkv", "C", 7.0, 300), 300),
 ]
-kept, new_marks, dropped = E.write_plan_to_queue(planned, "sim")
+kept, new_marks, dropped = E.write_plan_to_queue(planned, "sim", scheduled_count=3)
 
 check("all three kept", set(Path(k).name for k in kept) == {"A.mkv", "B.mkv", "C.mkv"})
 check("one new mark (C)", new_marks == 1)
