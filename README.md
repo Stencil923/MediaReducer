@@ -43,9 +43,9 @@ movie files at `/library`.
 - Scores the rest on watch history and IMDb rating, blended by a single dial,
   and deletes the lowest scores first.
 - Kicks in on a free-space target, an emergency floor, or a library size cap.
-- Lets you preview all of it against a live sample of your real library before
-  anything runs.
-- Shows progress, logs, storage, and a permanent deletion history on the
+- Lets you preview all of it against your full library — scored live with the
+  settings on screen — before anything runs.
+- Shows progress, logs, storage, and a full deletion history on the
   Dashboard.
 - Can tell Radarr to forget a movie once its copy is deleted, so it doesn't
   get re-downloaded.
@@ -246,9 +246,9 @@ tells you so and asks for a second confirming click.
 
 If you don't care about a headroom target and just want a standing list of
 what will go when space runs low: set a Redline floor, then untick Headroom.
-Redline becomes the only thing that ever deletes, and Simulate keeps a preview
-of at least the first 50 movies in deletion order, so you always know what's
-on the chopping block.
+Redline becomes the only thing that ever deletes, and Simulate keeps every
+eligible movie visible in deletion order, so you always know what's on the
+chopping block.
 
 ### 5. Advanced
 
@@ -258,9 +258,8 @@ debug mode, the headroom safety cap, and **Reset MediaReducer**.
 ## Filtering & Scoring
 
 The Filtering & Scoring tab holds every rule that decides *what* can be
-deleted and *in what order*, and previews all of it against a live sample of
-your real library. Changes show up in the preview as you make them; **Save**
-keeps them.
+deleted and *in what order*, and previews all of it against your full library.
+Changes show up in the preview as you make them; **Save** keeps them.
 
 ### Eligibility filters
 
@@ -296,19 +295,21 @@ default) breaks near-ties by deleting bigger files first, so you lose the
 fewest movies — and between two similar-scoring copies of the same movie, the
 lower-quality copy goes first.
 
-### Library sample
+### Library table
 
-The sample table shows real movies from your monitored paths, scored with the
-settings on screen — each row shows its score breakdown, and filtered movies
-say exactly which rule filtered them. The **#** column is the actual deletion
-order: type an **Over headroom** target and it reorders live, exactly as a
-real run would. **Refresh** pulls a brand-new batch.
+The table shows your ENTIRE library as of the last run — every monitored-path
+movie, scored with the settings on screen, paginated (25 rows by default,
+switchable). Each row shows its score breakdown, and filtered movies say
+exactly which rule filtered them. The **#** column is the actual deletion
+order: type an **Over headroom calculator** target and it reorders live, exactly as a
+real run would (the order always spans the whole library, not just the
+visible page).
 
-Scoring needs the IMDb ratings dataset, which downloads automatically. If the
-download fails you'll get a heads-up with steps to add it by hand — real runs
-hold to the same rule and stop rather than score against stale ratings. Below
-the table, sliders let you dial up a hypothetical movie and watch its score
-react.
+The table is empty until your first Simulate; every Simulate or Live run
+refreshes it, and an interrupted run keeps the previous snapshot. Ratings come
+from the run itself — it downloads the IMDb dataset when scoring needs it, and
+stops rather than score against stale ratings. There's also a set of sliders
+for dialing up a hypothetical movie and watching its score react.
 
 ## Dashboard
 
@@ -320,28 +321,39 @@ react.
 - **Run Controls** — Simulate, one-time Live Run (double-click to confirm),
   and Stop.
 - **Detailed Log** — streams the active or most recent run.
-- **Deletion History** — every real deletion recorded in `deleted.log`,
-  including why it was picked (score, plays, last watch).
+- **Marked & Eligible Deletions** — the standing deletion plan as "X - Y
+  movies": how many are marked to delete (red when it's more than zero) and
+  how many are eligible behind them, with the full ordered list a click away.
+- **Deleted Movie History** — every real deletion recorded in `deleted.log`,
+  including why it was picked (score, plays, last watch). Erasable if you
+  want a clean slate.
 
-Buttons disable while setup is incomplete, a selected API is unhealthy, a run
-is already active, or every space limit is currently satisfied (a run would
-delete nothing) — the tooltip always says which.
+Buttons disable while setup is incomplete, a selected API is unhealthy, or a
+run is already active; the Live button also ghosts while every space limit is
+satisfied (a run would delete nothing). The tooltip always says which.
 
 ## Run Modes
 
 ### Simulate
 
 Scans, scores, and logs exactly what would be deleted, without deleting
-anything. This is also what writes the deletion plan Live runs work from.
+anything. This is also what writes the deletion plan Live runs work from: in
+every mode it queues the entire eligible list in deletion order, and only the
+movies needed to meet the current targets are **marked** (and delay-clocked) —
+the rest just show as eligible, next in line if more space is ever needed.
 
 ### Live Run
 
 The manual button deletes to every breached target immediately — no delay, no
 daily schedule. It stays ghosted until a Simulate has shown you the plan for
-your current settings, so you always see what a run removes before it can.
-Within limits it deletes nothing.
+your current settings, so you always see what a run removes before it can —
+and while every limit is satisfied, since there'd be nothing to do.
 
 ### Automatic Live
+
+Turning automatic mode on always requires that a Simulate has seen your
+library first — over breached limits that means a plan built under your
+current settings; within limits, one completed Simulate is enough.
 
 With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
 
@@ -354,8 +366,8 @@ With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
   seconds.
 - **Deletion delay** holds daily deletions for N days: a run first *marks*
   its candidates, and a daily run deletes each mark once it comes due.
-  Marked movies show at the top of the Deletion History with their dates, and
-  protecting a movie or changing the rules unmarks it.
+  Marked movies top the **Marked & Eligible Deletions** list with their
+  dates, and protecting a movie or changing the rules unmarks it.
 - **The plan must match the config.** Change any setting that affects what
   gets deleted and Live locks until a fresh Simulate rebuilds the plan.
 - **Time zone** (Automatic Run Mode) is the clock all of this runs on. Auto
@@ -381,8 +393,9 @@ MediaReducer is intentionally conservative:
 - Plex/Jellyfin identity mismatches are skipped, never deleted.
 - Protected collections and filtered movies are hard exclusions, not score
   penalties.
-- Editing connection or monitoring settings while Live is on drops the mode
-  back to Paused, and run-affecting settings are locked while a run is active.
+- Editing connection, monitoring, or threshold settings while Live is on drops
+  the mode back to Paused — review with Simulate, then re-enable. Settings are
+  locked only while a run is actually active.
 - Every run does a fresh safety pre-check before acting. Stop is always safe:
   deletions already made are permanent and always recorded in `deleted.log`,
   but nothing is ever left half-done.
@@ -403,9 +416,10 @@ These live in the `/config` mount (`MEDIAREDUCER_DATA` on the host).
 | --- | --- |
 | `config.json` | Saved configuration. |
 | `lastrun.log` | Most recent run log. |
-| `deleted.log` | Permanent deletion history. |
+| `deleted.log` | Deletion history (erasable from the Dashboard). |
+| `pending_deletions.json` | The marked & eligible deletion plan the last Simulate built. |
 | `logs/` | Archived logs from runs that performed cleanup. |
-| `cache.json` | Movie metadata cache, schedule state, storage stats, and the Filtering & Scoring library sample. |
+| `cache.json` | Movie metadata cache, schedule state, storage stats, and the Filtering & Scoring library snapshot. |
 | `progress.json` | Live run progress for the web UI. |
 | `title.ratings.tsv` | IMDb ratings dataset. |
 
@@ -461,13 +475,11 @@ Collections load only after the relevant API connects. Use **Check for
 Errors**, then return to Movie Library Paths. Debug mode can show the raw
 collection API output.
 
-### The library sample is empty
+### The library table is empty
 
-The sample needs a connected media server, at least one saved monitored path,
-and the IMDb ratings dataset — only movies inside monitored paths qualify. If
-the dataset download failed, add `title.ratings.tsv.gz` to the config folder
-(see the popup steps), then press **Refresh** on the Filtering & Scoring tab
-to pull a new batch.
+The Filtering & Scoring table is built by runs: run a Simulate (with a
+connected media server and at least one saved monitored path) and it fills in
+with every monitored-path movie. It refreshes on every subsequent run.
 
 ### Library size looks stale
 
@@ -477,8 +489,11 @@ Use the storage card's ↻ button or clear the cache. Stats also refresh on the
 ### Radarr did not remove a movie
 
 Radarr cleanup runs only when it is enabled, Radarr is connected, and the
-deleted file was the copy in Radarr's detected Plex section. Redline emergency
-deletions from the marked queue skip Radarr cleanup.
+deleted file was the copy in Radarr's detected Plex section. A copy that's
+known to live in a different section never touches Radarr — only when the
+section can't be determined does it fall back to checking whether Radarr's
+own folder was the one deleted. Redline emergency deletions from the marked
+queue skip Radarr cleanup.
 
 ## License
 

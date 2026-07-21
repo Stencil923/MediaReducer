@@ -12,8 +12,8 @@ HOW IT RUNS
 -----------
 The web UI (app.py) launches this as a subprocess for every scan: the scheduler
 ticks it repeatedly, the Dashboard Simulate/Live Run buttons invoke it once, and
-quiet modes (MEDIAREDUCER_MODE_OVERRIDE) back the storage refresh and the
-Filtering & Scoring library sample. It also runs standalone from a shell or cron
+the quiet debug_info mode (MEDIAREDUCER_MODE_OVERRIDE) backs the storage
+refresh. It also runs standalone from a shell or cron
 off the hardcoded settings below when MEDIAREDUCER_CONFIG is unset. Connection
 settings come from the saved config; a blank required value stops the run.
 
@@ -76,8 +76,7 @@ SCHEDULING (invoked every few minutes by the web UI's scheduler)
     app blocks Live until a target exists).
   - REDLINE_ONLY_MODE (the GUI's Headroom checkbox unticked): requires a
     Redline floor, retires the deletion delay and Library Size Cap; Simulate
-    maintains a standing preview of the first REDLINE_PREVIEW_COUNT movies in
-    deletion order.
+    maintains a standing queue of every eligible movie in deletion order.
   - Redline: immediate on every tick if free space drops below REDLINE_GB. Frees
     only back to the REDLINE_GB floor (just enough to clear the emergency),
     deleting lowest-value first from a fresh re-score — which clears the
@@ -96,7 +95,7 @@ OUTPUT FILES (all under OUTPUT_DIR)
   lastrun.log     — most recent run (overwritten each time)
   deleted.log     — permanent append-only record of every real deletion
   logs/           — archived logs from every run that performed cleanup
-  cache.json      — metadata cache, daily schedule state, dashboard storage snapshot, Filtering & Scoring sample
+  cache.json      — metadata cache, daily schedule state, dashboard storage snapshot, library snapshot
   progress.json   — structured live progress for the web UI
   title.ratings.tsv — IMDb ratings dataset (refreshed past IMDB_RATINGS_MAX_AGE_DAYS)
 """
@@ -110,7 +109,6 @@ import hashlib
 import io
 import json
 import math
-import random
 import re
 import shutil
 import signal
@@ -212,8 +210,7 @@ REDLINE_GB  = 200   # emergency floor: immediate cleanup when free space drops b
 
 # Redline-only mode: HEADROOM_GB set to 0 (its disable toggle) with a Redline
 # floor. Redline is the only deletion trigger; Simulate maintains a standing
-# preview of at least the first REDLINE_PREVIEW_COUNT movies in deletion order.
-REDLINE_PREVIEW_COUNT = 50
+# queue of EVERY eligible movie in deletion order.
 
 
 def _redline_only_mode() -> bool:
@@ -1173,15 +1170,12 @@ def tautulli_api(cmd, **params):
     return payload["response"]["data"]
 
 
-def http_request(method, url, headers=None, body=None):
-    """Generic HTTP helper for Radarr API calls."""
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(url, data=data, method=method)
+def http_request(method, url, headers=None):
+    """Generic HTTP helper for Radarr API calls (bodyless GET/DELETE)."""
+    req = urllib.request.Request(url, method=method)
     if headers:
         for k, v in headers.items():
             req.add_header(k, v)
-    if data:
-        req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8")
@@ -1348,8 +1342,6 @@ _MODE_OVERRIDE   = _os.environ.get("MEDIAREDUCER_MODE_OVERRIDE", "")
 # every breached target immediately — the deletion delay and the once-per-day
 # window pace AUTOMATIC runs, not a deliberate button press.
 _MANUAL_RUN      = _os.environ.get("MEDIAREDUCER_MANUAL", "") == "1"
-# sample_pool mode only: how many movies to pull (Score Explorer batch size).
-_SAMPLE_TARGET   = _os.environ.get("MEDIAREDUCER_SAMPLE_TARGET", "")
 
 
 def _normalize_library_path(value):
@@ -1624,9 +1616,9 @@ def _load_config_from_file():
 
 @contextmanager
 def _cache_write_lock():
-    """Serialize cache.json read-modify-writes ACROSS PROCESSES: a sample-pool
-    build runs without the app's run lock, so it can execute concurrently with
-    a scan or summary. Every writer takes this flock and writes through a
+    """Serialize cache.json read-modify-writes ACROSS PROCESSES: the app burns
+    or reopens the daily window while an engine scan or summary may be
+    mid-write. Every writer takes this flock and writes through a
     pid-unique tmp file; readers need nothing — a replace() is atomic, so they
     always see a complete file."""
     if fcntl is None:
@@ -1658,7 +1650,7 @@ def _replace_cache_file(data: dict) -> None:
 def _cache_base_for_merge() -> dict:
     """Read cache.json as the base for a read-modify-write. When the on-disk
     checksum doesn't match this code, its code-derived sections (movie metadata,
-    sample_pool, dashboard_stats) were written by a different version and must be
+    library_snapshot, dashboard_stats) were written by a different version and must be
     rebuilt, not carried forward — so drop them, keeping only the daily-schedule
     date. Every writer starts from this base so no stale section survives a code
     change through the back door."""
@@ -1695,7 +1687,7 @@ def load_cache():
             "movie metadata, library sample, and stored stats for a fresh "
             "rebuild (daily schedule preserved)."
         )
-        # Everything code-derived (metadata, sample_pool, dashboard_stats) is
+        # Everything code-derived (metadata, library_snapshot, dashboard_stats) is
         # rebuilt; only the schedule date survives.
         return {
             "code_checksum":     code_checksum(),
@@ -1710,13 +1702,13 @@ def save_cache(cache):
     _replace_cache_file)."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with _cache_write_lock():
-        # dashboard_stats and sample_pool are only ever written straight to disk
-        # (emit_stats / _write_sample_pool_file); re-read them under the lock so a
+        # dashboard_stats and library_snapshot are only ever written straight to
+        # disk (emit_stats / _write_library_snapshot); re-read them under the lock so a
         # scan's stale in-memory dict cannot clobber a value updated mid-scan.
         # _cache_base_for_merge drops them when the on-disk cache is from older
         # code, so a code change flushes them rather than merging stale copies.
         existing = _cache_base_for_merge()
-        for key in ("dashboard_stats", "sample_pool"):
+        for key in ("dashboard_stats", "library_snapshot"):
             if isinstance(existing.get(key), dict):
                 cache[key] = existing[key]
         _replace_cache_file(cache)
@@ -1747,7 +1739,7 @@ def _mark_delete_on(marked_at) -> str:
 
 def load_pending() -> dict:
     """The marked-for-deletion queue: {path: {title, size_bytes, score,
-    marked_at, trigger}}. Missing or unreadable reads as empty — marks are a
+    marked_at}}. Missing or unreadable reads as empty — marks are a
     grace-window plan, never a deletion authorization (a mark only deletes
     while the movie is STILL in the run's eligible candidate list)."""
     try:
@@ -1812,64 +1804,58 @@ def save_pending(entries: dict, *, stamp_thresholds: bool = False) -> None:
         log(f"WARN: could not write {PENDING_FILE.name} ({e}).")
 
 
-def write_plan_to_queue(planned, trigger) -> tuple[dict, int, int]:
-    """Persist a computed deletion plan as the marked-for-deletion queue.
-    planned = [(candidate, size_bytes), ...] in deletion order. Existing marks
-    KEEP their original marked_at — a re-Simulate reshuffling the plan never
-    resets how long a movie has been marked; only movies newly entering the
-    plan start a fresh clock. Marks not in this plan drop off."""
+def write_plan_to_queue(planned, trigger, scheduled_count=0) -> tuple[dict, int, int]:
+    """Persist a computed deletion plan as the marked & eligible queue.
+    planned = [(candidate, size_bytes), ...] in deletion order — the ENTIRE
+    eligible list. Only the first scheduled_count entries are MARKED (they cover
+    the current space target and carry a deletion-delay clock, marked_at); the
+    rest are merely eligible (marked_at None) — visible deletion order that only
+    becomes marked if the thresholds later require more.
+
+    A marked entry KEEPS its running clock across re-plans — a re-Simulate never
+    resets how long a movie has been marked; an eligible entry entering the
+    marked prefix starts its clock NOW (it was never scheduled before, so it
+    gets the full delay grace). Entries not in this plan drop off."""
     mark_store = load_pending()
-    # Leaving redline-only mode: preview entries were shown as "deletes when
-    # Redline hits" — no countdown ever ran for the user — so carrying their
-    # (possibly months-old) marked_at into delay mode would let the first daily
-    # run delete them all with zero effective grace. Start every clock fresh.
-    _fresh_clocks = False
-    if mark_store and not _redline_only_mode():
-        try:
-            _old_stamp = json.loads(PENDING_FILE.read_text(encoding="utf-8")).get("plan_config")
-            _fresh_clocks = isinstance(_old_stamp, dict) and bool(_old_stamp.get("REDLINE_ONLY_MODE"))
-        except Exception:
-            # Can't prove the old plan was NOT a redline-only preview — fail
-            # toward fresh clocks (the marks wait the full delay again) rather
-            # than toward possibly-ancient clocks that delete immediately.
-            _fresh_clocks = True
-    if _fresh_clocks:
-        log("Left redline-only mode — existing marks restart their deletion-delay "
-            "clocks (no countdown was running while they were a Redline preview).")
     kept: dict = {}
     new_marks = 0
     now_ts = time.time()
-    for cand, size in planned:
+    for idx, (cand, size) in enumerate(planned):
         key = str(cand["path"])
-        entry = mark_store.get(key) if not _fresh_clocks else None
+        entry = mark_store.get(key)
         if isinstance(entry, dict):
-            # Existing mark: preserve how long it has been marked (marked_at) and
-            # its original trigger, but refresh the display fields to THIS plan —
+            # Existing entry: refresh the display fields to THIS plan —
             # re-Simulating under a new scoring balance must not leave stale
             # scores/titles in the queue (the deleted-history modal reads these).
             entry["title"] = cand["title"]
             entry["score"] = round(cand["retention_score"], 3)
         else:
             entry = {"title": cand["title"],
-                     "score": round(cand["retention_score"], 3),
-                     "marked_at": now_ts, "trigger": trigger}
-            new_marks += 1
+                     "score": round(cand["retention_score"], 3)}
+        if idx < scheduled_count:
+            if entry.get("marked_at") is None:
+                entry["marked_at"] = now_ts
+                new_marks += 1
+        else:
+            entry["marked_at"] = None
         entry["size_bytes"] = size
         kept[key] = entry
     dropped = len(mark_store) - sum(1 for k in mark_store if k in kept)
     save_pending(kept, stamp_thresholds=True)
+    marked_total = min(scheduled_count, len(kept))
     if _redline_only_mode():
-        log(f"Queued for Redline: {len(kept)} movie(s) ({new_marks} new"
-            f"{f', {dropped} dropped' if dropped else ''}) — they delete only when "
+        log(f"Eligible for Redline: {len(kept)} movie(s) in deletion order"
+            f"{f' ({dropped} dropped)' if dropped else ''} — they delete only when "
             f"free space hits the Redline floor, worst-scored first.")
     elif DELETE_DELAY_DAYS > 0:
-        log(f"Marked for deletion: {len(kept)} movie(s) ({new_marks} new"
-            f"{f', {dropped} unmarked' if dropped else ''}) — each deletable "
-            f"{DELETE_DELAY_DAYS} day(s) after its mark; only eligible marks delete.")
+        log(f"Marked for deletion: {marked_total} movie(s) ({new_marks} new"
+            f"{f', {dropped} dropped' if dropped else ''}) — each deletable "
+            f"{DELETE_DELAY_DAYS} day(s) after its mark; "
+            f"{len(kept) - marked_total} more eligible in deletion order behind them.")
     else:
-        log(f"Marked for deletion: {len(kept)} movie(s) ({new_marks} new"
-            f"{f', {dropped} unmarked' if dropped else ''}) — eligible now; "
-            f"the next daily run deletes them.")
+        log(f"Marked for deletion: {marked_total} movie(s) ({new_marks} new"
+            f"{f', {dropped} dropped' if dropped else ''}) — the next daily run "
+            f"deletes them; {len(kept) - marked_total} more eligible in deletion order.")
     return kept, new_marks, dropped
 
 
@@ -2490,6 +2476,12 @@ def cleanup_radarr(candidate):
       regardless of duplicates elsewhere (another section, a second Version in
       the same folder): those copies aren't Radarr's, and leaving the movie in
       Radarr with its own file gone invites a re-download.
+    - A copy KNOWN to be in a different section never triggers cleanup —
+      Radarr's own copy is elsewhere and may well survive. Only when the row's
+      section is unknown (e.g. a Jellyfin-sourced row) do we fall back to
+      asking whether Radarr's folder matches the deleted one; a bare folder
+      NAME match can't distinguish same-named duplicate folders across
+      sections, so it must never override a known non-matching section.
     """
     if not RADARR_OVERSEERR_SECTION_ID:
         return
@@ -2502,8 +2494,16 @@ def cleanup_radarr(candidate):
         return
 
     radarr_movie = None
-    section_matches = str(candidate.get("section_id")) == str(RADARR_OVERSEERR_SECTION_ID)
+    section_id = candidate.get("section_id")
+    section_matches = str(section_id) == str(RADARR_OVERSEERR_SECTION_ID)
     if not section_matches:
+        if section_id is not None:
+            log(
+                f"Radarr: skipping cleanup, deleted copy is in section {section_id}, "
+                f"not Radarr's section {RADARR_OVERSEERR_SECTION_ID} | "
+                f"title={title} | tmdb_id={tmdb_id} | path={candidate['path']}"
+            )
+            return
         if not (RADARR_URL and RADARR_API_KEY):
             _abort_api_failure(f"Radarr cleanup is enabled, but Radarr URL/API key are not available | title={title} | tmdb_id={tmdb_id}", phase="deleting")
         radarr_movie = radarr_lookup_movie(tmdb_id, title)
@@ -2511,16 +2511,15 @@ def cleanup_radarr(candidate):
             return
         if not _radarr_movie_matches_deleted_path(radarr_movie, candidate["path"]):
             log(
-                f"Radarr: skipping cleanup, candidate is not in configured section "
-                f"{RADARR_OVERSEERR_SECTION_ID} and Radarr path did not match deleted folder | "
-                f"title={title} | tmdb_id={tmdb_id} | section_id={candidate.get('section_id')} | "
+                f"Radarr: skipping cleanup, candidate section is unknown and Radarr's "
+                f"path did not match the deleted folder | "
+                f"title={title} | tmdb_id={tmdb_id} | "
                 f"path={candidate['path']} | radarr_path={radarr_movie.get('path') or radarr_movie.get('folderName')}"
             )
             return
         log(
-            f"Radarr: candidate section_id={candidate.get('section_id')} did not match configured "
-            f"section {RADARR_OVERSEERR_SECTION_ID}, but Radarr owns the deleted folder; continuing cleanup | "
-            f"title={title} | tmdb_id={tmdb_id}"
+            f"Radarr: candidate section is unknown, but Radarr owns the deleted folder; "
+            f"continuing cleanup | title={title} | tmdb_id={tmdb_id}"
         )
 
     log(
@@ -3464,18 +3463,15 @@ def compute_retention_score(rec, now=None):
     return sum(b.values()), b
 
 
-# ── Score Explorer sample pool ────────────────────────────────────────────────
-# cache.json's "sample_pool" key backs the Score Explorer's library-sample
-# table: real movies with their merged Plex+Jellyfin data plus eligibility
-# facts. It is written ONLY by the quick sample_pool mode below (config saves
-# that change monitored paths or API connections, API reconnect, the
-# explorer's Refresh button, and an IMDb-hold-release retry) — Simulate/Live
-# scans never touch it, so the user's chosen batch survives runs (save_cache
-# re-reads the key from disk, and load_cache keeps it across engine-code
-# cache clears).
-def _sample_pool_entry(title, year, rating, votes, plays, users,
-                       last_played, added_at, size_bytes,
-                       protected=False, favorite=False) -> dict:
+# ── Library snapshot (Filtering & Scoring table) ─────────────────────────────
+# cache.json's "library_snapshot" key backs the Filtering & Scoring page's
+# library table: EVERY monitored-path movie from the last completed scan with
+# its merged Plex+Jellyfin data plus eligibility facts. Written only at the
+# END of a successful build_candidates() pass (Simulate or any full-scan Live
+# run), so an interrupted run always leaves the previous snapshot intact.
+def _snapshot_entry(title, year, rating, votes, plays, users,
+                    last_played, added_at, size_bytes,
+                    protected=False, favorite=False) -> dict:
     return {
         "title": str(title or ""),
         "year": parse_int(year, 0) or None,
@@ -3493,555 +3489,24 @@ def _sample_pool_entry(title, year, rating, votes, plays, users,
     }
 
 
-def _write_sample_pool_file(movies: list) -> None:
-    """Merge the sample pool into cache.json (same read-modify-write shape as
-    emit_stats, so nothing else in the cache is disturbed)."""
+def _write_library_snapshot(movies: list) -> None:
+    """Merge the library snapshot into cache.json (same read-modify-write shape
+    as emit_stats, so nothing else in the cache is disturbed). The write is
+    atomic and happens only after a scan completes, so a run interrupted at any
+    point never loses the last good snapshot."""
     payload = {
         "built_at": int(time.time()),
+        # The paths this snapshot was scanned from (same normalized form as the
+        # plan stamp): the app's arming gate uses the snapshot as "a Simulate
+        # has seen the library" evidence, which only holds for THESE paths.
+        "monitor_dirs": sorted(str(d) for d in (MONITOR_DIRS or [])),
         "movies": movies,
     }
     with _cache_write_lock():
         data = _cache_base_for_merge()
-        data["sample_pool"] = payload
+        data["library_snapshot"] = payload
         _replace_cache_file(data)
 
-
-# ── Quick sample pool (RUN_MODE=sample_pool) ─────────────────────────────────
-# The Score Explorer shouldn't have to wait for a full Simulate/Live scan to
-# get real library data. This mode pulls the plain movie listing straight from
-# the connected server APIs, picks a random batch of movies that live under
-# the monitored library paths, resolves IMDb ratings best-effort, and
-# rebuilds the cache's sample pool — no scoring, no candidate filtering, no
-# deletion. The web app runs it after saves that change the monitored paths
-# or API connections, on API reconnect, and from the Score Explorer's
-# Refresh button (which passes the batch size the user picked).
-_QUICK_SAMPLE_TARGET = 10
-# Rows without an inline file path need one Tautulli metadata call each to
-# resolve their path for the monitored-dirs check. Cap those lookups so a
-# library that mostly lives outside the monitored paths can't turn a quick
-# sample build into a full-library metadata crawl.
-_QUICK_SAMPLE_LOOKUP_CAP = 200
-
-
-# Exit code for a sample_pool build that stops because the IMDb dataset could
-# not be obtained. The web app answers it with a toast (automatic builds) or
-# the manual-fix popup (explicit Refresh) and holds automatic sample builds
-# until the dataset problem is resolved.
-SAMPLE_EXIT_IMDB_UNAVAILABLE = 3
-# Exit code for a sample build that scanned fine but found no movies under
-# the monitored paths — a path problem, not a connection problem. The web app
-# maps it to a message pointing at the Configuration page's paths.
-SAMPLE_EXIT_NO_MOVIES = 4
-
-
-def _ensure_imdb_dataset_for_sample() -> None:
-    """Make sure a fresh IMDb ratings TSV is on disk before sampling starts.
-
-    The library sample is scored, so the dataset is required just like in a
-    run — and held to the same freshness rule: a copy older than the
-    configured refresh interval must be re-downloaded, because scores from
-    stale ratings feed the same deletion decisions. A missing file tries the
-    manual title.ratings.tsv.gz fallback first, then a download; a failed
-    refresh of a stale file falls back to the manual .gz too. Otherwise the
-    build exits with SAMPLE_EXIT_IMDB_UNAVAILABLE and writes no pool file.
-    """
-    refresh_days = _imdb_refresh_days()
-    if IMDB_RATINGS_PATH.exists():
-        age_days = (time.time() - IMDB_RATINGS_PATH.stat().st_mtime) / 86400
-        if age_days < refresh_days:
-            return
-        log(f"IMDB ratings file is {age_days:.1f} days old (limit={refresh_days}d), re-downloading for the sample.")
-    elif _extract_local_imdb_gz():
-        return
-    try:
-        IMDB_RATINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        log(f"Downloading IMDB ratings dataset from {IMDB_RATINGS_URL} ...")
-        with urllib.request.urlopen(IMDB_RATINGS_URL, timeout=120) as resp:
-            gz_data = resp.read(_IMDB_GZ_MAX_BYTES + 1)
-        _write_imdb_tsv(_bounded_gunzip(gz_data))
-    except Exception as e:
-        log(f"ERROR: could not obtain a fresh IMDb ratings dataset for the sample pool: {e}")
-        if _extract_local_imdb_gz():
-            log("Using manually-provided title.ratings.tsv.gz from the config folder.")
-            return
-        log("Manual fix: download title.ratings.tsv.gz from "
-            "https://datasets.imdbws.com/ (IMDb Non-Commercial Datasets) and place "
-            "it in the MediaReducer config folder, then press Refresh on the "
-            "Filtering & Scoring page.")
-        raise SystemExit(SAMPLE_EXIT_IMDB_UNAVAILABLE)
-
-
-def _load_imdb_ratings_subset(wanted_ids: set) -> dict:
-    """Best-effort {tt_id: (rating, votes)} lookup for a small id set.
-
-    Reads only — _ensure_imdb_dataset_for_sample() has already put the TSV on
-    disk. A read problem degrades to unrated rows rather than failing a batch
-    that was otherwise sampled fine.
-    """
-    wanted = {str(i).strip() for i in wanted_ids if i}
-    if not wanted or not IMDB_RATINGS_PATH.exists():
-        return {}
-    ratings: dict = {}
-    try:
-        with open(IMDB_RATINGS_PATH, "r", encoding="utf-8") as f:
-            next(f, None)  # header
-            for line in f:
-                parts = line.split("\t")
-                if len(parts) >= 3 and parts[0] in wanted:
-                    try:
-                        ratings[parts[0]] = (float(parts[1]), int(parts[2].strip()))
-                    except ValueError:
-                        pass
-                    if len(ratings) == len(wanted):
-                        break
-    except Exception as e:
-        log(f"WARN: could not read IMDb ratings for the sample pool: {e}")
-    return ratings
-
-
-def _quick_sample_file_path(row, allow_api_lookup=True) -> tuple:
-    """(resolved /library Path or None, used_api_lookup) for a listing row.
-
-    Same resolution order as extract_file_path(), but best-effort: a quick
-    sample build skips rows whose path can't be resolved instead of aborting
-    the run on an API failure.
-    """
-    possible_keys = ("file", "file_path", "media_file", "location", "path")
-
-    def _from_containers(containers):
-        for c in containers:
-            if not isinstance(c, dict):
-                continue
-            for key in possible_keys:
-                if c.get(key):
-                    return resolve_under_library(c[key])
-        return None
-
-    containers = [row]
-    if isinstance(row.get("media_info"), list):
-        containers.extend(row["media_info"])
-    path = _from_containers(containers)
-    if path is not None:
-        return path, False
-
-    rating_key = row.get("rating_key")
-    if not allow_api_lookup or not rating_key or str(rating_key).startswith("jf:"):
-        return None, False
-    time.sleep(0.05)  # same pacing as the scan: don't hammer Tautulli
-    try:
-        metadata = tautulli_api("get_metadata", rating_key=rating_key, media_info=1)
-    except Exception as e:
-        log(f"WARN: file-path lookup failed for {row.get('title')!r}: {e}")
-        return None, True
-    containers = [metadata]
-    if isinstance(metadata.get("media_info"), list):
-        for media in metadata["media_info"]:
-            containers.append(media)
-            if isinstance(media.get("parts"), list):
-                containers.extend(media["parts"])
-    return _from_containers(containers), True
-
-
-def _quick_sample_row_meta(row) -> tuple:
-    """(imdb_id, protected) for a listing row without aborting on API failure.
-
-    Jellyfin rows already carry both (id from ProviderIds, protection from
-    BoxSets); Tautulli rows need one get_metadata call — answered from the
-    metadata cache when possible — which also yields the movie's collections
-    for the PROTECTED_COLLECTIONS check.
-    """
-    protected = bool(row.get("protected")) or bool(row.get("_jf_protected"))
-    imdb = row.get("imdb_id") or row.get("_jf_imdb_id")
-    imdb = (str(imdb).strip() or None) if imdb else None
-    rating_key = row.get("rating_key")
-    if row.get("_source") == "jellyfin" or not rating_key:
-        return imdb, protected
-    cached = _metadata_cache.get(rating_key)
-    if cached:
-        return imdb or cached.get("imdb_id"), protected or bool(cached.get("protected"))
-    time.sleep(0.05)  # same pacing as the scan: don't hammer Tautulli
-    try:
-        metadata = tautulli_api("get_metadata", rating_key=rating_key, media_info=0)
-    except Exception as e:
-        log(f"WARN: metadata lookup failed for {row.get('title')!r}: {e}")
-        return imdb, protected
-    for guid in (metadata.get("guids") or []):
-        if isinstance(guid, str) and guid.startswith("imdb://") and not imdb:
-            imdb = guid.replace("imdb://", "").strip() or None
-    collections = metadata.get("collections") or []
-    if any((isinstance(e, str) and e in PROTECTED_COLLECTIONS) or
-           (isinstance(e, dict) and e.get("tag") in PROTECTED_COLLECTIONS)
-           for e in collections):
-        protected = True
-    return imdb, protected
-
-
-def _iter_tautulli_random_rows(page_len: int = 25):
-    """Yield Tautulli movie rows from RANDOM pages of each movie section.
-
-    get_library_media_info is a heavyweight query for Tautulli, so the sampler
-    never pulls the full listing: it reads each section's total row count
-    (length=1), shuffles the page offsets, and fetches small pages until the
-    caller has enough movies. A 10-movie batch typically costs one count query
-    and one 25-row page per section.
-    """
-    section_pages = []
-    for section_id in get_movie_section_ids():
-        data = tautulli_api(
-            "get_library_media_info",
-            section_id=section_id, section_type="movie",
-            start=0, length=1, order_column="title", order_dir="asc",
-        )
-        total = parse_int(data.get("recordsFiltered"), 0) if isinstance(data, dict) else 0
-        if total <= 0:
-            # Older Tautulli without a usable count: fall back to one big page.
-            total = page_len * 8
-        for start in range(0, total, page_len):
-            section_pages.append((section_id, start))
-    random.shuffle(section_pages)
-    for section_id, start in section_pages:
-        data = tautulli_api(
-            "get_library_media_info",
-            section_id=section_id, section_type="movie",
-            start=start, length=page_len, order_column="title", order_dir="asc",
-        )
-        rows = data if isinstance(data, list) else (((data or {}).get("data")) or [])
-        random.shuffle(rows)
-        for row in rows:
-            if isinstance(row, dict):
-                row["_section_id"] = section_id
-                yield row
-
-
-def _jellyfin_light_rows() -> list:
-    """All Jellyfin movies as light rows: one Items call, NO per-user play
-    aggregation and NO protection lookups — those are filled in afterwards for
-    just the sampled movies by _jellyfin_enrich_sampled()."""
-    base = (_jellyfin_request("Items", {
-        "IncludeItemTypes": "Movie",
-        "Recursive": "true",
-        "Fields": "Path,MediaSources,DateCreated,ProviderIds",
-        "EnableUserData": "false",
-    }) or {}).get("Items", [])
-    rows = []
-    for item in base:
-        item_id = item.get("Id")
-        if not item_id:
-            continue
-        path = item.get("Path") or ""
-        size = 0
-        for ms in (item.get("MediaSources") or []):
-            if not isinstance(ms, dict):
-                continue
-            if not path:
-                path = ms.get("Path") or ""
-            if not size and ms.get("Size"):
-                size = ms["Size"]
-        prov = {str(k).lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
-        rows.append({
-            "rating_key":  f"jf:{item_id}",
-            "title":       item.get("Name") or "",
-            "year":        item.get("ProductionYear") or "",
-            "file":        path,
-            "file_size":   size,
-            "added_at":    _jellyfin_date_to_epoch(item.get("DateCreated")),
-            "last_played": 0,
-            "play_count":  0,
-            "tmdb_id":     (str(prov["tmdb"]).strip() if prov.get("tmdb") else None),
-            "imdb_id":     (str(prov["imdb"]).strip() if prov.get("imdb") else None),
-            "protected":   False,
-            "_source":     "jellyfin",
-            "_jf_users":   0,
-            "_jf_favorite": False,
-        })
-    return rows
-
-
-def _jellyfin_enrich_sampled(rows: list) -> None:
-    """Per-user play stats, favorites, and BoxSet protection for ONLY the
-    sampled Jellyfin rows (one Ids=... query per user instead of aggregating
-    the entire library). Best-effort: a failed lookup leaves the row unplayed."""
-    by_id = {str(r["rating_key"])[3:]: r for r in rows
-             if str(r.get("rating_key") or "").startswith("jf:")}
-    if not by_id:
-        return
-    ids_param = ",".join(by_id.keys())
-    try:
-        user_ids = _jellyfin_user_ids()
-    except Exception as e:
-        log(f"WARN: Jellyfin user listing failed for the sample: {e}")
-        user_ids = []
-    for uid in user_ids:
-        try:
-            items = (_jellyfin_request(f"Users/{uid}/Items", {
-                "Ids": ids_param,
-                "IncludeItemTypes": "Movie",
-                "Recursive": "true",
-                "EnableUserData": "true",
-            }) or {}).get("Items", [])
-        except Exception as e:
-            log(f"WARN: Jellyfin play-history lookup failed for user {uid}: {e}")
-            continue
-        for item in items:
-            row = by_id.get(str(item.get("Id")))
-            if not row:
-                continue
-            ud = item.get("UserData") or {}
-            user_plays = parse_int(ud.get("PlayCount"), 0)
-            row["play_count"] = parse_int(row.get("play_count"), 0) + user_plays
-            if user_plays > 0 or ud.get("Played"):
-                row["_jf_users"] = parse_int(row.get("_jf_users"), 0) + 1
-            if ud.get("IsFavorite"):
-                row["_jf_favorite"] = True
-            lp = _jellyfin_date_to_epoch(ud.get("LastPlayedDate"))
-            if lp > parse_int(row.get("last_played"), 0):
-                row["last_played"] = lp
-    if JELLYFIN_PROTECTED_COLLECTIONS:
-        try:
-            protected_ids, protected_paths, protected_imdb, protected_tmdb = _jellyfin_protected_items()
-        except Exception as e:
-            log(f"WARN: Jellyfin protected-collection lookup failed for the sample: {e}")
-            return
-        for item_id, row in by_id.items():
-            if (item_id in protected_ids
-                    or (_norm_id(row.get("imdb_id")) and _norm_id(row.get("imdb_id")) in protected_imdb)
-                    or (str(row.get("tmdb_id") or "").strip() and str(row.get("tmdb_id") or "").strip() in protected_tmdb)):
-                row["protected"] = True
-
-
-def build_quick_sample_pool(target: int = 0) -> None:
-    if target <= 0:
-        target = _QUICK_SAMPLE_TARGET
-    target = min(target, 100)
-    if not validate_connections():
-        raise SystemExit(1)
-    # The sample only draws from monitored paths — with none configured there
-    # is nothing to sample, so leave the pool untouched (blank until the user
-    # adds a monitored library path).
-    if not MONITOR_DIRS:
-        log("Sample pool not written: no monitored library paths are configured.")
-        raise SystemExit(1)
-    # The dataset check runs before any API sampling so a broken download
-    # fails the build fast instead of after the whole batch was collected. At
-    # 100% watch history with no rating cutoff the sample never NEEDS IMDb, so
-    # nothing is downloaded — but if the dataset is already on disk (an earlier
-    # download, or a manually-placed .gz) the sample is still annotated with
-    # ratings from it, whatever its age: ratings carry zero score weight at
-    # this balance, and having them means moving the dial toward IMDb previews
-    # real data instead of flagging every movie as "no IMDb data".
-    _sample_use_imdb = _sample_needs_imdb = imdb_dataset_needed()
-    if _sample_needs_imdb:
-        _ensure_imdb_dataset_for_sample()
-    elif IMDB_RATINGS_PATH.exists() or _extract_local_imdb_gz():
-        _sample_use_imdb = True
-        log("IMDb download skipped (scoring is 100% watch history), but the dataset "
-            "is already on disk — annotating the sample with ratings/votes from it.")
-    else:
-        log("IMDb dataset skipped for the sample: scoring is 100% watch history "
-            "with no rating cutoff and no dataset is on disk, so the sample is "
-            "built without ratings/votes.")
-    # Reuse cached rating_key → imdb_id lookups from past runs so already-known
-    # movies skip the per-movie get_metadata call.
-    for rk, entry in (load_cache().get("movies") or {}).items():
-        if isinstance(entry, dict) and entry.get("v") == 2:
-            _metadata_cache.setdefault(rk, {
-                "protected": entry.get("protected", False),
-                "tmdb_id":   entry.get("tmdb_id"),
-                "imdb_id":   entry.get("imdb_id"),
-                "v": 2,
-            })
-
-    # Collect rows, keeping only movies that resolve to a file under a
-    # monitored path, until the batch is full. Single-server setups use light
-    # sources (random Tautulli pages / one Jellyfin listing); only a dual
-    # Plex+Jellyfin setup needs the full merged listing so cross-server play
-    # data stays combined.
-    picked = []
-    seen_keys = set()
-    picked_by_rpath = {}       # resolved path key -> index in `picked`
-    scanned = 0
-    api_lookups = 0
-    _sample_jelly_index = {}   # match key -> Jellyfin row (dual-source merge only)
-    _sample_plex_by_ty = {}    # (title, year) -> [Tautulli rows] (dual-source twin lookup)
-
-    def _fold_jelly(row, path) -> None:
-        """Fold a matching Jellyfin row's data into a Plex row (mirrors the
-        authoritative get_all_movies() merge): combined play stats, the higher
-        distinct-user count, and Jellyfin's protection / provider ids — so a
-        both-servers movie carries the SAME merged facts the real scan would
-        give it. No-op for a Jellyfin row (nothing to fold into) or a Plex row
-        with no Jellyfin twin. Uses the pre-built index, so no extra API calls."""
-        if not _sample_jelly_index or str(row.get("rating_key") or "").startswith("jf:"):
-            return
-        jr = next((_sample_jelly_index[k] for k in _match_keys(str(path)) if k in _sample_jelly_index), None)
-        if jr is None:
-            return
-        row["_plex_users"]   = 1 if (parse_int(row.get("play_count"), 0) > 0 or parse_int(row.get("last_played"), 0) > 0) else 0
-        row["_jf_users"]     = parse_int(jr.get("_jf_users"), 0)
-        row["play_count"]    = parse_int(row.get("play_count"), 0) + parse_int(jr.get("play_count"), 0)
-        row["last_played"]   = max(parse_int(row.get("last_played"), 0), parse_int(jr.get("last_played"), 0))
-        row["added_at"]      = _merge_added_at(row.get("added_at"), jr.get("added_at"))
-        # Same file on both servers: keep whichever size is known (a Tautulli
-        # listing row can lack file_size where Jellyfin's MediaSources has it).
-        row["file_size"]     = parse_int(row.get("file_size"), 0) or parse_int(jr.get("file_size"), 0)
-        row["_jf_matched"]   = True
-        row["_jf_protected"] = bool(jr.get("protected"))
-        row["_jf_favorite"]  = bool(jr.get("_jf_favorite"))
-        row["_jf_tmdb_id"]   = jr.get("tmdb_id")
-        row["_jf_imdb_id"]   = jr.get("imdb_id")
-
-    def _ty_key(row):
-        """(title, year) match key for the Plex-twin reverse lookup."""
-        return (str(row.get("title") or "").strip().lower(), parse_int(row.get("year"), 0))
-
-    def _plex_twin_for(jf_row, jf_path):
-        """The not-yet-considered Tautulli row for the SAME file as a picked
-        Jellyfin row, or None. Candidates come from a title/year index (cheap);
-        each is CONFIRMED by resolving its real path (API-capped) — title/year
-        alone can collide across editions, the path cannot. A confirmed twin is
-        claimed in seen_keys so the main loop skips it later. Without this, a
-        Jellyfin row picked before its Plex twin was scanned (the loop stops at
-        the target, so most Plex rows never are) would keep Jellyfin-only stats
-        — plays=0 for a Plex-watched movie."""
-        nonlocal api_lookups
-        for cand in _sample_plex_by_ty.get(_ty_key(jf_row), ()):
-            raw = str(cand.get("file") or cand.get("rating_key") or "")
-            if raw and raw in seen_keys:
-                continue   # already considered (and evidently didn't resolve here)
-            p, used = _quick_sample_file_path(
-                cand, allow_api_lookup=api_lookups < _QUICK_SAMPLE_LOOKUP_CAP)
-            if used:
-                api_lookups += 1
-            if p is not None and str(p) == str(jf_path):
-                for k in (str(cand.get("file") or ""), str(cand.get("rating_key") or "")):
-                    if k:
-                        seen_keys.add(k)
-                return cand
-        return None
-
-    def _consider(row) -> None:
-        nonlocal scanned, api_lookups
-        scanned += 1
-        is_jf = str(row.get("rating_key") or "").startswith("jf:")
-        key = str(row.get("file") or row.get("rating_key") or "")
-        if key:
-            if key in seen_keys:
-                return
-            # Memoize before any filtering so a rejected row (outside the
-            # monitored paths, unresolvable) can't re-spend API lookups when
-            # its duplicates come around on later shuffled pages.
-            seen_keys.add(key)
-        path, used_api = _quick_sample_file_path(
-            row, allow_api_lookup=api_lookups < _QUICK_SAMPLE_LOOKUP_CAP)
-        if used_api:
-            api_lookups += 1
-        if path is None or not is_under_monitored_dir(path):
-            return
-        # Dedup by RESOLVED path: with both servers sampled from light rows, a
-        # movie present on both would otherwise appear twice (a Plex row and a
-        # Jellyfin row for the same file).
-        resolved_key = "rp:" + str(path)
-        if resolved_key in seen_keys:
-            # A twin (same physical file on the other server) was already
-            # handled. If THIS is the Plex twin and a Jellyfin twin is the one
-            # picked, swap the fully-folded Plex row in: it is the authoritative
-            # merge (Plex play data + Jellyfin protection/ids), whereas the
-            # Jellyfin-only pick would report plays=0 for a Plex-watched movie
-            # and miss Plex-side protection. Order-independent result.
-            prev_i = picked_by_rpath.get(resolved_key)
-            if (not is_jf and prev_i is not None
-                    and str(picked[prev_i].get("rating_key") or "").startswith("jf:")):
-                try:
-                    if path.is_symlink():
-                        return
-                except OSError:
-                    return
-                _fold_jelly(row, path)
-                picked[prev_i] = row
-            return
-        seen_keys.add(resolved_key)
-        try:
-            if path.is_symlink():
-                return   # symlinked media is out of scope, same as the scan
-        except OSError:
-            return
-        # Dual-source: a movie on both servers must enter the pool as its
-        # PLEX row with the Jellyfin twin folded in — that is the merge the
-        # real scan produces. When the pick is the Jellyfin row, reverse-look
-        # its Plex twin up now (path-confirmed) and pick that instead.
-        if is_jf and _sample_plex_by_ty:
-            twin = _plex_twin_for(row, path)
-            if twin is not None:
-                row = twin
-        _fold_jelly(row, path)
-        picked_by_rpath[resolved_key] = len(picked)
-        picked.append(row)
-
-    if USE_PLEX and USE_JELLYFIN:
-        # Sample from LIGHT rows and resolve Plex paths per-row (capped) — NOT
-        # get_all_movies(), which pre-resolves every Plex path (thousands of
-        # metadata calls) to merge the whole library and would hang a quick
-        # sample. Jellyfin rows carry paths + play data inline, so index them
-        # once and fold a match into a sampled Plex row (see _consider) — the
-        # sample keeps cross-source data combined without the full-library crawl.
-        jelly_rows = get_all_movies_from_jellyfin()
-        for _jr in jelly_rows:
-            for _k in _match_keys(_jr.get("file")):
-                _sample_jelly_index.setdefault(_k, _jr)
-        plex_rows = get_all_movies_from_tautulli()
-        for _pr in plex_rows:
-            _sample_plex_by_ty.setdefault(_ty_key(_pr), []).append(_pr)
-        rows = plex_rows + [_tag_jellyfin_metadata(r) for r in jelly_rows]
-        random.shuffle(rows)
-        for row in rows:
-            if len(picked) >= target:
-                break
-            _consider(row)
-    elif USE_PLEX:
-        for row in _iter_tautulli_random_rows():
-            if len(picked) >= target:
-                break
-            _consider(row)
-    else:
-        rows = _jellyfin_light_rows()
-        random.shuffle(rows)
-        for row in rows:
-            if len(picked) >= target:
-                break
-            _consider(row)
-        _jellyfin_enrich_sampled(picked)
-
-    if not picked:
-        log("Sample pool not written: no movies found under the monitored library paths.")
-        raise SystemExit(SAMPLE_EXIT_NO_MOVIES)
-    log(f"Building quick sample pool: {len(picked)} of target {target} movies "
-        f"(scanned {scanned} rows, {api_lookups} path lookups).")
-
-    imdb_by_index = {}
-    protected_by_index = {}
-    for i, row in enumerate(picked):
-        imdb_id, protected = _quick_sample_row_meta(row)
-        if imdb_id:
-            imdb_by_index[i] = imdb_id
-        protected_by_index[i] = protected
-    ratings = _load_imdb_ratings_subset(set(imdb_by_index.values())) if _sample_use_imdb else {}
-
-    movies = []
-    for i, row in enumerate(picked):
-        rating, votes = ratings.get(imdb_by_index.get(i), (None, None))
-        play_count = parse_int(row.get("play_count"), 0)
-        last_played = parse_int(row.get("last_played"), 0)
-        # Distinct users: higher of the Plex and Jellyfin counts, never the sum.
-        users = _distinct_users_for_row(row)
-        movies.append(_sample_pool_entry(
-            row.get("title"), row.get("year"), rating, votes,
-            play_count, users, last_played, row.get("added_at"),
-            row.get("file_size"),
-            protected=protected_by_index.get(i, False),
-            favorite=bool(row.get("_jf_favorite"))))
-
-    _write_sample_pool_file(movies)
-    log(f"Score Explorer sample pool written: {len(movies)} movies (quick API sample).")
 
 
 # Near-tie window in retention-score points — the "File size optimization"
@@ -4153,6 +3618,7 @@ def build_candidates():
     """
     candidates = []
     identity_mismatches: list = []     # movies the two servers identify differently
+    _snapshot_by_path: dict = {}       # resolved path -> _snapshot_entry (library snapshot)
     _mismatch_skip_paths: set = set()  # resolved paths a Plex row flagged as a conflict
     stats = {
         "no_file_path": 0,
@@ -4196,17 +3662,10 @@ def build_candidates():
     if not MONITOR_DIRS:
         save_cache(cache)
         log("No monitored library paths configured — skipping movie scan. Add at least one path under Config → Movie Libraries.")
-        return [], {}, stats, 0
+        return [], stats, 0
 
     # Pre-populate the in-memory metadata cache from the persistent cache so
     # fetch_movie_metadata() returns immediately for already-known movies.
-    # Entries from the pre-v2 cache schema are treated as misses and refetched
-    # once so every entry carries the current fields.
-    _v1_entries = [rk for rk, e in cached_movies.items() if e.get("v") != 2]
-    if _v1_entries:
-        log(f"Cache: {len(_v1_entries)} entr(ies) use an old schema — refetching those movies once.")
-        for rk in _v1_entries:
-            cached_movies.pop(rk, None)
     for rk, entry in cached_movies.items():
         _metadata_cache[rk] = {
             "protected": entry.get("protected", False),
@@ -4395,6 +3854,26 @@ def build_candidates():
             stats["outside_monitored_dirs"] += 1
             log(f"SKIP outside_monitored_dirs | title={title} | path={file_path}")
             continue
+
+        # Library snapshot: every movie that resolved inside a monitored path
+        # gets a row — INCLUDING ones the filters skip below (the Filtering &
+        # Scoring page applies the filter settings client-side to these raw
+        # facts). Rows for movies that survive to the candidate list are
+        # overwritten after the dedup pass with their merged play stats.
+        _snap_imdb = imdb_ratings.get(imdb_id) if imdb_id else None
+        try:
+            _snap_size = file_path.stat().st_size
+            _snap_key = str(file_path.resolve())
+        except OSError:
+            _snap_size = 0
+            _snap_key = resolved_path
+        _snapshot_by_path[_snap_key] = _snapshot_entry(
+            title, item.get("year"),
+            _snap_imdb[0] if _snap_imdb else None,
+            _snap_imdb[1] if _snap_imdb else None,
+            item.get("play_count"), _distinct_users_for_row(item),
+            item.get("last_played"), item.get("added_at"), _snap_size,
+            protected=protected, favorite=bool(item.get("_jf_favorite")))
 
         if protected:
             stats["protected"] += 1
@@ -4651,6 +4130,28 @@ def build_candidates():
 
     score_and_rank_candidates(candidates)
 
+    # Refresh the snapshot rows of surviving candidates with their merged
+    # (cross-server deduped) stats, then persist — the LAST step of the scan,
+    # so a run interrupted anywhere above keeps the previous snapshot.
+    for c in candidates:
+        try:
+            _key = str(c["path"].resolve())
+        except OSError:
+            _key = str(c["path"])
+        # Candidates don't carry the protection facts — keep them from the
+        # scan-time row (a favorited movie is still a candidate when the
+        # favorites protection is OFF, and the explorer's preview needs the
+        # flag to show what turning it ON would change).
+        _prev = _snapshot_by_path.get(_key) or {}
+        _snapshot_by_path[_key] = _snapshot_entry(
+            c["title"], c["release_year"], c["imdb_rating"], c["imdb_votes"],
+            c["play_count"], c.get("distinct_users", 0), c["last_played"],
+            c["added_at"], c["file_size"],
+            protected=bool(_prev.get("protected")),
+            favorite=bool(_prev.get("favorite")))
+    _write_library_snapshot(list(_snapshot_by_path.values()))
+    log(f"Library snapshot written: {len(_snapshot_by_path)} movie(s) for the Filtering & Scoring page.")
+
     stats["identity_mismatch_details"] = identity_mismatches
     return candidates, stats, total_movies
 
@@ -4875,9 +4376,10 @@ def delete_candidate(candidate) -> bool:
 # =========================
 
 def _revalidate_pending_marks(limits_breached: bool) -> None:
-    """15-minute upkeep of the marked-for-deletion queue, run inside the quiet
-    Summary: drop marks whose files are gone or that joined a protected
-    collection, and clear the whole queue once space limits are satisfied.
+    """15-minute upkeep of the marked & eligible queue, run inside the quiet
+    Summary: drop entries whose files are gone or that joined a protected
+    collection, and stop the delay clocks once space limits are satisfied
+    (the queue itself remains — it is the standing eligible deletion order).
     Display upkeep only — an actual deletion always re-verifies hard
     protections fresh (the full scan, or the redline fast path's own re-fetch
     of collections and favorites), so a stale mark can never delete a
@@ -4885,20 +4387,28 @@ def _revalidate_pending_marks(limits_breached: bool) -> None:
     store = load_pending()
     if not store:
         return
-    # Redline-only mode: within-limits is the queue's NORMAL state — it is the
-    # standing deletion-order preview, so only file/protection upkeep applies.
-    if not limits_breached and not _redline_only_mode():
-        log(f"Space limits satisfied — clearing {len(store)} marked-for-deletion entrie(s).")
-        save_pending({})
-        return
     changed = False
+    # Within limits nothing is scheduled: stop any running delay clocks but
+    # KEEP the queue — it is the standing eligible deletion order in every
+    # mode. A movie re-entering the marked prefix later starts a fresh clock.
+    if not limits_breached:
+        unscheduled = 0
+        for e in store.values():
+            if isinstance(e, dict) and e.get("marked_at") is not None:
+                e["marked_at"] = None
+                unscheduled += 1
+        if unscheduled:
+            log(f"Space limits satisfied — unscheduled {unscheduled} marked deletion(s); "
+                f"the eligible queue remains.")
+            changed = True
     for key in list(store):
         try:
             missing = not Path(key).exists()
         except OSError:
             missing = False
         if missing:
-            log(f"Unmarked (file gone): {store[key].get('title') or key}")
+            entry = store[key]
+            log(f"Unmarked (file gone): {(entry.get('title') if isinstance(entry, dict) else None) or key}")
             store.pop(key)
             changed = True
     try:
@@ -4907,7 +4417,8 @@ def _revalidate_pending_marks(limits_breached: bool) -> None:
         protected = {str(p) for p in set(plex_paths) | set(jf_paths)}
         for key in list(store):
             if key in protected:
-                log(f"Unmarked (protected now): {store[key].get('title') or key}")
+                entry = store[key]
+                log(f"Unmarked (protected now): {(entry.get('title') if isinstance(entry, dict) else None) or key}")
                 store.pop(key)
                 changed = True
     except SystemExit:
@@ -4929,7 +4440,9 @@ def _plan_stamp_current() -> bool:
         data = json.loads(PENDING_FILE.read_text(encoding="utf-8"))
     except Exception:
         return False
-    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict) or not data["entries"]:
+    # An EMPTY stamped queue is a real plan: a completed Simulate that found
+    # nothing eligible. (The fast path's own coverage check rejects it anyway.)
+    if not isinstance(data, dict) or not isinstance(data.get("entries"), dict):
         return False
     dirs = data.get("monitor_dirs")
     if (not isinstance(dirs, list)
@@ -5022,7 +4535,6 @@ def _redline_fast_path(to_free_bytes) -> bool:
 
     log(f"REDLINE fast path: deleting from the marked queue in plan order — "
         f"no library rescan; Radarr cleanup is skipped for these emergency deletions.")
-    log_blank()
     emit_progress(phase="deleting", trigger="REDLINE", target_bytes=to_free_bytes,
                   deleted=0, bytes_freed=0, current_title="",
                   message="Redline — freeing space from the marked queue…")
@@ -5054,6 +4566,12 @@ def _redline_fast_path(to_free_bytes) -> bool:
                     log(f"ERROR: could not delete {p}: {e}")
                     continue
                 _RUN_DELETED_FILES = True
+                # The section banner lands only once a deletion actually does:
+                # a fast path that deletes nothing falls back to the full scan,
+                # and an early DELETIONS banner would make the dashboard's
+                # section deep-link swallow that whole scan.
+                if deleted_count == 0:
+                    log_stage("DELETIONS")
                 log(f"Deleted (queue #{deleted_count + 1}): {title} | "
                     f"score={entry.get('score')} | size={bytes_to_gb(size):.2f} GB | path={p}")
                 log_deleted(title, p, size, score=entry.get("score"))
@@ -5083,7 +4601,7 @@ def _redline_fast_path(to_free_bytes) -> bool:
         return False
 
     final = get_usage_info()
-    log_blank()
+    log_stage("CLEANUP SUMMARY [REDLINE]")
     if bytes_freed < to_free_bytes:
         log(f"NOTE: freed {bytes_to_gb(bytes_freed):.1f} GB of the "
             f"{bytes_to_gb(to_free_bytes):.1f} GB target — some queued files could not "
@@ -5253,10 +4771,13 @@ def log_run_summary(*, is_sim, trigger, to_free_gb, used_gb, free_before_gb,
     row("Eligible:", build_stats['eligible'])
     log_raw("-" * 34)
     row("Would delete:" if is_sim else "Deleted:", removed_count)
-    # Redline-only: "Would delete" above counts only what a Redline breach
-    # would remove right now; the standing queue is a separate fact.
+    # "Would delete" above counts only what the current targets require right
+    # now; the standing eligible queue is a separate fact.
     if queued_count is not None:
-        row("Queued for Redline:", f"{queued_count} (~{bytes_to_gb(queued_bytes):.1f} GB — deletes worst-scored first when free space hits the floor)")
+        if _redline_only_mode():
+            row("Eligible queue:", f"{queued_count} (~{bytes_to_gb(queued_bytes):.1f} GB — deletes worst-scored first when free space hits the Redline floor)")
+        else:
+            row("Eligible queue:", f"{queued_count} (~{bytes_to_gb(queued_bytes):.1f} GB — full deletion order; only the marked prefix is scheduled)")
     # The "limit reached" note only applies when candidates were actually left
     # untouched because the target was met first. When every candidate is acted
     # on (e.g. the cap is far below the library and can't be reached), the count
@@ -5289,11 +4810,11 @@ def main():
         RUN_MODE = _MODE_OVERRIDE
 
     global LOGFILE, _QUIET_PROGRESS
-    if RUN_MODE in ("debug_info", "sample_pool"):
-        # Quiet background refreshes (storage summary, Score Explorer sample):
-        # no progress events, and the log is discarded — lastrun.log stays the
-        # last real run's log and no scratch log files accumulate. Failures
-        # still surface through the subprocess exit code and the UI messages.
+    if RUN_MODE == "debug_info":
+        # Quiet background storage refresh: no progress events, and the log is
+        # discarded — lastrun.log stays the last real run's log and no scratch
+        # log files accumulate. Failures still surface through the subprocess
+        # exit code and the UI messages.
         LOGFILE = Path(_os.devnull)
         _QUIET_PROGRESS = True
 
@@ -5314,13 +4835,6 @@ def main():
         atexit.register(_finalize_run)
 
     debug_startup()
-
-    # Quick sample-pool rebuild: API-only, writes the cache's sample pool and exits.
-    # Handled before the executable-mode gate — it is web-app-triggered only
-    # (MEDIAREDUCER_MODE_OVERRIDE) and never scans disks or deletes anything.
-    if RUN_MODE == "sample_pool":
-        build_quick_sample_pool(parse_int(_SAMPLE_TARGET, 0))
-        return
 
     # Safety gate: only the recognized run modes may proceed. Any other value —
     # including the Docker default "paused", a blank string, or a typo — must NOT
@@ -5718,14 +5232,15 @@ def main():
                 )
                 log_blank()
             elif not daily_breach:
+                # Within limits nothing would be marked, but the run still
+                # builds the standing eligible queue — same as redline-only —
+                # so the deletion order is always visible.
                 log(
                     f"DRY RUN: Usage is {used_gb:.1f} GB ({free_gb:.1f} GB free), "
-                    f"below limit of {max_gb:.1f} GB and under the cap. "
-                    f"Nothing to do (ignoring daily schedule)."
+                    f"below limit of {max_gb:.1f} GB and under the cap — nothing would be "
+                    f"marked; building the eligible deletion order (ignoring daily schedule)."
                 )
-                emit_progress(status="done", phase="done",
-                              message="Dry run — space limits are satisfied, nothing to simulate.")
-                return
+                log_blank()
             else:
                 log(
                     f"DRY RUN [{trigger}]: over space limits "
@@ -5810,6 +5325,13 @@ def main():
 
     if not candidates:
         log("No eligible movie files found.")
+        # A Simulate with zero eligible movies is still a completed plan — write
+        # the stamped EMPTY queue so the app knows a Simulate has run under these
+        # exact settings. Without it, an over-limits library whose movies are all
+        # filtered/protected would ghost Live forever with "run Simulate" while
+        # Simulate itself changed nothing.
+        if _is_sim:
+            write_plan_to_queue([], trigger, scheduled_count=0)
         _mm = build_stats.get("identity_mismatch", 0)
         if _mm:
             log_identity_mismatches(build_stats)
@@ -5828,17 +5350,27 @@ def main():
         simulated_freed_bytes = 0
         simulated_count = 0
         _sim_planned: list = []   # (candidate, size) — becomes the marked queue when a delay is set
+        # The prefix of the plan that covers to_free_bytes — what a Live Run
+        # would delete RIGHT NOW. In redline-only mode the loop keeps queueing
+        # past the target, so this freezes while simulated_count keeps growing;
+        # in every other mode the loop stops at the target and the two agree.
+        _would_count = 0
+        _would_bytes = 0
 
-        # Redline-only mode: the plan is a standing preview — at least the first
-        # REDLINE_PREVIEW_COUNT movies in deletion order (more when a current
-        # Redline breach needs more to clear), even with nothing breached.
-        _sim_min_count = REDLINE_PREVIEW_COUNT if _redline_only_mode() else 0
+        # Every mode plans the ENTIRE eligible list in deletion order — the
+        # whole library's fate is visible up front. Only the prefix covering
+        # the current space target is MARKED (scheduled, delay-clocked); the
+        # rest stays merely eligible.
+        _sim_min_count = len(candidates)
 
         log(f"DRY RUN [{trigger}]: Simulating deletions — target: free {to_free_gb:.1f} GB.")
-        if _sim_min_count:
-            log(f"Redline-only mode: queueing the first {min(_sim_min_count, len(candidates))} movies "
+        if _redline_only_mode():
+            log(f"Redline-only mode: all {len(candidates)} eligible movies enter the queue "
                 f"in deletion order. When free space drops below {REDLINE_GB} GB, Redline deletes "
                 f"down this list (re-scored fresh at that moment) until back at the floor.")
+        else:
+            log(f"All {len(candidates)} eligible movies enter the queue in deletion order; "
+                f"only the movies needed to meet the current targets are marked for deletion.")
         emit_progress(phase="simulating", trigger=trigger, target_bytes=to_free_bytes,
                       deleted=0, bytes_freed=0, current_title="",
                       message="Simulating cleanup — no files touched…")
@@ -5862,6 +5394,9 @@ def main():
 
             before_gb = round(bytes_to_gb(simulated_used), 1)
             simulated_used -= file_size
+            if _would_bytes < to_free_bytes:
+                _would_bytes += file_size
+                _would_count += 1
             simulated_freed_bytes += file_size
             simulated_count += 1
             after_gb = round(bytes_to_gb(simulated_used), 1)
@@ -5878,8 +5413,10 @@ def main():
                 f"used {before_gb:.1f} GB -> {after_gb:.1f} GB | "
                 f"path={candidate['path']}"
             )
-            emit_progress(phase="simulating", deleted=simulated_count,
-                          bytes_freed=simulated_freed_bytes, target_bytes=to_free_bytes,
+            # The progress tiles report what WOULD delete, never the queue size
+            # — a redline-only preview above the floor reads "Would delete 0".
+            emit_progress(phase="simulating", deleted=_would_count,
+                          bytes_freed=_would_bytes, target_bytes=to_free_bytes,
                           current_title=candidate["title"])
 
             _sim_planned.append((candidate, file_size))
@@ -5892,22 +5429,15 @@ def main():
         # in this plan drop off. With delay 0 the marks are simply eligible
         # immediately: the next daily run deletes them.
         log_blank()
-        write_plan_to_queue(_sim_planned, trigger)
+        # Only the target-covering prefix is scheduled (and delay-clocked);
+        # redline-only schedules nothing — its prefix deletes via the Redline
+        # trigger, not a calendar.
+        write_plan_to_queue(_sim_planned, trigger,
+                            scheduled_count=0 if _redline_only_mode() else _would_count)
 
-        # Redline-only: the queue is a standing preview, not scheduled work —
-        # the summary reports only what a Redline breach would delete RIGHT NOW
-        # (the queue prefix covering the current deficit; nothing while free
-        # space sits above the floor). The full queue gets its own row.
-        _would_count, _would_bytes = simulated_count, simulated_freed_bytes
-        _queued_count = _queued_bytes = None
-        if _redline_only_mode():
-            _would_count, _would_bytes = 0, 0
-            for _c, _size in _sim_planned:
-                if _would_bytes >= to_free_bytes:
-                    break
-                _would_bytes += _size
-                _would_count += 1
-            _queued_count, _queued_bytes = simulated_count, simulated_freed_bytes
+        # The summary reports what would delete RIGHT NOW (_would_count,
+        # tracked in the loop) plus the full eligible queue as its own row.
+        _queued_count, _queued_bytes = simulated_count, simulated_freed_bytes
 
         final_gb = round(bytes_to_gb(usage_info["used"] - _would_bytes), 1)
         final_free_gb = round(bytes_to_gb(usage_info["total"]) - final_gb, 1)
@@ -5925,20 +5455,31 @@ def main():
 
         log_blank()
         _mm = build_stats.get("identity_mismatch", 0)
+        _rest = simulated_count - _would_count
         if _redline_only_mode():
-            _sim_msg = (f"Dry run — queued {simulated_count} movie(s) for Redline "
-                        f"(~{bytes_to_gb(simulated_freed_bytes):.1f} GB). They delete, worst-scored "
-                        f"first, only when free space hits the floor.")
+            if _would_count:
+                _sim_msg = (f"Dry run — Redline is breached: a Live Run would delete "
+                            f"{_would_count} movie(s) (~{bytes_to_gb(_would_bytes):.1f} GB) now, "
+                            f"with {simulated_count} total eligible in deletion order.")
+            else:
+                _sim_msg = (f"Dry run — {simulated_count} movie(s) eligible in deletion order "
+                            f"(~{bytes_to_gb(simulated_freed_bytes):.1f} GB). They delete, worst-scored "
+                            f"first, only when free space hits the Redline floor.")
+        elif _would_count == 0:
+            _sim_msg = (f"Dry run — space limits are satisfied: nothing marked, "
+                        f"{simulated_count} movie(s) eligible in deletion order.")
         elif DELETE_DELAY_DAYS > 0:
-            _sim_msg = (f"Dry run — marked {simulated_count} movie(s) for deletion "
-                        f"({DELETE_DELAY_DAYS}-day delay), ~{bytes_to_gb(simulated_freed_bytes):.1f} GB.")
+            _sim_msg = (f"Dry run — marked {_would_count} movie(s) for deletion "
+                        f"({DELETE_DELAY_DAYS}-day delay), ~{bytes_to_gb(_would_bytes):.1f} GB; "
+                        f"{_rest} more eligible in deletion order.")
         else:
-            _sim_msg = (f"Dry run — marked {simulated_count} movie(s), "
-                        f"~{bytes_to_gb(simulated_freed_bytes):.1f} GB — deletes at the next daily run.")
+            _sim_msg = (f"Dry run — marked {_would_count} movie(s), "
+                        f"~{bytes_to_gb(_would_bytes):.1f} GB — deletes at the next daily run; "
+                        f"{_rest} more eligible in deletion order.")
         if _mm:
             _sim_msg += f" Completed with errors — {_mm} file(s) skipped (Plex/Jellyfin identity mismatch)."
-        emit_progress(status="done", phase="done", deleted=simulated_count,
-                      bytes_freed=simulated_freed_bytes, target_bytes=to_free_bytes,
+        emit_progress(status="done", phase="done", deleted=_would_count,
+                      bytes_freed=_would_bytes, target_bytes=to_free_bytes,
                       current_title="", completed_with_errors=bool(_mm),
                       message=_sim_msg)
         return
@@ -5961,26 +5502,13 @@ def main():
     # delay paces automatic runs, not a deliberate button press.
     use_delay = DELETE_DELAY_DAYS > 0 and not immediate_trigger and not _manual_live
     mark_store = load_pending()
-    # Same guard as write_plan_to_queue: marks written by a redline-only
-    # preview never ran a delay countdown the user could see, so if that
-    # queue somehow survives into a normal-mode LIVE run (the save-time clear
-    # can be skipped while a Summary is active, and the re-arm Simulate gate
-    # only fires when limits are already breached), their ancient marked_at
-    # must not count as served delay time — reset the clocks in memory here.
-    if mark_store and use_delay and not _redline_only_mode():
-        try:
-            _old_stamp = json.loads(PENDING_FILE.read_text(encoding="utf-8")).get("plan_config")
-            _stale_mode_marks = isinstance(_old_stamp, dict) and bool(_old_stamp.get("REDLINE_ONLY_MODE"))
-        except Exception:
-            _stale_mode_marks = True    # unverifiable — fail toward full grace
-        if _stale_mode_marks:
-            log("Marked queue carries redline-only preview clocks — restarting "
-                "their deletion-delay countdowns for this run.")
-            for _e in mark_store.values():
-                if isinstance(_e, dict):
-                    _e["marked_at"] = time.time()
+    # Only entries with a running clock (marked_at set) have ever been
+    # SCHEDULED for deletion; eligible queue entries carry marked_at None and
+    # start their delay clock only when this run marks them — so a queue built
+    # in redline-only mode (never clocked) can't skip the delay grace here.
     mark_store_dirty = False
     kept_marks: dict = {}
+    _gone_keys: set = set()   # deleted (or externally vanished) this run
     now_ts = time.time()
     emit_progress(phase="deleting", trigger=trigger, target_bytes=to_free_bytes,
                   deleted=0, bytes_freed=0, current_title="",
@@ -6032,14 +5560,18 @@ def main():
             key = str(candidate["path"])
             if use_delay:
                 entry = mark_store.get(key)
-                age_days = (_mark_age_days(entry.get("marked_at", now_ts), now_ts)
-                            if isinstance(entry, dict) else 0)
-                if not isinstance(entry, dict) or age_days < DELETE_DELAY_DAYS:
+                # An eligible queue entry (marked_at None) has never been
+                # scheduled: its delay clock starts NOW, same as a brand-new
+                # mark — being visible in the eligible order earns no grace.
+                has_clock = isinstance(entry, dict) and entry.get("marked_at") is not None
+                age_days = _mark_age_days(entry["marked_at"], now_ts) if has_clock else 0
+                if not has_clock or age_days < DELETE_DELAY_DAYS:
                     # Mark (or keep the existing mark) instead of deleting.
-                    if not isinstance(entry, dict):
-                        entry = {"title": candidate["title"],
-                                 "score": round(candidate["retention_score"], 3),
-                                 "marked_at": now_ts, "trigger": trigger}
+                    if not has_clock:
+                        if not isinstance(entry, dict):
+                            entry = {"title": candidate["title"],
+                                     "score": round(candidate["retention_score"], 3)}
+                        entry["marked_at"] = now_ts
                         log(f"MARKED for deletion (deletes on {_mark_delete_on(now_ts)} "
                             f"unless protected or the rules change): {candidate['title']} | path={key}")
                     else:
@@ -6055,6 +5587,7 @@ def main():
                 deleted_count += 1
                 bytes_freed += size_before
                 planned_bytes += size_before
+                _gone_keys.add(key)
                 if mark_store.pop(key, None) is not None:
                     mark_store_dirty = True
             elif not candidate["path"].exists():
@@ -6063,6 +5596,7 @@ def main():
                 # don't claim the deletion: deleted.log has no record of it, and
                 # this run freed nothing by it.
                 planned_bytes += size_before
+                _gone_keys.add(key)
                 if mark_store.pop(key, None) is not None:
                     mark_store_dirty = True
             elif use_delay:
@@ -6074,7 +5608,7 @@ def main():
                 entry = existing if isinstance(existing, dict) else {
                     "title": candidate["title"],
                     "score": round(candidate["retention_score"], 3),
-                    "marked_at": now_ts, "trigger": trigger}
+                    "marked_at": now_ts}
                 entry["size_bytes"] = size_before
                 kept_marks[key] = entry
                 log(f"WARN: deletion did not remove {candidate['title']}; "
@@ -6085,14 +5619,35 @@ def main():
             log("Stopped mid-run — marked-queue changes so far were saved.")
         raise
 
-    # Reconcile the marked-for-deletion queue with THIS run's plan.
+    # Reconcile the marked & eligible queue with THIS run's plan. A full-scan
+    # daily or manual run rewrites the WHOLE queue: this run's marks keep their
+    # clocks, and every surviving candidate behind them stays visible as
+    # eligible (marked_at None) in deletion order.
+    def _full_queue() -> dict:
+        q: dict = {}
+        for c in candidates:
+            k = str(c["path"])
+            if k in _gone_keys:
+                continue
+            e = kept_marks.get(k)
+            if e is None:
+                e = {"title": c["title"], "score": round(c["retention_score"], 3),
+                     "marked_at": None,
+                     "size_bytes": parse_int(c.get("file_size"), 0)}
+            q[k] = e
+        return q
+
     if use_delay:
-        # kept_marks is the current plan; everything else (protected since,
-        # rules changed, no longer within the target, or just deleted) drops.
-        dropped = [k for k in mark_store if k not in kept_marks]
-        if dropped:
-            log(f"Unmarked {len(dropped)} movie(s) no longer in the deletion plan.")
-        save_pending(kept_marks, stamp_thresholds=True)
+        # Entries that left the scheduled prefix (protected since, rules
+        # changed, no longer within the target) lose their clocks and revert
+        # to eligible; a fresh clock starts if they are ever re-marked.
+        unscheduled = sum(1 for k, e in mark_store.items()
+                          if k not in kept_marks and isinstance(e, dict)
+                          and e.get("marked_at") is not None)
+        if unscheduled:
+            log(f"Unmarked {unscheduled} movie(s) no longer in the deletion plan "
+                f"(they stay eligible in deletion order).")
+        save_pending(_full_queue(), stamp_thresholds=True)
         if marked_count:
             log_blank()
             log(f"Marked for deletion: {marked_count} movie(s), "
@@ -6100,11 +5655,9 @@ def main():
                 f"{DELETE_DELAY_DAYS} day(s) unless protected or the rules change.")
     elif (_manual_live or not immediate_trigger) and not _redline_only_mode():
         # Delay disabled, or a manual Live Run that pruned to every breached
-        # target: everything planned was deleted outright, so the queue is
-        # done — whether entries remain (stale from an earlier delay) or were
-        # popped by this run's deletions (mark_store_dirty).
-        if mark_store or mark_store_dirty:
-            save_pending({})
+        # target: everything planned was deleted outright, so nothing stays
+        # marked — the surviving candidates remain as the eligible queue.
+        save_pending(_full_queue(), stamp_thresholds=True)
     elif mark_store_dirty:
         # Redline runs never reshape the daily plan — they only drop entries
         # whose files they deleted. Redline-only mode lands here for EVERY live

@@ -20,7 +20,6 @@ import json
 import math
 import os
 import sys
-import random
 import re
 import shutil
 import signal
@@ -1024,9 +1023,9 @@ def _filesystem_rw_state() -> dict:
 # ── Display time helpers ─────────────────────────────────────────────────────
 
 _LOG_TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?P<sep>\s+-\s+|\s+\|\s*)")
-# Matches every deleted.log generation: ts | title | path, then optional size_bytes
-# and the rationale fields newer engines append (score, plays, last_played). Each
-# field is anchored by its key so the non-greedy path can't swallow the tail.
+# ts | title | path, then optional size_bytes and rationale fields (score, plays,
+# last_played) — the writer appends them best-effort, so any suffix may be absent.
+# Each field is anchored by its key so the non-greedy path can't swallow the tail.
 _DELETED_LOG_RE = re.compile(
     r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+\|\s+(?P<title>.*?)\s+\|\s+(?P<path>.*?)"
     r"(?:\s+\|\s+size_bytes=(?P<size_bytes>\d+))?"
@@ -1305,30 +1304,26 @@ def _mark_progress_terminal(status: str, message: str, *, force: bool = False):
         pass
 
 
-# Mirrors engine.REDLINE_PREVIEW_COUNT (the app never imports the engine).
-_REDLINE_PREVIEW_COUNT = 50
-
-
 def _preview_rebuild_needed(live_run: bool) -> bool:
-    """Should a background Simulate rebuild the standing preview after a run?
+    """Should a background Simulate rebuild the standing queue after a run?
 
     Two triggers: the engine's queue_rebuild progress flag (a Redline fast path
     consumed marks), or — the invariant that catches every other path — any LIVE
-    run in redline-only mode that left the preview below full strength (manual
-    Live Runs and full-scan Redline fallbacks trim the queue too, and the mode
-    has no daily runs to replenish it). Sim runs never qualify on depth alone,
-    or a small library (fewer movies than the preview size) would rebuild in a
-    loop forever."""
+    run in redline-only mode that actually deleted something (manual Live Runs
+    and full-scan Redline fallbacks trim the queue too, and the mode has no
+    daily runs to replenish it). Sim runs never qualify: the Simulate IS the
+    rebuild, so they'd loop forever."""
     try:
         prog = json.loads(progress_path().read_text(encoding="utf-8"))
         if prog.get("queue_rebuild"):
             return True
+        deleted_any = (prog.get("deleted") or 0) > 0
     except Exception:
-        pass
+        deleted_any = False
     if not live_run:
         return False
     try:
-        return _redline_only_mode_cfg() and pending_count() < _REDLINE_PREVIEW_COUNT
+        return _redline_only_mode_cfg() and deleted_any
     except Exception:
         return False
 
@@ -1596,28 +1591,7 @@ def run_summary_sync(timeout: int = 600) -> tuple[bool, str, dict]:
             run_summary()
 
 
-# ── Score Explorer sample pool refresh ────────────────────────────────────────
-# The engine's sample_pool mode pulls a random batch straight from the connected
-# Tautulli/Jellyfin APIs and rebuilds the cache's sample pool — no scan, no
-# deletion. Triggered by config saves that change the monitored paths or API
-# connections, the API-reconnect transition, the Score Explorer's Refresh button
-# (a fresh batch each press), and a released IMDb hold retrying a held build. A
-# merely missing pool never triggers one.
-_sample_pool_active = False
-# error_code doubles as the hold latch: while it reads imdb_ratings_unavailable,
-# automatic builds decline to start — clearing it releases the hold. failed_at only
-# keys the UI's once-per-failure toast and is set solely by automatic builds
-# (manual Refresh answers in the explorer).
-_sample_pool_last = {"ok": None, "message": "", "error_code": None, "failed_at": None}
-_sample_pool_lock = threading.Lock()
-
-# Engine exit code for "the IMDb dataset could not be obtained" — the sample is
-# scored, so the build needs the dataset just like a run does. The web app answers
-# with a toast (automatic builds) or the setup popup (explicit Refresh) and holds
-# automatic builds until the dataset problem is resolved.
-_SAMPLE_EXIT_IMDB_UNAVAILABLE = 3
-_SAMPLE_EXIT_NO_MOVIES = 4
-
+# ── IMDb dataset helpers ──────────────────────────────────────────────────────
 # Download ceilings for the IMDb dataset (real archive ~10 MB, unpacks to ~25 MB):
 # pure guardrails so a wrong URL or crafted archive can't balloon into memory.
 _IMDB_GZ_MAX_BYTES = 64 * 1024 * 1024
@@ -1637,212 +1611,39 @@ def _download_imdb_gz(url: str) -> bytes:
     return tsv_data
 
 
-def _imdb_dataset_ready(cfg: dict | None = None) -> bool:
-    """A usable IMDb dataset: a TSV younger than the Advanced refresh interval, or a
-    manually-placed .gz (the user's explicit current choice). A stale TSV does NOT
-    count — scores from old ratings feed deletion decisions."""
-    target = imdb_ratings_path()
-    if target.with_name(target.name + ".gz").exists():
-        return True
-    if not target.exists():
-        return False
-    try:
-        refresh_days = max(1, int(float((cfg or load_config()).get("IMDB_RATINGS_MAX_AGE_DAYS", 7))))
-    except (TypeError, ValueError):
-        refresh_days = 7
-    age_days = (time.time() - target.stat().st_mtime) / 86400
-    return age_days < refresh_days
-
-
-def _imdb_needed(cfg: dict) -> bool:
-    """Whether a sample/run needs the IMDb ratings dataset. Mirrors the engine's
-    imdb_dataset_needed(): IMDb only matters when the scoring dial gives it weight
-    (SCORE_BALANCE > 0) or a Max IMDb rating cutoff is set. At 100% watch history with
-    no cutoff the sample is built without ratings and never downloads the dataset."""
-    try:
-        bal = float(cfg.get("SCORE_BALANCE", 50))
-    except (TypeError, ValueError):
-        bal = 50.0
-    return bal > 0 or cfg.get("MAX_IMDB_RATING") is not None
-
-
-def _ensure_sample_imdb_dataset() -> bool:
-    """Put a fresh IMDb ratings TSV on disk for a sample build, downloading if needed;
-    False when it can't be obtained. Runs first in the sample worker so failure
-    feedback appears within seconds of the save that triggered it. Freshness follows
-    _imdb_dataset_ready — a stale TSV is re-downloaded, and a failed re-download fails
-    the build rather than scoring with old data."""
-    target = imdb_ratings_path()
-    if _imdb_dataset_ready():
-        return True
-    # pid+thread tmp name, same scheme as _atomic_write_json (bytes payload here):
-    # two concurrent sample builds must never interleave writes into one tmp.
-    tmp = target.with_name(f"{target.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        url = _validate_imdb_url(load_config().get("IMDB_RATINGS_URL"))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tsv_data = _download_imdb_gz(url)
-        if not tsv_data.startswith(b"tconst\taverageRating\tnumVotes"):
-            raise ValueError("Downloaded file did not look like the IMDb title.ratings.tsv dataset.")
-        tmp.write_bytes(tsv_data)
-        tmp.replace(target)
-        return True
-    except Exception:
-        try:
-            tmp.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return False
-
-
-def _run_sample_pool_subprocess(config_path: Path, target: int,
-                                timeout: int = 600) -> tuple[bool, str, str | None]:
-    """Run engine.py in quiet sample_pool mode against config_path.
-
-    Returns (ok, message, error_code); error_code is None except for the
-    distinguishable IMDb-dataset failure."""
-    env = os.environ.copy()
-    env["MEDIAREDUCER_CONFIG"] = str(config_path)
-    env["MEDIAREDUCER_MODE_OVERRIDE"] = "sample_pool"
-    env["MEDIAREDUCER_SAMPLE_TARGET"] = str(target)
-    proc = subprocess.run(
-        ["python3", "-u", str(SCRIPT_PATH)],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=timeout,
-    )
-    if proc.returncode == _SAMPLE_EXIT_IMDB_UNAVAILABLE:
-        return (False,
-                "The IMDb dataset could not be downloaded — the sample was not built. "
-                "Add it manually (see the popup), then press Refresh.",
-                "imdb_ratings_unavailable")
-    if proc.returncode == _SAMPLE_EXIT_NO_MOVIES:
-        return (False,
-                "No movies found under the monitored library paths — check them on the Configuration page.",
-                None)
-    if proc.returncode != 0:
-        return False, "Could not build the library sample — check the media server connection.", None
-    return True, "Library sample refreshed.", None
-
-
-def refresh_sample_pool(target: int = 0, manual: bool = False) -> tuple[bool, str]:
-    """Rebuild the Score Explorer sample pool in the background: pull `target` random
-    movies (default 10) from under the monitored library paths.
-
-    The sample is scored, so the build downloads the IMDb dataset when missing. After
-    a build failed for lack of the dataset, automatic triggers stay silently on hold so
-    unrelated saves never re-attempt the download. The hold is released by whatever
-    plausibly fixes or re-scopes the build — a save that changes the monitored paths,
-    the API connection, or the dataset URL; the dataset appearing on disk; a successful
-    manual IMDb download — or bypassed by the explicit Refresh (manual=True). Runs
-    check the dataset themselves.
-
-    API-only, so it does not take the run lock (sample-pool writes are atomic); it just
-    declines to start while a real run is active to keep API load off the scan."""
-    global _sample_pool_active
-    try:
-        target = int(target)
-    except (TypeError, ValueError):
-        target = 0
-    target = max(1, min(100, target)) if target else 10
-    if _run_active:
-        return False, "A run is active — try refreshing the library sample again when it finishes."
-    if not manual and _sample_pool_last.get("error_code") == "imdb_ratings_unavailable":
-        # Silent: no new download attempt and no new toast for triggers that changed
-        # nothing sample-related. The hold is released by a save touching the monitored
-        # paths, the API connection, or the dataset itself — or by an explicit Refresh.
-        return False, ("The library sample is on hold — the IMDb ratings dataset could not be "
-                       "obtained. Fix the dataset, then press Refresh on the Filtering & Scoring page.")
-    if not _has_monitored_dirs(load_config()):
-        return False, "Add a monitored library path first — the sample only includes movies under monitored paths."
-    with _sample_pool_lock:
-        if _sample_pool_active:
-            return True, "A library sample refresh is already running."
-        _sample_pool_active = True
-    # Freeze the clock like a run/Summary does: the sample build hits the same media
-    # APIs, so without this a scheduled tick could launch a Summary — or a full Live
-    # run — mid-build. The wait-for-summary loop below can restart the clock, so the
-    # tick guard also checks _sample_pool_active as a backstop.
-    _pause_scheduler_for_run()
-
-    def _worker():
-        global _sample_pool_active
-        ok, msg, code = False, "Library sample refresh failed.", None
-        try:
-            # Resolve the IMDb dataset FIRST — it needs no media API, and a broken
-            # download must surface within seconds of the triggering save, not after
-            # the storage summary below (which can walk the library for minutes).
-            # Skipped at 100% watch history with no cutoff: no ratings needed.
-            if _imdb_needed(load_config()) and not _ensure_sample_imdb_dataset():
-                msg = ("The IMDb dataset could not be downloaded — the sample was not built. "
-                       "Add it manually (see the popup), then press Refresh.")
-                code = "imdb_ratings_unavailable"
-                return
-            # Let an in-flight storage summary finish first: both jobs hit the media
-            # APIs (the summary also walks the disk) and a save's own connection probe
-            # competes too — serializing them keeps onboarding saves snappy.
-            for _ in range(360):  # up to ~3 min
-                if not _summary_active and not _run_active:
-                    break
-                time.sleep(0.5)
-            if _run_active:
-                msg = "A run started before the sample refresh — try again when it finishes."
-            else:
-                ok, msg, code = _run_sample_pool_subprocess(CONFIG_PATH, target)
-        except subprocess.TimeoutExpired:
-            msg = "Timed out while building the library sample."
-        except Exception as e:
-            msg = str(e)
-        finally:
-            _sample_pool_last.update({
-                "ok": ok,
-                "message": msg,
-                "error_code": code,
-                # failed_at keys the UI's one-shot toast, and only automatic builds set
-                # it — an explicit Refresh failure is answered in the Score Explorer
-                # with the setup-steps popup, so the global toast would double up.
-                "failed_at": time.time() if (code and not manual) else None,
-            })
-            with _sample_pool_lock:
-                _sample_pool_active = False
-            _restart_schedule_clock()  # next tick a full interval away, same as runs/summaries
-
-    threading.Thread(target=_worker, daemon=True, name="engine-sample-pool").start()
-    return True, "Library sample refresh started."
-
-
-def _read_sample_pool():
-    """The Score Explorer sample pool stored under cache.json's "sample_pool"
-    key. Returns (payload, None) or (None, "missing"/"unreadable")."""
-    cache_path = output_dir() / "cache.json"
-    if not cache_path.exists():
+def _read_library_snapshot():
+    """The full-library snapshot the last completed scan stored under
+    cache.json's "library_snapshot" key — the Filtering & Scoring page's
+    table. Returns (payload, None) or (None, "missing"). Reads through the
+    memoized cache parse — the arming gate consults this on the status-poll
+    path, and cache.json (all movie metadata + the snapshot) is far too big
+    to re-parse every 3 seconds."""
+    snap = _cache_file_data().get("library_snapshot")
+    if not isinstance(snap, dict):
         return None, "missing"
-    try:
-        cache = json.loads(cache_path.read_text(encoding="utf-8"))
-        pool = cache.get("sample_pool") if isinstance(cache, dict) else None
-    except Exception:
-        return None, "unreadable"
-    if not isinstance(pool, dict):
-        return None, "missing"
-    return pool, None
+    return snap, None
 
 
-def _retry_held_sample_build(cfg: dict):
-    """Retry the sample build a released IMDb hold was blocking: rebuild only
-    if a monitored path exists and no pool is on disk (a pool that survived
-    the failure needs no rebuild)."""
-    if _has_monitored_dirs(cfg) and _read_sample_pool()[0] is None:
-        refresh_sample_pool()
+def _simulate_evidence(cfg: dict) -> bool:
+    """Proof that a Simulate (or any completed scan) has already seen THIS
+    library: the snapshot every completed scan writes, stamped with the paths
+    it scanned. Used by the arming gate when space limits are satisfied — the
+    eligible queue can legitimately be empty then, so the plan stamp alone
+    can't prove a Simulate happened. A snapshot built from different monitored
+    paths is not evidence for the current ones."""
+    snap, err = _read_library_snapshot()
+    if err is not None or not snap.get("built_at"):
+        return False
+    dirs = snap.get("monitor_dirs")
+    return (isinstance(dirs, list)
+            and sorted(str(d) for d in dirs) == _normalized_monitor_dirs(cfg))
 
 
 # ── Disk / status helpers ─────────────────────────────────────────────────────
 
-def disk_stats(check: str | None = None) -> dict | None:
+def disk_stats() -> dict | None:
     try:
-        if check is None or str(check).strip() in ("", "/mnt/user"):
-            check = FILESYSTEM_CHECK_PATH
-        u = shutil.disk_usage(check)
+        u = shutil.disk_usage(FILESYSTEM_CHECK_PATH)
         used_gb  = round(u.used  / 1e9, 1)
         total_gb = round(u.total / 1e9, 1)
         free_gb  = round(u.free  / 1e9, 1)
@@ -1853,10 +1654,10 @@ def disk_stats(check: str | None = None) -> dict | None:
         return None
 
 
-def _coerce_float(value, *, allow_none: bool = False) -> tuple[float | None, bool]:
-    """Return (number, ok). Empty optional values are treated as None."""
-    if value is None or (allow_none and str(value).strip() == ""):
-        return None, allow_none
+def _coerce_float(value) -> tuple[float | None, bool]:
+    """Return (number, ok)."""
+    if value is None:
+        return None, False
     try:
         return float(value), True
     except (TypeError, ValueError):
@@ -1882,7 +1683,7 @@ def _threshold_gb_or_none(value):
 
 
 def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
-                           library_gb=None) -> dict:
+                           library_gb=None, *, candidate_cfg: bool = False) -> dict:
     """Validate Space Thresholds for simulate and live runs.
 
     Simulate is deliberately allowed when HEADROOM_GB is above the safety percentage,
@@ -1992,24 +1793,46 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     simulate_errors = _dedupe(hard_errors)
     headroom_errors = _dedupe(hard_errors + safety_errors)
 
-    # User-facing Live (arming automatic mode, the manual Live Run button) needs a
-    # deletion plan computed under the CURRENT thresholds whenever limits are breached:
-    # moving Headroom/Redline/Cap into breach territory ghosts Live until a Simulate
-    # refreshes the plan. Deliberately NOT part of ok_for_live — the scheduler
-    # recomputes its own plan every run and must not auto-pause an armed Live over this.
+    # User-facing Live (arming automatic mode, the manual Live Run button) always
+    # requires that a Simulate has seen the library under the CURRENT config:
+    #   • limits breached (or redline-only, which deletes the moment its floor is
+    #     hit): a deletion plan stamped with exactly these thresholds — moving
+    #     Headroom/Redline/Cap ghosts Live until a Simulate refreshes it;
+    #   • limits satisfied: proof a Simulate has run at least once — the plan
+    #     stamp when there is one, else the library snapshot every completed
+    #     scan writes (within limits the eligible queue can legitimately be
+    #     empty, so the snapshot is the evidence).
+    # Deliberately NOT part of ok_for_live — the scheduler recomputes its own
+    # plan every run and must not auto-pause an armed Live over this.
     simulate_required = False
+    simulate_first_time = False
     if not headroom_errors:
         try:
+            _plan_current = _pending_plan_current(cfg, use_saved_file=not candidate_cfg)
             if _redline_only_mode_cfg(cfg):
-                # Redline deletes immediately when hit, so Live always needs a
-                # current plan (the standing deletion-order preview) — not just
-                # when a limit is already breached.
-                simulate_required = not _pending_plan_current(cfg)
+                simulate_required = not _plan_current
+            elif _deletion_limits_exceeded(cfg, disk, library_gb_val):
+                simulate_required = not _plan_current
             else:
-                simulate_required = (_deletion_limits_exceeded(cfg, disk, library_gb_val)
-                                     and not _pending_plan_current(cfg))
+                simulate_required = not (_plan_current or _simulate_evidence(cfg))
+                simulate_first_time = simulate_required
         except Exception:
             simulate_required = False
+
+    if not simulate_required:
+        simulate_required_message = ""
+    elif _redline_only_mode_cfg(cfg):
+        simulate_required_message = ("Run Simulate to build the Redline deletion-order "
+                                     "preview before enabling Live.")
+    elif simulate_first_time:
+        simulate_required_message = ("Run Simulate once so MediaReducer has scanned "
+                                     "your library before enabling automatic mode.")
+    elif _pending_raw():
+        # A plan exists but its stamp no longer matches — the settings moved.
+        simulate_required_message = ("Settings changed since the last Simulate — "
+                                     "run it again to rebuild the deletion plan.")
+    else:
+        simulate_required_message = SIMULATE_REQUIRED_MESSAGE
 
     return {
         "ok_for_simulate": not simulate_errors,
@@ -2020,6 +1843,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
         # note words itself around this.
         "safety_blocked": not (safety_ok and cap_safety_ok),
         "simulate_required": simulate_required,
+        "simulate_required_message": simulate_required_message,
         "simulate_tooltip": " ".join(simulate_errors),
         "live_tooltip": " ".join(headroom_errors),
     }
@@ -3186,8 +3010,7 @@ def api_debug_run_state():
     cfg = load_config()
     lines = ["Run & engine state debug", ""]
     lines.append(f"RUN_MODE={cfg.get('RUN_MODE')!r}")
-    lines.append(f"run_active={_run_active} | summary_refresh_active={_summary_active} | "
-                 f"sample_refresh_active={_sample_pool_active}")
+    lines.append(f"run_active={_run_active} | summary_refresh_active={_summary_active}")
     job = scheduler.get_job("engine")
     next_run = getattr(job, "next_run_time", None)
     lines.append(f"scheduler: tick every {SCHEDULE_INTERVAL_MINUTES} min | next tick: "
@@ -3237,11 +3060,6 @@ def api_debug_run_state():
     except Exception as e:
         lines.append(f"  unreadable: {e}")
 
-    lines.append("")
-    lines.append("Last sample-library refresh:")
-    lines.append(f"  ok={_sample_pool_last.get('ok')} | error_code={_sample_pool_last.get('error_code') or '(none)'} | "
-                 f"message={_sample_pool_last.get('message') or '(none)'}")
-
     try:
         archived = sorted(p.name for p in logs_dir().glob("*.log"))
     except Exception:
@@ -3252,42 +3070,43 @@ def api_debug_run_state():
     return jsonify({"ok": True, "text": "\n".join(lines)})
 
 
-@app.route("/api/debug/sample-pool", methods=["POST"])
-def api_debug_sample_pool():
-    """Filtering & Scoring debug: how the current library sample was built."""
+@app.route("/api/debug/library-snapshot", methods=["POST"])
+def api_debug_library_snapshot():
+    """Filtering & Scoring debug: what the current library snapshot holds."""
     cfg = load_config()
-    lines = ["Library sample debug", ""]
+    lines = ["Library snapshot debug", ""]
     lines.append(f"USE_PLEX={bool(cfg.get('USE_PLEX'))} | USE_JELLYFIN={bool(cfg.get('USE_JELLYFIN'))}")
     monitor_dirs = [str(d) for d in (cfg.get("MONITOR_DIRS") or [])]
-    lines.append("monitored paths (sample only draws from these): "
-                 + (", ".join(monitor_dirs) or "(none — sample stays blank)"))
-    lines.append(f"refresh in progress: {_sample_pool_active} | last refresh: "
-                 f"ok={_sample_pool_last.get('ok')} error_code={_sample_pool_last.get('error_code') or '(none)'} "
-                 f"message={_sample_pool_last.get('message') or '(none)'}")
-    lines.append(f"IMDb ratings dataset on disk: {imdb_ratings_path().exists()} "
-                 f"(required for the sample — builds download it when missing)")
+    lines.append("monitored paths (the snapshot only holds movies under these): "
+                 + (", ".join(monitor_dirs) or "(none)"))
+    lines.append(f"IMDb ratings dataset on disk: {imdb_ratings_path().exists()}")
 
     lines.append("")
-    data, pool_err = _read_sample_pool()
+    data, pool_err = _read_library_snapshot()
     if pool_err:
-        lines.append(f"sample pool (cache.json): ({'missing — no sample built yet' if pool_err == 'missing' else 'unreadable'})")
+        lines.append(f"library snapshot (cache.json): ({'missing — run a Simulate to build it' if pool_err == 'missing' else 'unreadable'})")
         return jsonify({"ok": True, "text": "\n".join(lines)})
     movies = data.get("movies") or []
     rated = sum(1 for m in movies if m.get("rating") is not None)
     protected = sum(1 for m in movies if m.get("protected"))
     favorite = sum(1 for m in movies if m.get("favorite"))
     unplayed = sum(1 for m in movies if not m.get("plays"))
-    lines.append(f"sample pool: built {_fmt_epoch(data.get('built_at'))} | {len(movies)} movies | "
+    lines.append(f"library snapshot: built {_fmt_epoch(data.get('built_at'))} | {len(movies)} movies | "
                  f"rated={rated} | protected={protected} | favorite={favorite} | unplayed={unplayed}")
     lines.append("")
+    # The snapshot is the ENTIRE library — cap the per-movie dump so the debug
+    # popup stays usable on big collections.
+    _dump_cap = 1000
     lines.append("Entries (scoring inputs per movie):")
-    for m in movies:
+    for m in movies[:_dump_cap]:
         lines.append(f"  {m.get('title') or '(no title)'} ({m.get('year') or '?'}) | "
                      f"rating={m.get('rating')} votes={m.get('votes')} | plays={m.get('plays')} "
                      f"users={m.get('users')} | last_played={_fmt_epoch(m.get('last_played'))} | "
                      f"added={_fmt_epoch(m.get('added_at'))} | size={m.get('size_gb')} GB"
                      + (" | PROTECTED" if m.get("protected") else "")
                      + (" | FAVORITE" if m.get("favorite") else ""))
+    if len(movies) > _dump_cap:
+        lines.append(f"  … and {len(movies) - _dump_cap} more (first {_dump_cap} shown)")
     return jsonify({"ok": True, "text": "\n".join(lines)})
 
 
@@ -3647,12 +3466,12 @@ def _build_debug_report() -> str:
         add("  cache.json: (missing)")
     except Exception as e:
         add(f"  cache.json: unreadable — {s.redact(str(e))}")
-    pool, pool_err = _read_sample_pool()
+    pool, pool_err = _read_library_snapshot()
     if pool_err:
-        add(f"  sample pool: ({pool_err})")
+        add(f"  library snapshot: ({pool_err})")
     else:
         pm = pool.get("movies") or []
-        add(f"  sample pool: {len(pm)} movies | built {_fmt_epoch(pool.get('built_at'))} | "
+        add(f"  library snapshot: {len(pm)} movies | built {_fmt_epoch(pool.get('built_at'))} | "
             f"rated={sum(1 for m in pm if m.get('rating') is not None)} | "
             f"protected={sum(1 for m in pm if m.get('protected'))} | favorite={sum(1 for m in pm if m.get('favorite'))}")
     try:
@@ -3775,7 +3594,7 @@ def _build_debug_report() -> str:
 
     add("")
     add("run/refresh flags at report time: "
-        f"run_active={_run_active} summary_active={_summary_active} sample_refresh_active={_sample_pool_active}")
+        f"run_active={_run_active} summary_active={_summary_active}")
 
     return s.scrub("\n".join(L)) + "\n"
 
@@ -3859,7 +3678,6 @@ def _connection_health_state(cfg: dict | None = None, *, probe: bool = False) ->
     errors: list[str] = []
     warnings: list[str] = []
     highlights: list[str] = []
-    disabled_fields: list[str] = []
     mount_highlights: list[str] = []
     cleanup_warning_msgs: list[str] = []
     optional_cleanup_warned = False
@@ -3889,18 +3707,16 @@ def _connection_health_state(cfg: dict | None = None, *, probe: bool = False) ->
                 out.append(item)
         return out
 
-    def add_error(message: str, fields: list[str] | tuple[str, ...] = (), mounts_to_highlight: list[str] | tuple[str, ...] = (), disabled: list[str] | tuple[str, ...] = ()):  # keep order / de-dupe later
+    def add_error(message: str, fields: list[str] | tuple[str, ...] = (), mounts_to_highlight: list[str] | tuple[str, ...] = ()):  # keep order / de-dupe later
         errors.append(message)
         highlights.extend(fields)
         mount_highlights.extend(mounts_to_highlight)
-        disabled_fields.extend(disabled)
 
-    def add_warning(message: str, fields: list[str] | tuple[str, ...] = (), mounts_to_highlight: list[str] | tuple[str, ...] = (), disabled: list[str] | tuple[str, ...] = (), cleanup: bool = False):
+    def add_warning(message: str, fields: list[str] | tuple[str, ...] = (), mounts_to_highlight: list[str] | tuple[str, ...] = (), cleanup: bool = False):
         nonlocal optional_cleanup_warned
         warnings.append(message)
         highlights.extend(fields)
         mount_highlights.extend(mounts_to_highlight)
-        disabled_fields.extend(disabled)
         optional_cleanup_warned = optional_cleanup_warned or cleanup
         if cleanup:
             # Remembered Radarr state, shown only when cleanup is enabled, so it must
@@ -4098,7 +3914,6 @@ def _connection_health_state(cfg: dict | None = None, *, probe: bool = False) ->
     errors = dedupe(errors)
     warnings = dedupe(warnings)
     highlights = dedupe(highlights)
-    disabled_fields = dedupe(disabled_fields)
     mount_highlights = dedupe(mount_highlights)
 
     # Radarr connection problems show on the Radarr URL/API fields — the Optional
@@ -4140,7 +3955,6 @@ def _connection_health_state(cfg: dict | None = None, *, probe: bool = False) ->
         "errors": errors,
         "warnings": warnings,
         "highlights": highlights,
-        "disabled_fields": disabled_fields,
         "radarr_cleanup_forced_disabled": radarr_cleanup_forced_disabled,
         "media_path_blocker": media_path_blocker,
         "filesystem_blocker": filesystem_blocker,
@@ -4210,7 +4024,6 @@ def _refresh_connection_health_cache(cfg: dict | None = None, *, probe: bool = T
             "errors": [str(e)],
             "warnings": [],
             "highlights": [],
-            "disabled_fields": [],
             "mount_highlights": [],
             "has_visible_issues": True,
             "probed": probe,
@@ -4220,22 +4033,11 @@ def _refresh_connection_health_cache(cfg: dict | None = None, *, probe: bool = T
             "invalid_config": list(_CONFIG_FILE_ISSUES),
         }
     with _connection_health_cache_lock:
-        previous_ok = (_connection_health_cache.get("health") or {}).get("critical_ok")
-        previous_sig = _connection_health_cache.get("signature")
         _connection_health_cache.update({
             "signature": sig,
             "health": health,
             "checked_at": time.time(),
         })
-    # Reconnect detection: the media server API was down on the last probe and answers
-    # now. The sample may be stale/missing, so pull a fresh batch (no-op without
-    # monitored paths). previous_ok None means "never probed" = startup, not a reconnect
-    # (startup builds no sample). Only counts when the last probe was of the SAME config
-    # (signature match): a failing what-if check of unsaved values must not make the
-    # next probe of the healthy saved config read as down->up and rebuild for nothing.
-    if (previous_ok is False and previous_sig == sig
-            and health.get("critical_ok") and _has_monitored_dirs(cfg)):
-        refresh_sample_pool()
     return health
 
 
@@ -4428,14 +4230,6 @@ NO_MONITORED_DIRS_MESSAGE = "No monitored library paths are set — add one on t
 SIMULATE_REQUIRED_MESSAGE = "Over space limits — run Simulate to review the deletion plan first."
 
 
-def _simulate_required_message(cfg: dict | None = None) -> str:
-    """Why Live is ghosted pending a Simulate — redline-only mode has its own
-    reason (the standing preview), everything else is the over-limits message."""
-    if _redline_only_mode_cfg(cfg):
-        return ("Run Simulate to build the Redline deletion-order preview "
-                "before enabling Live.")
-    return SIMULATE_REQUIRED_MESSAGE
-
 def _has_monitored_dirs(cfg: dict | None = None) -> bool:
     """Return True when at least one monitored library path is configured."""
     cfg = cfg or load_config()
@@ -4463,6 +4257,7 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
             "simulate_tooltip": msg,
             "live_disabled": True,
             "live_tooltip": msg,
+            "space_satisfied": False,
             "space_thresholds": threshold_state,
             "connection_health": health,
         }
@@ -4478,14 +4273,17 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
             "simulate_tooltip": NO_MONITORED_DIRS_MESSAGE,
             "live_disabled": True,
             "live_tooltip": NO_MONITORED_DIRS_MESSAGE,
+            "space_satisfied": False,
             "space_thresholds": threshold_state,
             "connection_health": health,
         }
 
-    # Everything configured and connected — but if every space limit is satisfied a run
-    # would delete nothing, so ghost Simulate and Live with the reason instead of
-    # starting a pointless run. Unknown values fail OPEN (buttons stay enabled; the
-    # engine is the authority and no-ops safely), like _deletion_limits_exceeded.
+    # Everything configured and connected — but if every space limit is satisfied a
+    # LIVE run would delete nothing, so ghost Live with the reason. Simulate never
+    # ghosts on satisfied limits in any mode: its job includes building/refreshing
+    # the standing marked & eligible queue, which exists regardless of breach state.
+    # Unknown values fail OPEN (buttons stay enabled; the engine is the authority
+    # and no-ops safely), like _deletion_limits_exceeded.
     satisfied_msg = ""
     if threshold_state["ok_for_simulate"] or threshold_state["ok_for_live"]:
         try:
@@ -4498,23 +4296,21 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
     # Over limits without a plan computed under these exact thresholds, the manual Live
     # Run ghosts too — it deletes immediately, so the user must have seen what a run
     # would remove. Simulate stays available: running it is how Live gets un-ghosted.
-    # Redline-only mode inverts two pieces: being within limits is the NORMAL state
-    # (so it never ghosts Simulate — that's how the standing preview is built or
-    # refreshed) and never masks the plan requirement.
+    # Redline-only mode never masks the plan requirement behind satisfied limits.
     rl_only = _redline_only_mode_cfg(cfg)
     simulate_required = bool(threshold_state.get("simulate_required")) and (rl_only or not satisfied_msg)
 
     return {
         "summary_disabled": False,
         "summary_tooltip": "",
-        "simulate_disabled": not threshold_state["ok_for_simulate"] or (bool(satisfied_msg) and not rl_only),
-        "simulate_tooltip": threshold_state["simulate_tooltip"] or ("" if rl_only else satisfied_msg),
+        "simulate_disabled": not threshold_state["ok_for_simulate"],
+        "simulate_tooltip": threshold_state["simulate_tooltip"],
         "live_disabled": (not threshold_state["ok_for_live"] or bool(satisfied_msg)
                           or simulate_required),
         "live_tooltip": (threshold_state["live_tooltip"]
-                         or (_simulate_required_message(cfg) if simulate_required and rl_only else "")
+                         or (threshold_state.get("simulate_required_message", "") if simulate_required and rl_only else "")
                          or satisfied_msg
-                         or (_simulate_required_message(cfg) if simulate_required else "")),
+                         or (threshold_state.get("simulate_required_message", "") if simulate_required else "")),
         "space_satisfied": bool(satisfied_msg),
         "space_thresholds": threshold_state,
         "connection_health": health,
@@ -4784,16 +4580,32 @@ def pending_count() -> int:
     return len(_pending_raw())
 
 
-def _clear_pending_deletions() -> bool:
-    """Drop the whole marked-for-deletion queue. Callers must ensure no run is
-    active (the engine owns the file during a run); the config-save path guards
-    that by re-checking _run_active/_summary_active under _run_lock right at
-    the clear. Missing file already means an empty queue."""
-    try:
-        pending_path().unlink(missing_ok=True)
-        return True
-    except OSError:
-        return False
+def _unschedule_pending_marks() -> int:
+    """Null every running delay clock (marked_at) in the queue, keeping the
+    queue itself — it is the standing eligible deletion order in every mode,
+    and the engine's own satisfied-limits upkeep does exactly the same
+    (_revalidate_pending_marks). Returns how many marks were unscheduled.
+    Callers must ensure no run is active (the engine owns the file during a
+    run); the config-save path guards that by re-checking
+    _run_active/_summary_active under _run_lock right at the write."""
+    data = _pending_file_data()
+    if not isinstance(data, dict):
+        return 0
+    data = json.loads(json.dumps(data))  # never mutate the shared memo in place
+    entries = data.get("entries")
+    if not isinstance(entries, dict):
+        return 0
+    unscheduled = 0
+    for e in entries.values():
+        if isinstance(e, dict) and e.get("marked_at") is not None:
+            e["marked_at"] = None
+            unscheduled += 1
+    if unscheduled:
+        try:
+            _atomic_write_json(pending_path(), data, indent=2)
+        except OSError:
+            return 0
+    return unscheduled
 
 
 def _normalized_monitor_dirs(cfg: dict) -> list[str]:
@@ -4818,14 +4630,23 @@ _PLAN_CONFIG_KEYS = (
 )
 
 
-def _pending_plan_current(cfg: dict) -> bool:
+def _pending_plan_current(cfg: dict, *, use_saved_file: bool = True) -> bool:
     """True when the marked-for-deletion queue holds a plan computed under the CURRENT
     deletion-affecting config — thresholds, filters, scoring, and monitored paths, all
     stamped by a completed Simulate (a stopped/partial one never writes). Any mismatch
     means the plan can't be trusted: Live locks until a fresh Simulate, which also pulls
-    fresh play/last-played data in its full scan."""
+    fresh play/last-played data in its full scan.
+
+    use_saved_file=False compares against the PASSED cfg instead of the file on
+    disk — the config-save arming gate must judge the plan against the candidate
+    config being saved, not the old file it is about to replace (else one save
+    could change thresholds AND arm automatic mode against a stamp only the old
+    thresholds match)."""
     data = _pending_file_data()
-    if not data or not isinstance(data.get("entries"), dict) or not data["entries"]:
+    # An EMPTY stamped queue is a real plan: a completed Simulate that found
+    # nothing eligible under these settings (all filtered/protected). Treating
+    # it as stale would loop the user through Simulate forever.
+    if not data or not isinstance(data.get("entries"), dict):
         return False
     if (not isinstance(data.get("monitor_dirs"), list)
             or sorted(str(d) for d in data["monitor_dirs"]) != _normalized_monitor_dirs(cfg)):
@@ -4833,6 +4654,24 @@ def _pending_plan_current(cfg: dict) -> bool:
     stamp = data.get("plan_config")
     if not isinstance(stamp, dict) or set(stamp) != set(_PLAN_CONFIG_KEYS):
         return False
+
+    # Compare RAW config.json values, like the engine's _plan_stamp_current: the
+    # stamp holds the file's verbatim values, and load_config()'s normalization
+    # (rounding SCORE_BALANCE, clamping cutoffs) would make a hand-edited
+    # off-grid value mismatch its own stamp forever — every fresh Simulate would
+    # instantly read as stale. Falls back to the normalized cfg only when the
+    # file is unreadable (invalid config locks runs anyway).
+    raw_saved = _read_saved_config_file() if use_saved_file else None
+    src = raw_saved if isinstance(raw_saved, dict) else cfg
+    current = {key: src.get(key) for key in _PLAN_CONFIG_KEYS}
+    try:
+        # Mirror the engine's one stamp normalization: a rating cutoff <= 0
+        # reads as disabled (None) on both sides.
+        _rating = current.get("MAX_IMDB_RATING")
+        if _rating is not None and float(_rating) <= 0:
+            current["MAX_IMDB_RATING"] = None
+    except (TypeError, ValueError):
+        pass
 
     def _norm(value):
         if value is None or isinstance(value, bool) or isinstance(value, str):
@@ -4844,17 +4683,66 @@ def _pending_plan_current(cfg: dict) -> bool:
         except (TypeError, ValueError):
             return "invalid"
 
-    return all(_norm(stamp.get(key)) == _norm(cfg.get(key))
+    return all(_norm(stamp.get(key)) == _norm(current.get(key))
                for key in _PLAN_CONFIG_KEYS)
 
 
+def _redline_deficit_bytes(cfg: dict) -> int:
+    """Bytes a Redline breach would need to free right now — 0 above the floor,
+    outside redline-only mode, or when the disk can't be read."""
+    if not _redline_only_mode_cfg(cfg):
+        return 0
+    try:
+        free_gb = float((disk_stats() or {}).get("free_gb"))
+        red_gb = float(cfg.get("REDLINE_GB"))
+    except (TypeError, ValueError):
+        return 0
+    return int((red_gb - free_gb) * 1_000_000_000) if free_gb < red_gb else 0
+
+
+def _marked_imminent_count(cfg: dict) -> int:
+    """The 'marked' half of the Marked & Eligible display. Redline-only: the
+    queue-front entries covering the current Redline deficit. Every other
+    mode: the entries the engine actually scheduled (delay clock running)."""
+    raw = _pending_raw()
+    if not raw:
+        return 0
+    if not _redline_only_mode_cfg(cfg):
+        return sum(1 for e in raw.values()
+                   if isinstance(e, dict) and e.get("marked_at") is not None)
+    deficit = _redline_deficit_bytes(cfg)
+    if not deficit:
+        return 0
+    cum = n = 0
+    for e in raw.values():
+        if not isinstance(e, dict):
+            continue
+        if cum >= deficit:
+            break
+        cum += _entry_size_bytes(e)
+        n += 1
+    return n
+
+
+def _entry_size_bytes(e: dict) -> int:
+    """A queue entry's size_bytes as a safe non-negative int — the file is
+    hand-editable, so a string, Infinity, or garbage value must read as 0,
+    not crash every status poll."""
+    try:
+        return max(0, int(float(e.get("size_bytes") or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
 def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
-    """Marked-for-deletion entries, newest first, with days remaining computed against
-    the CURRENT delay setting (shortening the delay moves every pending deletion up).
-    Redline-only mode instead keeps the file's own order — the queue IS the deletion
-    order — and labels entries "deletes when Redline hits" (nothing is scheduled;
-    only a Redline breach deletes). Pass an already-loaded cfg when you have one —
-    the default reloads config.json."""
+    """The marked & eligible queue, in the file's own (deletion) order for every
+    mode. MARKED entries are the ones actually scheduled: in normal modes the
+    entries the engine clocked (marked_at set — delay info computed against the
+    CURRENT delay, so shortening it moves every pending deletion up); in
+    redline-only mode the queue prefix covering the current Redline deficit.
+    Everything else is merely ELIGIBLE — visible deletion order with no dates.
+    Pass an already-loaded cfg when you have one — the default reloads
+    config.json."""
     raw = _pending_raw()
     if not raw:
         return []
@@ -4863,31 +4751,51 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
     delay = _delete_delay_days(cfg)
     now = time.time()
     today = datetime.now().date()
+    _deficit_bytes = _redline_deficit_bytes(cfg)
+    _marked_bytes = 0
     out = []
     for i, (path, e) in enumerate(raw.items(), start=1):
         if not isinstance(e, dict):
             continue
         try:
-            marked_at = float(e.get("marked_at") or now)
+            marked_at = float(e["marked_at"]) if e.get("marked_at") is not None else None
         except (TypeError, ValueError):
             marked_at = now
-        # Calendar-day aging, matching the engine: marked date + delay is when the mark
-        # becomes deletable at that day's daily run.
-        delete_on = datetime.fromtimestamp(marked_at).date() + timedelta(days=delay)
-        remaining = max(0, (delete_on - today).days)
+        if marked_at is not None:
+            # A hand-edited out-of-range epoch would OverflowError the date
+            # math below and 500 every status poll — read it as "just marked".
+            # The probe includes the +delay headroom (a year-9999 epoch passes
+            # fromtimestamp but overflows date + timedelta).
+            try:
+                datetime.fromtimestamp(marked_at).date() + timedelta(days=400)
+            except (OverflowError, OSError, ValueError):
+                marked_at = now
         title = str(e.get("title") or Path(path).name)
-        size_bytes = e.get("size_bytes") or 0
+        size_bytes = _entry_size_bytes(e)
         size_label = _format_reclaimed_size(size_bytes) if size_bytes else ""
-        # Eligibility starts at midnight of delete_on: that day's daily run, or any
-        # manual Live Run from then on.
+        marked = False
+        remaining = delete_on = None
         if rl_only:
-            when = f"#{i} — deletes when Redline hits"
-        else:
+            if _marked_bytes < _deficit_bytes:
+                _marked_bytes += size_bytes
+                marked = True
+                when = f"#{i} — deletes on the next Live Run (Redline breached)"
+            else:
+                when = f"#{i} — deletes when Redline hits"
+        elif marked_at is not None:
+            # Calendar-day aging, matching the engine: marked date + delay is
+            # when the mark becomes deletable at that day's daily run (or any
+            # manual Live Run from then on).
+            marked = True
+            delete_on = datetime.fromtimestamp(marked_at).date() + timedelta(days=delay)
+            remaining = max(0, (delete_on - today).days)
             when = ("deletable now" if remaining <= 0
                     else f"deletable from {delete_on.isoformat()}")
-        marked_disp = _format_log_timestamp_for_display(
+        else:
+            when = f"#{i} — next in line if more space is needed"
+        marked_disp = "" if marked_at is None else _format_log_timestamp_for_display(
             time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(marked_at)))
-        line_parts = [marked_disp, title]
+        line_parts = [p for p in (marked_disp, title) if p]
         if size_label:
             line_parts.append(size_label)
         if e.get("score") is not None:
@@ -4903,12 +4811,11 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
             "size": size_label,
             "score": e.get("score"),
             "when": when,
-            "days_remaining": None if rl_only else remaining,
-            "delete_on": None if rl_only else delete_on.isoformat(),
+            "marked": marked,
+            "days_remaining": remaining,
+            "delete_on": delete_on.isoformat() if delete_on else None,
             "line": " | ".join(line_parts),
         })
-    if not rl_only:
-        out.sort(key=lambda x: x["marked_at"], reverse=True)
     return out
 
 
@@ -4959,12 +4866,15 @@ def pending_delete_forecast(cfg: dict | None = None) -> dict:
     if _redline_only_mode_cfg(cfg):
         return {"count": len(entries), "ripe": 0, "event_on": None,
                 "event_count": 0, "event_bytes": 0, "waiting_ages": []}
-    ripe = [e for e in entries if e["days_remaining"] <= 0]
+    # Only CLOCKED entries are scheduled; the eligible remainder of the queue
+    # (days_remaining None) has no dates and never enters the forecast.
+    clocked = [e for e in entries if e["days_remaining"] is not None]
+    ripe = [e for e in clocked if e["days_remaining"] <= 0]
     if ripe:
         event_on, batch = None, ripe   # deletable at the next daily run
     else:
-        event_on = min((e["delete_on"] for e in entries), default=None)
-        batch = [e for e in entries if e["delete_on"] == event_on] if event_on else []
+        event_on = min((e["delete_on"] for e in clocked), default=None)
+        batch = [e for e in clocked if e["delete_on"] == event_on] if event_on else []
     # Calendar-day age of each mark that is still WAITING (not yet ripe under the
     # current delay). Lowering the delay to N makes any waiting mark whose age is
     # >= N deletable at the next cleanup, so the Config page uses these to warn
@@ -4972,7 +4882,7 @@ def pending_delete_forecast(cfg: dict | None = None) -> dict:
     today = datetime.now().date()
     waiting_ages = sorted(
         (today - datetime.fromtimestamp(e["marked_at"]).date()).days
-        for e in entries if e["days_remaining"] > 0
+        for e in clocked if e["days_remaining"] > 0
     )
     return {
         "count": len(entries),
@@ -5012,6 +4922,7 @@ def dashboard():
                            deleted_reclaimed_bytes=deleted["reclaimed_bytes"],
                            deleted_reclaimed_label=deleted["reclaimed_label"],
                            marked_count=pending_count(),
+                           marked_imminent=_marked_imminent_count(cfg),
                            delete_forecast=pending_delete_forecast(cfg),
                            delete_delay_days=_delete_delay_days(cfg),
                            daily_run_time=_daily_run_time(cfg),
@@ -5079,65 +4990,35 @@ def _score_page_config(cfg: dict) -> dict:
 
 # ── Routes — API ──────────────────────────────────────────────────────────────
 
-@app.route("/api/score-sample")
-def api_score_sample():
-    """Random sample from the engine's sample pool (cache.json "sample_pool": real
-    library movies with merged Plex+Jellyfin data, built by the engine's sample_pool
-    mode — see refresh_sample_pool for triggers)."""
-    try:
-        n = max(1, min(100, int(request.args.get("n", 100))))
-    except (TypeError, ValueError):
-        n = 100
-    data, pool_err = _read_sample_pool()
+@app.route("/api/library-snapshot")
+def api_library_snapshot():
+    """The full-library snapshot from the last completed scan (cache.json
+    "library_snapshot"): every monitored-path movie with merged Plex+Jellyfin
+    data. Built by Simulate and full-scan Live runs; the Filtering & Scoring
+    page paginates and scores it client-side."""
+    data, pool_err = _read_library_snapshot()
     if pool_err == "missing":
-        if _sample_pool_last.get("error_code") == "imdb_ratings_unavailable":
-            message = ("No library sample yet — the IMDb ratings dataset could not be downloaded. "
-                       "Add it manually to the MediaReducer config folder, then press Refresh.")
-        else:
-            message = ("No library sample yet — connect Plex/Tautulli or Jellyfin, add a monitored "
-                       "library path on the Configuration page, then press Refresh to pull a batch.")
-        resp = jsonify({"ok": False, "reason": "no_pool", "message": message})
+        resp = jsonify({"ok": False, "reason": "no_pool",
+                        "message": "No library snapshot yet — run a Simulate to build it."})
         resp.headers["Cache-Control"] = "no-store"
         return resp
     movies = (data or {}).get("movies") or []
     if pool_err or not isinstance(movies, list):
         resp = jsonify({"ok": False, "reason": "bad_pool",
-                        "message": "The library sample is unreadable — press Refresh to rebuild it."})
+                        "message": "The library snapshot is unreadable — run a Simulate to rebuild it."})
         resp.headers["Cache-Control"] = "no-store"
         return resp
     if not movies:
         resp = jsonify({"ok": False, "reason": "empty_pool",
-                        "message": "The media server returned no movies to sample — press Refresh to try again."})
+                        "message": "The last scan found no movies under the monitored library paths."})
         resp.headers["Cache-Control"] = "no-store"
         return resp
-    sample = random.sample(movies, min(n, len(movies)))
-    # Whether an IMDb dataset is on disk (a TSV of any age, or a manually-placed .gz).
-    # When the pool has no ratings, the explorer uses this: present -> a rebuild will
-    # annotate it, so pull one automatically; absent -> explain it was never downloaded.
+    # Whether an IMDb dataset is on disk — when the snapshot has no ratings,
+    # the explorer uses this to explain whether the next run will annotate.
     tsv = imdb_ratings_path()
     imdb_on_disk = tsv.exists() or tsv.with_name(tsv.name + ".gz").exists()
-    resp = jsonify({"ok": True, "built_at": data.get("built_at"), "movies": sample,
+    resp = jsonify({"ok": True, "built_at": data.get("built_at"), "movies": movies,
                     "imdb_dataset_on_disk": imdb_on_disk})
-    resp.headers["Cache-Control"] = "no-store"
-    return resp
-
-@app.route("/api/score-sample/refresh", methods=["POST"])
-def api_score_sample_refresh():
-    """Rebuild the sample pool with a fresh random batch (body: {"n": count}) pulled
-    from the connected media server APIs, monitored paths only. Runs in the background —
-    poll the status endpoint below, then re-fetch /api/score-sample."""
-    data = request.get_json(silent=True) or {}
-    # Explicit user action: retries even while sample builds are held after an
-    # IMDb-dataset failure.
-    ok, msg = refresh_sample_pool(data.get("n") or 0, manual=True)
-    return jsonify({"ok": ok, "active": _sample_pool_active, "message": msg})
-
-@app.route("/api/score-sample/refresh/status")
-def api_score_sample_refresh_status():
-    resp = jsonify({"active": _sample_pool_active,
-                    "ok": _sample_pool_last.get("ok"),
-                    "message": _sample_pool_last.get("message") or "",
-                    "error_code": _sample_pool_last.get("error_code")})
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -5169,6 +5050,9 @@ def api_status():
         "deleted_reclaimed_bytes": deleted["reclaimed_bytes"],
         "deleted_reclaimed_label": deleted["reclaimed_label"],
         "marked_count":            _forecast["count"],
+        # Redline-only: how many queue-front entries cover the current deficit
+        # — the "marked" half of the dashboard's Marked & Queued button.
+        "marked_imminent_count":   _marked_imminent_count(cfg),
         "marked_ripe_count":       _forecast["ripe"],
         # Ages (calendar days) of marks still waiting out the delay — the Config
         # page warns before a save that lowers the delay enough to delete them.
@@ -5206,11 +5090,6 @@ def api_status():
         # Drives the red Configuration tab live (no reload): onboarding cue or an API
         # error in the saved config's cached health.
         "config_attention":        _connection_onboarding_needed(cfg) or _api_connection_error(cfg),
-        # A sample build that failed for the IMDb dataset shows a one-shot toast on
-        # whatever page is open; the timestamp keys it to once per failure.
-        "sample_imdb_failed_at":   (_sample_pool_last.get("failed_at")
-                                    if _sample_pool_last.get("error_code") == "imdb_ratings_unavailable"
-                                    else None),
     })
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     return resp
@@ -5462,25 +5341,11 @@ def api_save_score_config():
                     cfg.pop(_last_key, None)
             else:
                 cfg.pop(_last_key, None)
-        # SCORE_BALANCE and MAX_IMDB_RATING are edited only here (the config form never
-        # touches them), so this is the ONLY save that can cross the IMDb-needed line.
-        # Capture it before applying the updates.
-        imdb_needed_before = _imdb_needed(cfg)
         cfg.update(updates)
         if not save_config(cfg):
             return _invalid_config_response() or (jsonify({
                 "ok": False, "error": "Save was refused — config.json changed on disk. Reload the page.",
             }), 409)
-        # Rebuild the sample when the save crosses the IMDb-needed line (100% history ↔
-        # any IMDb weight/cutoff): its ratings presence depends on that, so an old pool
-        # would show every movie as "no IMDb data" (or carry ratings just turned off). A
-        # crossing save also releases the failed-IMDb-download hold — it changes what the
-        # sample is built from (crossing OUT even makes the failed download moot), the
-        # same rule /api/config applies. Without this the hold would veto the rebuild.
-        if _imdb_needed(cfg) != imdb_needed_before:
-            if _sample_pool_last.get("error_code") == "imdb_ratings_unavailable":
-                _sample_pool_last.update({"error_code": None, "failed_at": None})
-            refresh_sample_pool()
         return jsonify({"ok": True, "config": _score_page_config(cfg)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -5495,7 +5360,7 @@ def api_reset_config():
     """Wipe configuration and operational state back to first-time setup.
 
     Removes the state files the app creates: config.json, the engine's cache (which
-    includes the Score Explorer sample pool), progress state, and saved debug reports.
+    includes the library snapshot), progress state, and saved debug reports.
     LOGS ARE NEVER LOST — deleted.log and the archived logs/ folder survive, and
     lastrun.log is moved into logs/ so the Dashboard run panel starts empty while the
     run stays archived. The IMDb ratings dataset is kept so a reset never forces a
@@ -5509,19 +5374,19 @@ def api_reset_config():
             if not _run_active:
                 break
             time.sleep(0.1)
-    # A storage summary or sample build in flight would recreate cache.json with
-    # pre-reset stats moments after this wipe (its engine subprocess merges into the
-    # cache on exit), resurrecting stale numbers on the "first-time" dashboard — and the
-    # summary worker's clock restart would resume the schedule the reset just paused.
-    # Wait briefly; if one is stuck, tell the user instead of half-resetting.
+    # A storage summary in flight would recreate cache.json with pre-reset stats
+    # moments after this wipe (its engine subprocess merges into the cache on
+    # exit), resurrecting stale numbers on the "first-time" dashboard — and the
+    # summary worker's clock restart would resume the schedule the reset just
+    # paused. Wait briefly; if one is stuck, tell the user instead of half-resetting.
     for _ in range(100):  # up to ~10s
-        if not _summary_active and not _sample_pool_active:
+        if not _summary_active:
             break
         time.sleep(0.1)
-    if _summary_active or _sample_pool_active:
+    if _summary_active:
         return jsonify({
             "ok": False,
-            "error": "A background storage/library-sample refresh is still running — "
+            "error": "A background storage refresh is still running — "
                      "try the reset again in a moment.",
         }), 409
 
@@ -5705,7 +5570,7 @@ def api_save_config():
         # URL text, while the saved file holds the concrete detected section id and
         # scheme-normalized URLs. Signing the raw body made every save with Radarr
         # cleanup enabled read as "connection settings changed": Live force-paused for
-        # nothing and the sample pool rebuilt on every save.
+        # nothing and Live force-paused on every save.
         _sig_cfg = dict(cfg)
         if _sig_cfg.get("RADARR_OVERSEERR_SECTION_ID") is not None:
             _sig_cached = str(_sig_cfg.get("_RADARR_DETECTED_SECTION_ID") or "").strip()
@@ -5719,6 +5584,7 @@ def api_save_config():
         saved_was_live = _is_live_mode(saved_cfg.get("RUN_MODE"))
         forced_pause_for_api_change = False
         forced_pause_for_tautulli = False
+        forced_pause_for_threshold_change = False
         save_health = None
         radarr_section_detection = None
         radarr_section_cache_incomplete = _radarr_section_detection_cache_incomplete(cfg)
@@ -5728,6 +5594,14 @@ def api_save_config():
             # future cleanup enables.
             _clear_radarr_section_detection_cache(cfg)
 
+        # Two overlapping key lists serve two different rules — keep them apart:
+        #   • _PLAN_CONFIG_KEYS (plan staleness): everything that changes WHAT a
+        #     run would delete; any mismatch with the Simulate stamp ghosts Live.
+        #   • _threshold_snapshot (this): just the space targets + delay; a save
+        #     that changes one of THESE while limits are satisfied unschedules
+        #     the delay clocks. DELETE_DELAY_DAYS lives here deliberately and is
+        #     NOT a plan key — changing the delay re-paces marks, it doesn't
+        #     change which movies are in the plan.
         def _threshold_snapshot(config_obj: dict) -> dict:
             def _number_or_none(value):
                 if value is None or value == "":
@@ -5751,11 +5625,14 @@ def api_save_config():
             return jsonify({"ok": False, "error": "Enter a Headroom target in GB "
                                                   "(0 = trigger off)."}), 400
 
-        if _is_live_mode(saved_cfg.get("RUN_MODE")) and _threshold_snapshot(cfg) != _threshold_snapshot(saved_cfg):
-            return jsonify({
-                "ok": False,
-                "error": "Pause Live mode before changing thresholds.",
-            }), 400
+        # Changing thresholds while automatic mode is armed is allowed — the
+        # save force-pauses Live below (same pattern as connection/path
+        # changes) so the scheduler never runs on targets no Simulate has
+        # previewed. The user reviews with Simulate and re-enables.
+        threshold_change_while_live = (
+            _is_live_mode(saved_cfg.get("RUN_MODE"))
+            and _threshold_snapshot(cfg) != _threshold_snapshot(saved_cfg)
+        )
 
         try:
             headroom_gb = float(cfg.get("HEADROOM_GB"))
@@ -5924,7 +5801,12 @@ def api_save_config():
         if monitoring_changed and _is_live_mode(cfg.get("RUN_MODE")):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_monitor_change = True
-            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "monitored paths changed — the library is being re-measured."
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "monitored paths changed — run Simulate under the new paths, then re-enable Live."
+        if threshold_change_while_live and _is_live_mode(cfg.get("RUN_MODE")):
+            cfg["RUN_MODE"] = "paused"
+            forced_pause_for_threshold_change = True
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed — run Simulate to review "
+                                                 "the new plan, then re-enable Live.")
         if _is_live_mode(cfg.get("RUN_MODE")) and not save_health.get("critical_ok", True):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_tautulli = True
@@ -5932,23 +5814,32 @@ def api_save_config():
                                                  or "the media server connection is not healthy.")
 
         if _is_live_mode(cfg.get("RUN_MODE")):
-            thresholds = _space_threshold_state(cfg, disk_stats())
+            # candidate_cfg: the plan stamp must be judged against the config
+            # BEING SAVED, not the old file it replaces — otherwise one save
+            # could change thresholds AND arm automatic mode against a stamp
+            # only the old thresholds match.
+            thresholds = _space_threshold_state(cfg, disk_stats(), candidate_cfg=True)
             if not thresholds.get("ok_for_live"):
+                # Only reachable with UNCHANGED thresholds (a threshold change
+                # while armed force-pauses above): point at the fix.
+                _hint = ("" if not _is_live_mode(saved_cfg.get("RUN_MODE"))
+                         else " Adjust the thresholds — saving a threshold change "
+                              "pauses Automatic Run Mode so you can review with Simulate.")
                 return jsonify({
                     "ok": False,
-                    "error": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
+                    "error": (thresholds.get("live_tooltip") or "Fix Space Thresholds first.") + _hint,
                 }), 400
-            # Arming Live over breached limits requires a deletion plan computed under
-            # exactly these thresholds: Simulate writes the marked-for-deletion queue
-            # (what deletes, and when each becomes eligible). Without it — or after a
-            # threshold change stales it — the first automatic run would act sight-unseen.
+            # Arming automatic mode always requires that a Simulate has seen the
+            # library: over breached limits that means a deletion plan stamped
+            # under exactly these thresholds; within limits, proof that at least
+            # one Simulate has run (the library snapshot). Without it the first
+            # automatic run would act sight-unseen.
             if (not _is_live_mode(saved_cfg.get("RUN_MODE"))
                     and thresholds.get("simulate_required")):
                 return jsonify({
                     "ok": False,
-                    "error": (_simulate_required_message(cfg) if _redline_only_mode_cfg(cfg)
-                              else "Over space limits — run Simulate to review the deletion plan, "
-                                   "then enable Live."),
+                    "error": (thresholds.get("simulate_required_message")
+                              or "Run Simulate first, then enable Live."),
                 }), 400
 
         # An empty MONITOR_DIRS is valid and means "manage nothing" until the
@@ -6099,24 +5990,22 @@ def api_save_config():
             burn_daily_window_on_startup(reason="daily run time moved earlier")
         elif not _tz_changed and _run_time_moved_ahead_today(_old_rt, _new_rt, _now_hhmm):
             reopen_daily_window(reason="daily run time moved later")
-        # Removing or lowering a space limit orphans the marked-for-deletion queue:
-        # the marks were a plan for a breach that no longer exists. The engine clears
-        # the queue the same way during its periodic Summary, but a threshold-only save
-        # skips that refresh — and once every limit is satisfied Simulate is disabled,
-        # so the marks would otherwise be stuck with no way to clear them. Reconcile
-        # here ONLY when this save actually changed a threshold: an unrelated save
-        # judging "satisfied" off a stale cached library size would wipe current
-        # marks and silently reset their delay clocks. Disk figures are read fresh
-        # for the same reason (statvfs is cheap; only the library walk is cached).
-        # Redline-only mode is exempt: within-limits is its normal state and the
-        # queue is its standing deletion-order preview, not an orphaned plan.
-        # The whole check-and-clear runs under _run_lock: the entry guard's
-        # _run_active check is stale by now (the connection probes above take
-        # seconds), and a run or Summary starting mid-clear does its own
-        # load→modify→save of the same file — it would resurrect a queue cleared
-        # mid-flight. Holding the lock keeps runs from starting until the clear
-        # lands; if one is already active, the next Summary reconciles instead.
-        pending_cleared = 0
+        # Removing or lowering a space limit unschedules the marked prefix: the
+        # running delay clocks were for a breach that no longer exists. The queue
+        # itself stays — it is the standing eligible deletion order in every mode,
+        # exactly matching the engine's own satisfied-limits upkeep
+        # (_revalidate_pending_marks). Reconcile here ONLY when this save actually
+        # changed a threshold: an unrelated save judging "satisfied" off a stale
+        # cached library size would silently reset current delay clocks. Disk
+        # figures are read fresh for the same reason (statvfs is cheap; only the
+        # library walk is cached). Redline-only mode is exempt: its queue never
+        # carries clocks in the first place. The whole check-and-write runs under
+        # _run_lock: the entry guard's _run_active check is stale by now (the
+        # connection probes above take seconds), and a run or Summary starting
+        # mid-write does its own load→modify→save of the same file. Holding the
+        # lock keeps runs from starting until the write lands; if one is already
+        # active, the next Summary reconciles instead.
+        pending_unscheduled = 0
         with _run_lock:
             if (not _run_active and not _summary_active and pending_count()
                     and not _redline_only_mode_cfg(cfg)
@@ -6127,8 +6016,7 @@ def api_save_config():
                 except Exception:
                     _disk, _lib_gb = None, None
                 if not _deletion_limits_exceeded(cfg, _disk, _lib_gb):
-                    pending_cleared = pending_count()
-                    _clear_pending_deletions()
+                    pending_unscheduled = _unschedule_pending_marks()
 
         # Storage stats only refresh when the saved config changes what the size scan
         # measures. Runs do their own precheck, so threshold-only saves stay quick and
@@ -6138,32 +6026,6 @@ def api_save_config():
         if _should_refresh_summary_after_config_save(saved_cfg, cfg):
             summary_started, summary_message = run_summary()
 
-        # A failed IMDb download holds sample builds, but this save may have fixed the
-        # cause or legitimately re-triggered a rebuild: release the hold when the dataset
-        # URL changed, the dataset appeared on disk, or the save changes what the sample
-        # is built from (monitored paths / API connection). Unrelated saves keep the
-        # hold, silently.
-        sample_hold_released = False
-        if _sample_pool_last.get("error_code") == "imdb_ratings_unavailable":
-            imdb_url_changed = (str(cfg.get("IMDB_RATINGS_URL") or "").strip()
-                                != str(saved_cfg.get("IMDB_RATINGS_URL") or "").strip())
-            if (imdb_url_changed or monitoring_changed or api_config_changed
-                    or _imdb_dataset_ready(cfg)):
-                _sample_pool_last.update({"error_code": None, "failed_at": None})
-                sample_hold_released = True
-
-        # Rebuild the sample only on saves that change what it draws from: the monitored
-        # paths or the API connection (plus a save that released the IMDb hold — that
-        # held build wanted to run). A merely missing pool (e.g. after Clear Cache) never
-        # triggers one; the explorer's Refresh button pulls a batch on demand. Also
-        # rebuild when the run crosses the IMDb-needed line (100% history ↔ any IMDb
-        # weight/cutoff): its ratings presence depends on that, so an old pool would show
-        # every movie as "no IMDb data" (or carry ratings just turned off).
-        imdb_need_changed = _imdb_needed(cfg) != _imdb_needed(saved_cfg)
-        if save_health is not None and save_health.get("critical_ok") and _has_monitored_dirs(cfg):
-            if api_config_changed or monitoring_changed or sample_hold_released or imdb_need_changed:
-                refresh_sample_pool()
-
         return jsonify({
             "ok": True,
             "config": cfg,
@@ -6172,19 +6034,22 @@ def api_save_config():
             "server_software_auto_disabled": server_software_auto_disabled,
             "radarr_section_detection": radarr_section_detection,
             "automatic_run_mode_paused": (forced_pause_for_api_change or forced_pause_for_tautulli
-                                          or forced_pause_for_monitor_change),
+                                          or forced_pause_for_monitor_change
+                                          or forced_pause_for_threshold_change),
             "automatic_run_mode_paused_reason": (
                 "connection settings changed."
                 if forced_pause_for_api_change else
-                "monitored paths changed — the library is being re-measured."
+                "monitored paths changed — run Simulate under the new paths, then re-enable Live."
                 if forced_pause_for_monitor_change else
+                "space thresholds changed — run Simulate to review the new plan, then re-enable Live."
+                if forced_pause_for_threshold_change else
                 (save_health.get("required_tooltip") if save_health else "")
                 or "the media server connection is not healthy."
                 if forced_pause_for_tautulli else ""
             ),
             "radarr_cleanup_forced_disabled": radarr_cleanup_forced_disabled,
             "summary_refresh_started": summary_started,
-            "pending_cleared": pending_cleared,
+            "pending_unscheduled": pending_unscheduled,
         })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -6236,14 +6101,6 @@ def api_imdb_download():
         tmp.write_bytes(tsv_data)
         tmp.replace(target)
 
-        # The dataset problem is resolved: release the sample-build hold and retry only
-        # if one was actually held — a merely missing sample (Clear Cache) stays missing
-        # until Refresh.
-        had_hold = _sample_pool_last.get("error_code") == "imdb_ratings_unavailable"
-        _sample_pool_last.update({"error_code": None, "failed_at": None})
-        if had_hold:
-            _retry_held_sample_build(load_config())
-
         new_status = _imdb_download_state()
         return jsonify({
                 "ok": True,
@@ -6273,6 +6130,20 @@ def api_clear_cache():
             "message": "A run is active. Try again when it finishes.",
             "status": _cache_clear_state(),
         }), 409
+    # A storage summary in flight merges its stats back into cache.json on exit —
+    # an unlink racing that write gets silently resurrected with the whole
+    # pre-clear cache. Same wait-then-refuse as the full reset.
+    for _ in range(100):  # up to ~10s
+        if not _summary_active:
+            break
+        time.sleep(0.1)
+    if _summary_active:
+        return jsonify({
+            "ok": False,
+            "message": "A background storage refresh is still running — "
+                       "try again in a moment.",
+            "status": _cache_clear_state(),
+        }), 409
 
     p = cache_path()
     if not p.exists():
@@ -6294,11 +6165,13 @@ def api_clear_cache():
         # Corrupt/unreadable cache still gets deleted below.
         pass
 
-    # Full wipe — the Filtering & Scoring sample goes with it. It only returns when the
-    # user presses Refresh or changes the monitored paths / API connections; nothing
-    # rebuilds it just because it is missing.
+    # Full wipe — the library snapshot goes with it, so the Filtering & Scoring
+    # table stays empty until the next Simulate or Live run rewrites it. The
+    # unlink takes the shared cache flock like every other cache.json writer, so
+    # it can't land inside an engine read-modify-write cycle.
     try:
-        p.unlink()
+        with _cache_write_lock():
+            p.unlink()
     except FileNotFoundError:
         pass  # a concurrent clear/reset already removed it — same outcome
 
@@ -6369,10 +6242,19 @@ def api_run():
             "message": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
         }), 400
 
-    # A manual Live Run deletes immediately (no delay, no daily window), so it needs a
-    # deletion plan computed under the current thresholds.
+    # A manual Live Run deletes immediately (no delay, no daily window), so over
+    # breached limits it needs a deletion plan computed under the current
+    # thresholds. Within satisfied limits the run is a harmless no-op — the
+    # fresh-stats check below reports "already satisfied" instead, which is the
+    # same reason the dashboard ghosts the button; don't demand a Simulate here.
     if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
-        return jsonify({"ok": False, "message": _simulate_required_message(cfg)}), 400
+        try:
+            _breached_now = _deletion_limits_exceeded(cfg, disk, library_stats().get("library_gb"))
+        except Exception:
+            _breached_now = True   # can't tell — keep the safe gate
+        if _breached_now:
+            return jsonify({"ok": False, "message": thresholds.get("simulate_required_message")
+                                                    or "Run Simulate first."}), 400
 
     # Same pre-check the automatic Live tick uses: if every space limit is already
     # satisfied (nothing over Headroom/Redline against the current filesystem, library
@@ -6395,18 +6277,20 @@ def api_run():
                         "ok": False,
                         "message": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
                     }), 400
-                if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
-                    return jsonify({"ok": False, "message": _simulate_required_message(cfg)}), 400
-            # Redline-only Simulate is exempt from the satisfied skip: being within
-            # limits is its normal state, and the run's job is to build/refresh the
-            # standing deletion-order preview.
-            _rl_only_sim = effective_mode == "debug_sim" and _redline_only_mode_cfg(cfg)
-            if not _rl_only_sim and not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
+            # A Simulate is exempt from the satisfied skip in EVERY mode: its job
+            # includes building/refreshing the standing marked & eligible queue,
+            # which exists regardless of breach state. Only live runs skip —
+            # and "already satisfied" outranks "run Simulate first", matching
+            # the dashboard's ghost reason for the same state.
+            if effective_mode != "debug_sim" and not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
                 return jsonify({
                     "ok": True,
                     "started": False,
                     "message": "Space limits are already satisfied.",
                 })
+            if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
+                return jsonify({"ok": False, "message": thresholds.get("simulate_required_message")
+                                                        or "Run Simulate first."}), 400
             # A manual Live Run needs no daily-window pre-check: it prunes every breached
             # target immediately, ignoring the once-per-day schedule and deletion delay
             # (both pace automatic runs).
@@ -6479,13 +6363,12 @@ def api_run_progress():
 # Match the engine's exact log strings (sim and live) so the dashboard's stat tiles
 # can deep-link into the run log. A section reports available only once the run has
 # genuinely written its marker. Each stage opens with a one-line
-# "====== <TITLE> ======" banner from the engine's log_stage() and the section starts
-# there; the older multi-line-banner and content markers stay as fallbacks so
-# archived logs written before the format change still jump correctly.
+# "====== <TITLE> ======" banner from the engine's log_stage(); the content markers
+# are fallbacks in case a banner is ever missing from a partial log.
 _LOG_SECTION_RES = {
-    "scan":      re.compile(r"={3,} SCAN ={3,}|(?<![A-Za-z])SCAN$|Processing [\d,]+ unique movie entries\."),
-    "eligible":  re.compile(r"={3,} ELIGIBLE CANDIDATES ={3,}|ELIGIBLE CANDIDATES$|Candidate stats:|candidates sorted by deletion priority"),
-    "deletions": re.compile(r"={3,} (SIMULATION|DELETIONS) ={3,}|(?<![A-Za-z])(SIMULATION|DELETIONS)$|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: "),
+    "scan":      re.compile(r"={3,} SCAN ={3,}|Processing [\d,]+ unique movie entries\."),
+    "eligible":  re.compile(r"={3,} ELIGIBLE CANDIDATES ={3,}|Candidate stats:|candidates sorted by deletion priority"),
+    "deletions": re.compile(r"={3,} (SIMULATION|DELETIONS) ={3,}|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: "),
     "summary":   re.compile(r"SUMMARY {1,2}\["),
     "errors":    re.compile(r"ERROR|ABORT|WARN(ING)?[ :]|SKIP identity_mismatch|COMPLETED WITH ERRORS"),
 }
@@ -6558,15 +6441,9 @@ def _read_tail_lines(p: Path, n: int) -> list:
 
 
 def _error_banner_start(lines: list):
-    """Index where the run-end error report begins — the "!!!!!" border line
-    just above the "COMPLETED WITH ERRORS" banner (or the banner itself). None
-    when the run has no such report."""
-    banner_i = next((i for i, ln in enumerate(lines) if "COMPLETED WITH ERRORS" in ln), None)
-    if banner_i is None:
-        return None
-    if banner_i > 0 and lines[banner_i - 1].rstrip().endswith("!!!!!"):
-        return banner_i - 1
-    return banner_i
+    """Index of the one-line "!!!!!! COMPLETED WITH ERRORS !!!!!!" banner that
+    opens the run-end error report, or None when the run has none."""
+    return next((i for i, ln in enumerate(lines) if "COMPLETED WITH ERRORS" in ln), None)
 
 
 def _extract_errors_report(lines: list, idx: dict):
@@ -6583,12 +6460,7 @@ def _extract_errors_report(lines: list, idx: dict):
     start = _error_banner_start(lines)
     if start is not None:
         summary_i = idx.get("summary")
-        if summary_i is not None and summary_i > start:
-            if summary_i > 0 and lines[summary_i - 1].rstrip().endswith("====="):
-                summary_i -= 1
-            end = summary_i
-        else:
-            end = len(lines)
+        end = summary_i if (summary_i is not None and summary_i > start) else len(lines)
         return True, "".join(lines[start:end][:_LOG_SECTION_MAX_LINES])
 
     abort_re = re.compile(r"ABORT|ERROR")
@@ -6620,18 +6492,9 @@ def _extract_log_section(lines: list, kind: str):
     if idx.get(kind) is None:
         return False, ""
 
-    def _is_border(i):
-        # Border lines are timestamped rows whose message is a run of '='.
-        return 0 <= i < len(lines) and lines[i].rstrip().endswith("=====")
-
-    # Each stage's title line is wrapped in ===== borders; pull each start up to its
-    # opening border so a section owns its whole banner (and the next stage's banner
-    # opens the next section, not the tail of this one).
-    def _banner_start(i):
-        return i - 1 if (i is not None and _is_border(i - 1)) else i
-
-    starts = {k: _banner_start(idx.get(k))
-              for k in ("scan", "eligible", "deletions", "summary")}
+    # Each stage opens on its one-line "====== TITLE ======" banner; a section
+    # runs from its banner to the next later-ordered section's banner.
+    starts = {k: idx.get(k) for k in ("scan", "eligible", "deletions", "summary")}
     start = starts[kind]
 
     if kind == "summary":
@@ -6709,9 +6572,7 @@ def api_logs_deleted():
         "reclaimed_bytes": deleted["reclaimed_bytes"],
         "reclaimed_label": deleted["reclaimed_label"],
         "entries": entries,
-        "lines": [entry["line"] for entry in entries],
         "marked": marked,
-        "marked_lines": [entry["line"] for entry in marked],
         "marked_count": len(marked),
     })
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -6734,7 +6595,7 @@ def api_logs_deleted_clear():
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text("", encoding="utf-8")
-        resp = jsonify({"ok": True, "message": "Deleted history erased.", "count": 0, "reclaimed_bytes": 0, "reclaimed_label": "0 GB", "entries": [], "lines": []})
+        resp = jsonify({"ok": True, "message": "Deleted history erased.", "count": 0, "reclaimed_bytes": 0, "reclaimed_label": "0 GB", "entries": []})
     except OSError as e:
         deleted = deleted_stats()
         resp = jsonify({"ok": False, "message": f"Could not erase deleted.log: {e}", "count": deleted["count"], "reclaimed_bytes": deleted["reclaimed_bytes"], "reclaimed_label": deleted["reclaimed_label"]})
@@ -6897,10 +6758,7 @@ def _scheduled_tick():
     Summary/debug_info refresh so dashboard disk/library numbers stay fresh.
     run_script()/run_summary() each pause this clock while working and restart it from
     zero when done, so the guard below is just belt-and-suspenders against an overlap."""
-    if _run_active or _summary_active or _sample_pool_active:
-        # _sample_pool_active is the backstop: a summary finishing mid-sample restarts
-        # the clock, and a tick already in flight when the pause landed must not stack
-        # more API work onto the build.
+    if _run_active or _summary_active:
         return
 
     cfg = load_config()
