@@ -54,12 +54,16 @@ check('the eligible queue was built (every movie, in deletion order)',
   Number(s1.marked_count) > 0);
 
 // Second Simulate: exercises the metadata-cache-hit path end to end. It must
-// complete just the same (the cache makes it cheaper, never breaks it).
-const r2 = await runSimulate();
-check('second Simulate (cache path) also finishes', r2.started === true && !r2.timeout);
-const s2 = r2.status || await status();
-check('the queue is stable across a re-run',
-  Number(s2.marked_count) === Number(s1.marked_count));
+// complete just the same (the cache makes it cheaper, never breaks it). Skipped
+// with MR_E2E_SECOND_RUN=0 — the metadata cache is Plex-keyed, so a Jellyfin/
+// both re-run just repeats the first pass and adds runtime for no new coverage.
+if (process.env.MR_E2E_SECOND_RUN !== '0') {
+  const r2 = await runSimulate();
+  check('second Simulate (cache path) also finishes', r2.started === true && !r2.timeout);
+  const s2 = r2.status || await status();
+  check('the queue is stable across a re-run',
+    Number(s2.marked_count) === Number(s1.marked_count));
+}
 
 console.log('RESULT:', ok ? 'PASS' : 'FAIL');
 process.exit(ok ? 0 : 1);
