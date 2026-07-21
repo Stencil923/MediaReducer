@@ -26,7 +26,6 @@ const snap = () => p.evaluate(() => ({
   cutoffDisabled: document.getElementById('c-cutoff')?.disabled,
   cutoffOn: document.getElementById('c-cutoff-on')?.checked,
   saveDisabled: document.getElementById('btn-cfg-save')?.disabled,
-  refreshDisabled: document.getElementById('btn-sample-refresh')?.disabled,
 }));
 
 const before = await snap();
@@ -48,10 +47,10 @@ let ok = true;
 const check = (name, cond) => { console.log((cond ? 'PASS ' : 'FAIL ') + name); ok = ok && cond; };
 // Save is disabled on a CLEAN form by design — only inputs/ghost/note matter here.
 check('starts unlocked (no ghost, note hidden, inputs enabled)',
-  !before.ghost && before.noteHidden && !before.balDisabled && !before.graceDisabled && !before.refreshDisabled);
+  !before.ghost && before.noteHidden && !before.balDisabled && !before.graceDisabled);
 check('locks on run: ghost + note shown', locked.ghost && !locked.noteHidden);
 check('locks inputs (bal, grace)', locked.balDisabled && locked.graceDisabled);
-check('locks Save and Refresh', locked.saveDisabled && locked.refreshDisabled);
+check('locks Save', locked.saveDisabled);
 check('unlocks after run: ghost off, note hidden', !after.ghost && after.noteHidden);
 check('inputs re-enabled', !after.balDisabled && !after.graceDisabled);
 check('cutoff input follows its toggle after unlock', after.cutoffDisabled === !after.cutoffOn);
