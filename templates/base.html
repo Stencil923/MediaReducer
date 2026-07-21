@@ -148,7 +148,7 @@
         var(--page-bg);
     }
     /* Re-skin smoothly when the theme flips, but never animate layout. */
-    body, .site-header, .card, .card-header, .form-control, .form-select,
+    body, .site-header, .card, .card-header, .form-control,
     .accordion-item, .accordion-button, .log-term {
       transition: background-color .15s ease, border-color .15s ease, color .15s ease;
     }
@@ -339,7 +339,6 @@
     .disk-bar-legend .dbl-item[hidden] { display: none; }
     .dbl-key { display: inline-block; width: 9px; height: 9px; border-radius: 2px; }
     .dbl-key--library  { background: linear-gradient(90deg, var(--text-accent), #7e9b84); }
-    .dbl-key--used     { background: color-mix(in srgb, var(--text-muted) 42%, var(--surface-3)); }
     .dbl-key--headroom { width: 2px; height: 11px; border-radius: 1px; background: var(--text-warning); }
     .dbl-key--redline  { width: 2px; height: 11px; border-radius: 1px; background: var(--text-danger); }
     .dbl-key--cap      { width: 2px; height: 11px; border-radius: 1px; background: var(--text-accent); }
@@ -474,11 +473,11 @@
     /* Fields use the raised tone (--surface-3) — a step lighter than surrounding
        panels in dark (darker in light), matching slider tracks — for contrast
        inside sub-panels. */
-    .form-control, .form-select {
+    .form-control {
       background: color-mix(in srgb, var(--surface-3) 92%, transparent); border-color: var(--border);
       color: var(--text-primary); font-size: .85rem; border-radius: 10px;
     }
-    .form-control:focus, .form-select:focus {
+    .form-control:focus {
       background: var(--surface-3); border-color: var(--border-accent);
       color: var(--text-primary); box-shadow: 0 0 0 2px var(--bg-accent);
     }
@@ -502,6 +501,14 @@
       box-shadow: 0 0 0 2px var(--bg-accent);
     }
     .app-select:disabled { color: var(--text-muted); opacity: .72; cursor: default; }
+    /* Pager/toolbar variant: the same config-page dropdown look, but sized to
+       sit inline beside .btn-sm buttons instead of filling a form row. */
+    .app-select-inline {
+      display: inline-block; width: auto; min-height: 32px;
+      font-size: .78rem; font-weight: 600;
+      padding: .3rem 1.9rem .3rem .7rem;
+      background-position: right .6rem center;
+    }
     .input-group-text { background: color-mix(in srgb, var(--surface-3) 92%, transparent); border-color: var(--border); color: var(--text-muted); border-radius: 10px; }
     .input-group-text .form-check-input {
       margin: 0;
@@ -509,8 +516,7 @@
       align-self: center;
     }
 
-    .app-form .form-control,
-    .app-form .form-select {
+    .app-form .form-control {
       background: var(--surface-2);
       border-color: var(--border-strong);
       color: var(--text-primary);
@@ -519,15 +525,13 @@
       color: var(--text-muted);
       opacity: .88;
     }
-    .app-form .form-control:focus,
-    .app-form .form-select:focus {
+    .app-form .form-control:focus {
       background: var(--surface-2);
       border-color: var(--border-accent);
       color: var(--text-primary);
       box-shadow: 0 0 0 2px var(--bg-accent);
     }
-    .app-form .form-control:disabled,
-    .app-form .form-select:disabled {
+    .app-form .form-control:disabled {
       background: var(--surface-2);
       border-color: var(--border-strong);
       color: var(--text-muted);
@@ -541,16 +545,12 @@
     /* Fields inside a lighter bubble (filter cards, sub-panels, score blocks,
        config cards) sink to the outer card's tone — see --bubble-field-bg. */
     .app-form .filter-score-card .form-control,
-    .app-form .filter-score-card .form-select,
     .app-form .filter-score-card .input-group-text,
     .app-form .subcard .form-control,
-    .app-form .subcard .form-select,
     .app-form .subcard .input-group-text,
     .app-form .scoreblock .form-control,
-    .app-form .scoreblock .form-select,
     .app-form .scoreblock .input-group-text,
     .app-form .config-card .form-control,
-    .app-form .config-card .form-select,
     .app-form .config-card .input-group-text {
       background: var(--bubble-field-bg);
     }
@@ -746,6 +746,34 @@
       cursor: not-allowed;
     }
     a.btn-icon { text-decoration: none; }
+    /* Narrow screens: shrink the shared buttons and inline selects together so
+       toolbar/pager rows stay on one line instead of wrapping. Everything keeps
+       the same look — the whole control family just scales down in step. Must
+       sit AFTER the base .btn/.btn-sm/.btn-icon rules (equal specificity, last
+       wins). Deliberate touch-size overrides like the explorer's .ttop controls
+       still win on specificity and keep their larger tap targets. */
+    @media (max-width: 520px) {
+      .btn:not(.btn-close), .btn-sm:not(.btn-close) {
+        min-height: 28px; padding: 0 9px; font-size: .68rem;
+      }
+      .btn-icon { width: 28px; height: 28px; min-width: 28px; min-height: 28px; padding: 0 !important; }
+      .app-select-inline {
+        min-height: 28px; font-size: .7rem;
+        padding: .2rem 1.6rem .2rem .55rem;
+        background-position: right .5rem center;
+      }
+    }
+    @media (max-width: 390px) {
+      .btn:not(.btn-close), .btn-sm:not(.btn-close) {
+        min-height: 26px; padding: 0 7px; font-size: .64rem;
+      }
+      .btn-icon { width: 26px; height: 26px; min-width: 26px; min-height: 26px; padding: 0 !important; }
+      .app-select-inline {
+        min-height: 26px; font-size: .66rem;
+        padding: .15rem 1.45rem .15rem .5rem;
+        background-position: right .45rem center;
+      }
+    }
 
     .btn-morph {
       position: relative;
@@ -1201,7 +1229,6 @@
     .section-run-ghost .form-control,
     .section-run-ghost .form-range,
     .section-run-ghost .form-check-input,
-    .section-run-ghost .form-select,
     .section-run-ghost .secret-toggle,
     .section-run-ghost .btn {
       cursor: not-allowed;
@@ -1536,9 +1563,7 @@
 </style>
 
 <!-- Manual IMDb-dataset setup steps. Pops when a Simulate/Live run fails on
-     the dataset (driven by the dashboard's progress polling) and when the
-     explorer's explicit sample Refresh fails on it. A failed AUTOMATIC
-     sample build only shows a toast plus the sample-table message. -->
+     the dataset (driven by the dashboard's progress polling). -->
 <div class="modal fade pr-popup" id="imdb-help-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
@@ -1556,9 +1581,8 @@
               <code id="imdb-help-gz-path">/config/title.ratings.tsv.gz</code></li>
           <li>Run again. MediaReducer unpacks it automatically. You can also place the extracted <code id="imdb-help-tsv-path">/config/title.ratings.tsv</code>.</li>
         </ol>
-        <div class="form-text">Runs keep the file refreshed after it exists. The library sample on
-        Filtering &amp; Scoring also needs this data — once the file is in place, press
-        <strong>Refresh</strong> there to build the sample.</div>
+        <div class="form-text">Runs keep the file refreshed after it exists. The next Simulate also
+        annotates the Filtering &amp; Scoring library table with ratings.</div>
       </div>
       <div class="modal-footer">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Close</button>
@@ -2001,8 +2025,7 @@ document.querySelectorAll('.header-run-badge').forEach(a => {
 // ── IMDb manual-setup popup (shared by all pages) ──
 // Which failure the popup was already shown for. Persisted so a page reload
 // or tab switch does not re-open it — only a NEW failure (a new key) pops it
-// again. Run failures use the run's started_at; library-sample failures use
-// 'sample:' + the failure timestamp.
+// again, keyed by the run's started_at.
 let _imdbHelpShownFor = null;
 function _imdbHelpAlreadyShown(key) {
   try { return localStorage.getItem('pr-imdb-help-shown') === String(key); }
@@ -2032,24 +2055,6 @@ async function showImdbHelpModal() {
   if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
 }
 
-// An AUTOMATIC library-sample build that failed on the IMDb dataset shows a
-// toast once per failure, on whatever page is open — the persistent
-// explanation lives in the Filtering & Scoring sample table. The full
-// setup-steps popup is reserved for failed runs and for the explorer's
-// explicit Refresh. Fed the sample_imdb_failed_at field from /api/status
-// polls; keyed separately from the run popup so the two guards never fight
-// over one storage slot.
-let _imdbSampleToastShownFor = null;
-window.prHandleSampleImdbError = function (failedAt) {
-  if (!failedAt) return;
-  const key = String(failedAt);
-  try { if (localStorage.getItem('pr-imdb-sample-toast') === key) return; }
-  catch (_) { if (_imdbSampleToastShownFor === key) return; }
-  _imdbSampleToastShownFor = key;
-  try { localStorage.setItem('pr-imdb-sample-toast', key); } catch (_) {}
-  showToast('Could not download the IMDb ratings dataset, so the library sample was skipped. '
-    + 'Add the dataset to the config folder, then press Refresh on Filtering and Scoring.', 'danger');
-};
 
 // Live red Configuration tab: /api/status polls call this so an API failure
 // mid-run (or a recovery) repaints the header without a page reload.
@@ -2104,7 +2109,6 @@ window.prSetConfigTabError = function (on) {
         const d = await r.json();
         window.prSetHeaderRunning(!!d.run_active, !!d.run_live);
         window.prSetConfigTabError(!!d.config_attention);
-        window.prHandleSampleImdbError(d.sample_imdb_failed_at);
         // Page hook: lets a page react to run-state changes without its own
         // /api/status poll (the explorer locks Filtering & Scoring with it).
         if (typeof window.prOnStatusPoll === 'function') {

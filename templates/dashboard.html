@@ -54,17 +54,10 @@
     margin: 0;
     grid-template-columns: minmax(0, 1fr);   /* one segment per button now */
   }
-  /* With movies actually marked, the left button takes the warning tint the
-     old footer strip had — it's the "deletions are queued" signal. */
-  .dashboard-marked-btn.has-marked {
-    border-color: color-mix(in srgb, var(--text-warning) 40%, var(--border-strong));
-    background: color-mix(in srgb, var(--text-warning) 12%, var(--surface-2));
-  }
-  .dashboard-marked-btn.has-marked .dashboard-mini-value,
-  .dashboard-marked-btn.has-marked .dashboard-mini-value .unit,
-  .dashboard-marked-btn.has-marked .dashboard-mini-label {
-    color: var(--text-warning);
-  }
+  /* Both history buttons share the neutral look; the only signal is the
+     marked half of "X · Y" and the word "Marked" in the label turning red
+     when anything is actually marked. */
+  .dashboard-marked-btn .marked-hot { color: var(--text-danger); }
   /* These labels ("Lifetime pruned & space regained") may exceed their column —
      wrap at word boundaries, never mid-word (mini-labels nowrap by default). */
   .dashboard-history-segment .dashboard-mini-label {
@@ -269,37 +262,35 @@
   #next-run-sub.will-prune {
     color: var(--text-danger);
   }
-  /* Deleted Movie History table — matches the Score Explorer's library-sample
-     table: compact, sticky header, side-scroll for columns. */
+  /* Deleted Movie History table — the SAME look as the Score Explorer's
+     library table: 12px rows, 11px muted headers, hairline borders, no boxed
+     wrapper. The sticky header stays (this table scrolls inside a modal). */
   .deleted-history-wrap {
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
   }
   .deleted-history-table {
     width: 100%;
     min-width: 640px;
     border-collapse: collapse;
-    font-size: .78rem;
+    font-size: 12px;
   }
   .deleted-history-table thead th {
     position: sticky;
     top: 0;
     z-index: 1;
-    background: var(--popup-bg-2);
+    background: var(--popup-bg);
     text-align: left;
-    padding: 8px 10px;
-    font-size: .7rem;
-    font-weight: 600;
+    padding: 7px 8px;
+    font-size: 11px;
+    font-weight: 500;
     color: var(--text-muted);
     border-bottom: 1px solid var(--border-strong);
     white-space: nowrap;
   }
   .deleted-history-table td {
-    padding: 6px 10px;
+    padding: 5px 8px;
     border-bottom: 1px solid var(--border);
     vertical-align: middle;
     white-space: nowrap;
@@ -308,26 +299,25 @@
   .deleted-history-table tbody tr:hover td {
     background: color-mix(in srgb, var(--text-accent) 8%, transparent);
   }
-  /* Marked-for-deletion rows are pinned on top and tinted like the marked line. */
+  /* Marked rows: the library table's marked treatment — danger tint + rail. */
   .deleted-history-table tr.dh-marked td {
-    background: color-mix(in srgb, var(--text-warning) 7%, transparent);
+    background: var(--bg-danger);
   }
-  .deleted-history-table tr.dh-marked:hover td {
-    background: color-mix(in srgb, var(--text-warning) 13%, transparent);
+  .deleted-history-table tr.dh-marked td:first-child {
+    box-shadow: inset 3px 0 0 var(--border-danger);
   }
+  /* Status text styled like the library table's eligible/marked/filtered. */
   .dh-badge {
     display: inline-block;
-    font-size: .64rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: .03em;
-    padding: 2px 7px;
-    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
     white-space: nowrap;
   }
-  .dh-badge.marked { color: var(--text-warning); background: color-mix(in srgb, var(--text-warning) 16%, transparent); }
-  .dh-badge.deleted { color: var(--text-muted); background: var(--surface-3); }
-  .dh-title { white-space: normal; min-width: 170px; font-weight: 500; color: var(--text-primary); }
+  .dh-badge.marked { color: var(--text-danger); }
+  .dh-badge.eligible { color: var(--text-accent); }
+  .dh-badge.deleted { color: var(--text-secondary); }
+  .dh-title { white-space: normal; min-width: 170px; color: var(--text-primary); }
   .dh-num { font-variant-numeric: tabular-nums; }
   .dh-details { color: var(--text-secondary); }
   /* Path shown in full, never truncated: a long path widens the table and the
@@ -359,18 +349,8 @@
     font-size: .76rem;
     color: var(--text-muted);
   }
-  .deleted-history-pager button {
-    border: 1px solid var(--border-strong);
-    border-radius: 7px;
-    background: var(--surface-2);
-    color: var(--text-secondary);
-    font-size: .74rem;
-    font-weight: 600;
-    padding: 3px 11px;
-    cursor: pointer;
-  }
-  .deleted-history-pager button:hover:not(:disabled) { color: var(--text-primary); border-color: var(--border-accent); }
-  .deleted-history-pager button:disabled { opacity: .4; cursor: default; }
+  /* Pager controls use the shared .btn / .app-select-inline looks (base.html)
+     so they match Run Controls and the config-page dropdowns. */
   /* Wider than the standard popup so the table's columns fit on desktop. */
   .pr-popup--table .modal-dialog { max-width: min(1180px, calc(100vw - 24px)); }
   .pr-popup--table.pr-popup--fill .modal-content { height: min(760px, calc(100vh - 72px)); }
@@ -383,6 +363,11 @@
       height: 100vh; height: 100dvh; border-radius: 0; border: none;
     }
     .deleted-history-table { font-size: .74rem; }
+    /* One footer line: the shared small-screen button shrink (base.html) makes
+       pager + Download (+ Erase) fit side by side instead of wrapping. */
+    .pr-popup--table .modal-footer { flex-wrap: nowrap; gap: 8px; }
+    .deleted-history-pager { gap: 6px; font-size: .7rem; }
+    .deleted-history-pager #dh-page-label { white-space: nowrap; }
   }
   @media (max-width: 991.98px) {
     .dashboard-metric-card {
@@ -548,14 +533,15 @@
           <div class="sub" id="next-run-sub">{% if run_mode == 'paused' %}Scheduler paused{% else %}Next run: calculating…{% endif %}</div>
         </div>
         <div class="dashboard-history-row metric-bottom">
-          <button type="button" class="dashboard-history-btn dashboard-marked-btn {{ 'has-marked' if marked_count else '' }}"
+          <button type="button" class="dashboard-history-btn dashboard-marked-btn"
                   id="btn-marked-deletions" onclick="openDeletedHistory('marked')"
-                  title="Review the movies currently marked for deletion">
+                  title="Review the movies marked for deletion and the eligible order behind them">
             <span class="dashboard-history-segment">
               <span class="dashboard-mini-value">
-                <span id="pruned-marked-count">{{ marked_count|commafy(0) }}</span>
+                <span id="pruned-marked-count"><span id="pruned-marked-hot" class="{{ 'marked-hot' if marked_imminent else '' }}">{{ marked_imminent|commafy(0) }}</span> <span class="unit" aria-hidden="true">·</span> {{ marked_count|commafy(0) }}</span>
+                <span class="unit">MOVIES</span>
               </span>
-              <span class="dashboard-mini-label" id="marked-deletions-label">{{ 'Redline queue' if redline_only else 'Marked deletions' }}</span>
+              <span class="dashboard-mini-label"><span id="marked-label-word" class="{{ 'marked-hot' if marked_imminent else '' }}">Marked</span> &amp; Eligible Deletions</span>
             </span>
           </button>
           <button type="button" class="dashboard-history-btn" onclick="openDeletedHistory('deleted')"
@@ -832,30 +818,14 @@
     .log-window-title { font-size: .8rem; font-weight: 600; color: var(--text-secondary); }
     .log-window-view { color: var(--text-muted); font-weight: 500; }
     .log-window-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
-    .log-window-fullbtn, .log-window-dlbtn {
-      border: 1px solid var(--border-strong); border-radius: 999px;
-      background: var(--surface-2); color: var(--text-secondary);
-      font-size: .7rem; font-weight: 600; padding: 3px 10px; cursor: pointer;
-      white-space: nowrap;
-    }
-    .log-window-fullbtn:hover, .log-window-fullbtn:focus,
-    .log-window-dlbtn:hover, .log-window-dlbtn:focus { color: var(--text-primary); border-color: var(--border-accent); }
-    .log-window-close {
-      background: none; border: none; cursor: pointer;
-      color: var(--text-muted); font-size: .95rem; line-height: 1;
-      width: 28px; height: 28px; border-radius: 7px;
-      display: inline-flex; align-items: center; justify-content: center;
-    }
-    .log-window-close:hover, .log-window-close:focus { color: var(--text-primary); background: var(--surface-3); }
+    /* Header actions and the jump pill use the shared .btn looks; only layout
+       concerns (nowrap, float position) live here. */
+    .log-window-actions .btn { white-space: nowrap; }
     .log-window-body { position: relative; flex: 1 1 auto; min-height: 0; display: flex; overflow: hidden; }
     .log-jump {
       position: absolute; right: 22px; bottom: 14px; z-index: 2;
-      border: 1px solid var(--border-strong); border-radius: 999px;
-      background: var(--popup-bg-2); color: var(--text-secondary);
-      font-size: .74rem; font-weight: 600; padding: 5px 12px;
-      cursor: pointer; box-shadow: var(--shadow);
+      box-shadow: var(--shadow);
     }
-    .log-jump:hover, .log-jump:focus { color: var(--text-primary); border-color: var(--border-accent); background: var(--surface-3); }
     .log-window .log-term {
       flex: 1 1 auto; height: auto; min-height: 0; margin: 0;
       border: none; border-top: none; border-radius: 0;
@@ -912,7 +882,7 @@
     the deletion delay and daily schedule apply to automatic runs only.
     The Storage card's <strong>↻</strong> refreshes disk and library numbers only.
   </div>
-  <div class="run-progress" id="run-progress">
+  <div class="run-progress">
     <div class="rp-head">
       <span class="pr-pill rp-pill is-idle" id="rp-pill" onclick="jumpToLogSection('errors')">Idle</span>
       <span class="rp-trigger" id="rp-trigger"></span>
@@ -949,14 +919,14 @@
   <div class="log-window-header" id="log-window-header">
     <span class="log-window-title" id="log-window-title">Detailed log<span class="log-window-view" id="log-window-view" hidden></span></span>
     <div class="log-window-actions">
-      <button type="button" class="log-window-dlbtn" id="log-window-dlbtn" onclick="downloadDetailedLog(this)">Download</button>
-      <button type="button" class="log-window-fullbtn" id="log-window-fullbtn" hidden onclick="showFullLog()">Show full log</button>
-      <button type="button" class="log-window-close" id="log-window-close" onclick="closeLogWindow()" aria-label="Close log">✕</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="log-window-dlbtn" onclick="downloadDetailedLog(this)">Download</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="log-window-fullbtn" hidden onclick="showFullLog()">Show full log</button>
+      <button type="button" class="btn btn-sm btn-icon" id="log-window-close" onclick="closeLogWindow()" aria-label="Close log">✕</button>
     </div>
   </div>
   <div class="log-window-body">
     <div class="log-term" id="log-term"><div class="log-line">Pick an action above to run MediaReducer.</div><div class="log-line">Live output will stream here.</div></div>
-    <button type="button" class="log-jump" id="log-jump" hidden onclick="_logJumpToBottom()">↓ Jump to latest</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary log-jump" id="log-jump" hidden onclick="_logJumpToBottom()">↓ Jump to latest</button>
   </div>
 </div>
 
@@ -988,9 +958,15 @@
       </div>
       <div class="modal-footer">
         <div class="deleted-history-pager" id="deleted-history-pager" hidden>
-          <button type="button" id="dh-prev" onclick="_dhPage(-1)">‹ Prev</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="dh-prev" onclick="_dhPage(-1)">‹ Prev</button>
           <span id="dh-page-label"></span>
-          <button type="button" id="dh-next" onclick="_dhPage(1)">Next ›</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="dh-next" onclick="_dhPage(1)">Next ›</button>
+          <select id="dh-page-size" class="app-select app-select-inline" title="Rows per page" onchange="_dhSetPageSize(this.value)">
+            <option value="10">10</option>
+            <option value="25" selected>25</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
         </div>
         <!-- No footer Close button: the header's ✕ (btn-close) already dismisses
              the modal, and dropping it lets Download + Erase log sit in one row. -->
@@ -1340,7 +1316,7 @@ function _setTerm(content) {
 }
 
 // ── Run progress panel ──────────────────────────────────────────────────────
-const _RP_STEP_INDEX = { checking:0, library:1, scanning:2, simulating:3, deleting:3, cleanup:3, summary:4, done:4 };
+const _RP_STEP_INDEX = { checking:0, library:1, scanning:2, simulating:3, deleting:3, done:4 };
 let _rpRunKey = null;
 let _rpMaxIdx = 0;
 let _rpStageKey = null;
@@ -1530,13 +1506,12 @@ function renderProgress(p) {
 
   document.getElementById('rp-stat-scanned').textContent = (Number(p.scanned) || 0).toLocaleString();
   document.getElementById('rp-stat-eligible').textContent = (Number(p.eligible) || 0).toLocaleString();
-  // Redline-only Simulate builds the standing queue, so the tiles count what
-  // was QUEUED — "would delete" would wrongly imply an imminent deletion.
-  document.getElementById('rp-stat-deleted-label').textContent =
-    isSim ? (_redlineOnly ? 'Queued' : 'Would delete') : 'Deleted';
+  // The engine reports what WOULD delete right now (never the queue size), so
+  // these labels hold in every mode — a redline-only preview above the floor
+  // reads "Would delete 0" while the queue builds in the background.
+  document.getElementById('rp-stat-deleted-label').textContent = isSim ? 'Would delete' : 'Deleted';
   document.getElementById('rp-stat-deleted').textContent = (Number(p.deleted) || 0).toLocaleString();
-  document.getElementById('rp-stat-freed-label').textContent =
-    isSim ? (_redlineOnly ? 'Queue size' : 'Would free') : 'Freed';
+  document.getElementById('rp-stat-freed-label').textContent = isSim ? 'Would free' : 'Freed';
   document.getElementById('rp-stat-freed').textContent = _formatReclaimedBytes(p.bytes_freed);
 }
 
@@ -1563,16 +1538,6 @@ async function refreshProgress() {
 // so switching TO the all-off state in another tab updates too.
 function _renderTargetRows(d) {
   _redlineOnly = !!d.redline_only;
-  // In redline-only mode the queue is a standing "next in line" list, not
-  // scheduled deletions — the button and modal say "queue" instead of "marked".
-  const markedLabel = document.getElementById('marked-deletions-label');
-  if (markedLabel) markedLabel.textContent = _redlineOnly ? 'Redline queue' : 'Marked deletions';
-  const markedBtn = document.getElementById('btn-marked-deletions');
-  if (markedBtn) {
-    markedBtn.title = _redlineOnly
-      ? 'Review the queue Redline will delete from, worst-scored first'
-      : 'Review the movies currently marked for deletion';
-  }
   if (!d.thresholds_configured) return;
   const gb = (v) => `${prCommaNum(v, 1)} <span class="unit">GB</span>`;
   const headroomVal = document.querySelector('#target-row-headroom .value');
@@ -1712,7 +1677,7 @@ function _splitReclaimedLabel(label) {
   return { number: cleaned || '0', unit: 'GB' };
 }
 
-function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', markedCount = null) {
+function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', markedCount = null, markedImminent = null) {
   const n = Number(count);
   const safe = Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
   const value = document.getElementById('pruned-count-value');
@@ -1723,11 +1688,18 @@ function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', m
   if (value) value.textContent = prCommaNum(safe, 0);
   if (unit) unit.textContent = safe === 1 ? 'MOVIE' : 'MOVIES';
   if (markedCount !== null) {
-    const btn = document.getElementById('btn-marked-deletions');
     const countEl = document.getElementById('pruned-marked-count');
     const m = Math.max(0, Math.trunc(Number(markedCount) || 0));
-    if (countEl) countEl.textContent = prCommaNum(m, 0);
-    btn?.classList.toggle('has-marked', m > 0);
+    const imm = Math.max(0, Math.trunc(Number(markedImminent) || 0));
+    // Both halves in every mode: marked-to-delete · total eligible (the same
+    // dot separator as the pruned & regained button). The marked number AND
+    // the word "Marked" in the label go red the moment anything is marked.
+    if (countEl) {
+      countEl.innerHTML =
+        `<span id="pruned-marked-hot" class="${imm > 0 ? 'marked-hot' : ''}">${prCommaNum(imm, 0)}</span> ` +
+        `<span class="unit" aria-hidden="true">·</span> ${prCommaNum(m, 0)}`;
+    }
+    document.getElementById('marked-label-word')?.classList.toggle('marked-hot', imm > 0);
   }
   if (space) {
     const formatted = _formatReclaimedBytes(reclaimedBytes, reclaimedLabel);
@@ -1743,9 +1715,15 @@ function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', m
 }
 
 // Deleted Movie History table: marked-for-deletion rows pinned on top, then
-// the deleted history newest→oldest, paginated 100 per page in-memory.
-const _DH_PAGE = 100;
+// the deleted history newest→oldest, paginated in-memory (25/page default).
+let _dhPageSize = 25;
+function _dhSetPageSize(v) {
+  _dhPageSize = Math.max(1, parseInt(v, 10) || 25);
+  _dhPageIdx = 0;
+  _dhRenderPage();
+}
 let _dhRows = [];       // the open view's rows, in display order
+let _dhLoading = false; // a view fetch is in flight — actions stay ghosted
 let _dhPageIdx = 0;
 let _dhView = 'deleted';   // 'marked' | 'deleted' — set by whichever button opened the modal
 let _dhDeletedCount = 0;   // deleted.log entry count — Erase stays ghosted at 0
@@ -1759,8 +1737,11 @@ function _dhRenderRow(r) {
     const bits = [];
     if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + prHtmlEsc(r.score));
     if (r.when) bits.push(prHtmlEsc(_dhCap(r.when)));
-    return `<tr class="dh-marked">`
-      + `<td><span class="dh-badge marked">${_redlineOnly ? 'Queued' : 'Marked'}</span></td>`
+    // Only genuinely MARKED rows take the danger tint + rail (the library
+    // table's marked treatment); eligible rows stay plain.
+    return `<tr class="${r.marked ? 'dh-marked' : ''}">`
+      + (r.marked ? `<td><span class="dh-badge marked">marked</span></td>`
+                  : `<td><span class="dh-badge eligible">eligible</span></td>`)
       + `<td class="dh-title">${prHtmlEsc(r.title || '—')}</td>`
       + `<td class="dh-num">${prHtmlEsc(r.size || '—')}</td>`
       + `<td class="dh-num">${prHtmlEsc(r.time || '—')}</td>`
@@ -1769,11 +1750,11 @@ function _dhRenderRow(r) {
   }
   // A deleted line the server couldn't parse into fields: show it whole.
   if (!r.title && r.line) {
-    return `<tr><td><span class="dh-badge deleted">Deleted</span></td>`
+    return `<tr><td><span class="dh-badge deleted">deleted</span></td>`
       + `<td class="dh-details" colspan="5">${prHtmlEsc(r.line)}</td></tr>`;
   }
   return `<tr>`
-    + `<td><span class="dh-badge deleted">Deleted</span></td>`
+    + `<td><span class="dh-badge deleted">deleted</span></td>`
     + `<td class="dh-title">${prHtmlEsc(r.title || '—')}</td>`
     + `<td class="dh-num">${prHtmlEsc(r.size || '—')}</td>`
     + `<td class="dh-num">${prHtmlEsc(r.time || '—')}</td>`
@@ -1787,7 +1768,7 @@ function _dhRenderPage() {
   const empty = document.getElementById('deleted-history-empty');
   const pager = document.getElementById('deleted-history-pager');
   const total = _dhRows.length;
-  const pages = Math.max(1, Math.ceil(total / _DH_PAGE));
+  const pages = Math.max(1, Math.ceil(total / _dhPageSize));
   _dhPageIdx = Math.min(Math.max(0, _dhPageIdx), pages - 1);
   if (!total) {
     if (tbody) tbody.innerHTML = '';
@@ -1795,23 +1776,24 @@ function _dhRenderPage() {
     if (empty) {
       empty.hidden = false;
       empty.textContent = _dhView === 'marked'
-        ? (_redlineOnly ? 'Nothing is queued for Redline yet — run Simulate to build the queue.'
-                        : 'No movies are marked for deletion.')
+        ? 'Nothing is marked or eligible yet — run Simulate to build the deletion plan.'
         : 'No movies have been pruned yet.';
     }
     if (pager) pager.hidden = true;
     return;
   }
-  const start = _dhPageIdx * _DH_PAGE;
-  if (tbody) tbody.innerHTML = _dhRows.slice(start, start + _DH_PAGE).map(_dhRenderRow).join('');
+  const start = _dhPageIdx * _dhPageSize;
+  if (tbody) tbody.innerHTML = _dhRows.slice(start, start + _dhPageSize).map(_dhRenderRow).join('');
   if (wrap) { wrap.hidden = false; wrap.scrollTop = 0; }
   if (empty) empty.hidden = true;
   if (pager) {
-    pager.hidden = pages <= 1;
+    // Keep the pager visible whenever a smaller page size could paginate —
+    // otherwise picking 100/page on a 60-row list hides the size dropdown too.
+    pager.hidden = total <= 10;
     document.getElementById('dh-prev').disabled = _dhPageIdx <= 0;
     document.getElementById('dh-next').disabled = _dhPageIdx >= pages - 1;
     document.getElementById('dh-page-label').textContent =
-      `${(start + 1).toLocaleString()}–${Math.min(start + _DH_PAGE, total).toLocaleString()} of ${total.toLocaleString()}`;
+      `${(start + 1).toLocaleString()}–${Math.min(start + _dhPageSize, total).toLocaleString()} of ${total.toLocaleString()}`;
   }
 }
 
@@ -1823,7 +1805,7 @@ function _dhRowText(r) {
     const bits = [];
     if (r.score !== null && r.score !== undefined && r.score !== '') bits.push('score ' + r.score);
     if (r.when) bits.push(_dhCap(r.when));
-    return [_redlineOnly ? 'Queued' : 'Marked', r.title || dash, r.size || dash, r.time || dash, bits.join(' · ') || dash, r.path || dash];
+    return [r.marked ? 'Marked' : 'Eligible', r.title || dash, r.size || dash, r.time || dash, bits.join(' · ') || dash, r.path || dash];
   }
   if (!r.title && r.line) return ['Deleted', r.line, '', '', '', ''];
   return ['Deleted', r.title || dash, r.size || dash, r.time || dash, r.why || dash, r.path || dash];
@@ -1860,19 +1842,32 @@ async function loadDeletedHistory() {
   if (wrap) wrap.hidden = true;
   if (empty) { empty.hidden = false; empty.textContent = 'Loading…'; }
   if (pager) pager.hidden = true;
+  // Ghost the actions until THIS view's rows land — a click mid-load would
+  // download the previous view's rows under this view's filename, and the
+  // Erase button could linger from a prior deleted-history view. _dhLoading
+  // keeps the status poll's _applyLiveState from un-ghosting them mid-fetch.
+  _dhLoading = true;
+  const dlBtn = document.getElementById('btn-download-deleted-log');
+  if (dlBtn) dlBtn.disabled = true;
+  if (eraseBtn) { eraseBtn.hidden = _dhView === 'marked'; eraseBtn.disabled = true; }
   try {
     const d = await _fetchJson(`/api/logs/deleted?limit=all&${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 12000);
+    _dhLoading = false;
     const count = Number(d.count || 0);
     const marked = Array.isArray(d.marked) ? d.marked : [];
     const deleted = Array.isArray(d.entries) ? d.entries : [];
+    const imminentCount = marked.filter(r => r.marked).length;
     _updateDeletedCounter(count, d.reclaimed_bytes || 0, d.reclaimed_label || '',
-                          d.marked_count !== undefined ? d.marked_count : marked.length);
+                          d.marked_count !== undefined ? d.marked_count : marked.length,
+                          imminentCount);
     const reclaimed = _formatReclaimedBytes(d.reclaimed_bytes || 0, d.reclaimed_label || '');
     if (summary) {
       summary.textContent = _dhView === 'marked'
-        ? (_redlineOnly
-            ? `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} queued for Redline — worst-scored deletes first when free space hits the floor.`
-            : `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} marked for deletion.`)
+        ? (imminentCount
+            ? (_redlineOnly
+                ? `Redline is breached — ${imminentCount} marked to delete on the next Live Run, ${marked.length - imminentCount} eligible behind them.`
+                : `${imminentCount} marked for deletion · ${marked.length - imminentCount} more eligible in deletion order.`)
+            : `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} eligible in deletion order — none currently marked.`)
         : `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
     }
     // One list per view (both already come newest-first / in plan order from
@@ -1889,17 +1884,21 @@ async function loadDeletedHistory() {
       eraseBtn.hidden = _dhView === 'marked';
       eraseBtn.disabled = _active || count <= 0;
     }
-    const dlBtn = document.getElementById('btn-download-deleted-log');
     if (dlBtn) {
       dlBtn.disabled = _active || !_dhRows.length;
       dlBtn.title = _active ? 'Available when the run finishes' : '';
     }
   } catch (err) {
+    _dhLoading = false;
     if (summary) summary.textContent = 'Could not load deleted.log.';
     _dhRows = [];
+    _dhDeletedCount = 0;
     if (wrap) wrap.hidden = true;
     if (empty) { empty.hidden = false; empty.textContent = `Could not load deleted.log: ${err}`; }
     if (pager) pager.hidden = true;
+    // Keep the actions ghosted — there is nothing valid to download or erase.
+    if (dlBtn) dlBtn.disabled = true;
+    if (eraseBtn) { eraseBtn.hidden = _dhView === 'marked'; eraseBtn.disabled = true; }
   }
 }
 
@@ -1909,7 +1908,7 @@ function openDeletedHistory(view) {
   _dhView = view === 'marked' ? 'marked' : 'deleted';
   const title = document.getElementById('deleted-history-title');
   if (title) title.textContent = _dhView === 'marked'
-    ? (_redlineOnly ? 'Redline Queue' : 'Marked for Deletion')
+    ? 'Marked & Eligible Deletions'
     : 'Deleted Movie History';
   const modalEl = document.getElementById('deleted-history-modal');
   if (modalEl && window.bootstrap) bootstrap.Modal.getOrCreateInstance(modalEl).show();
@@ -1929,19 +1928,18 @@ async function clearDeletedHistory() {
     const r = await fetch('/api/logs/deleted/clear', { method: 'POST', cache: 'no-store' });
     const d = await r.json();
     if (!r.ok || d.ok === false) throw new Error(d.message || 'Could not erase deleted.log.');
-    // Erase only clears the deleted history — the marked-for-deletion queue
-    // (still saveable) stays, so keep those rows in the table.
+    // Erase only truncates deleted.log — the marked & eligible queue is a
+    // different file and stays untouched. Erase is only reachable from the
+    // deleted-history view, so this view's rows all go; the marked counts on
+    // the Last Run button come from the status poll, not from these rows, so
+    // leave them alone (markedCount null = don't touch).
     _dhDeletedCount = 0;
-    _dhRows = _dhRows.filter(row => row._kind === 'marked');
+    _dhRows = [];
     _dhPageIdx = 0;
     _dhRenderPage();
-    _updateDeletedCounter(0, 0, '0 GB', _dhRows.length);
+    _updateDeletedCounter(0, 0, '0 GB');
     const summary = document.getElementById('deleted-history-summary');
-    if (summary) {
-      let s = '0 movies have been pruned · 0 GB reclaimed.';
-      if (_dhRows.length) s += ` ${_dhRows.length} marked for deletion.`;
-      summary.textContent = s;
-    }
+    if (summary) summary.textContent = '0 movies have been pruned · 0 GB reclaimed.';
     showToast(d.message || 'Deleted history erased.', 'success');
   } catch (err) {
     showToast(String(err.message || err), 'danger');
@@ -2013,16 +2011,19 @@ function _applyButtonStates() {
     logDl.disabled = _active || _logDlInFlight;
     logDl.title = _active ? 'Available when the run finishes' : '';
   }
+  // While a view is loading, _dhRows/_dhDeletedCount still hold the PREVIOUS
+  // view's data — a poll landing mid-fetch must not un-ghost the actions
+  // (a click would export the old view's rows under the new view's filename).
   const delDl = document.getElementById('btn-download-deleted-log');
   if (delDl) {
-    delDl.disabled = _active || !_dhRows.length;
+    delDl.disabled = _active || _dhLoading || !_dhRows.length;
     delDl.title = _active ? 'Available when the run finishes' : '';
   }
   // Erase is also live-ghosted: the modal can be open when a run starts, and
   // the engine appends to deleted.log while it runs.
   const delErase = document.getElementById('btn-clear-deleted-log');
   if (delErase && !delErase.classList.contains('btn-busy')) {
-    delErase.disabled = _active || _dhDeletedCount <= 0;
+    delErase.disabled = _active || _dhLoading || _dhDeletedCount <= 0;
     delErase.title = _active ? 'Available when the run finishes' : '';
   }
 }
@@ -2424,9 +2425,9 @@ async function syncStatus({refreshLog = true} = {}) {
     if (d.run_active || wasActive || !_progressKnown) refreshProgress();
     _updateLastRunDisplay(d.last_run_ts, d.last_run);
     if (window.prSetConfigTabError) window.prSetConfigTabError(!!d.config_attention);
-    if (window.prHandleSampleImdbError) window.prHandleSampleImdbError(d.sample_imdb_failed_at);
     _updateDeletedCounter(d.deleted_count || 0, d.deleted_reclaimed_bytes || 0, d.deleted_reclaimed_label || '',
-                          d.marked_count !== undefined ? d.marked_count : null);
+                          d.marked_count !== undefined ? d.marked_count : null,
+                          d.marked_imminent_count !== undefined ? d.marked_imminent_count : null);
     if (d.run_active !== _active) setRunning(d.run_active, d.run_active && d.run_live);
     // Keep the badge's Simulating/Running label right even when the run was
     // already active on load (no transition to carry the live flag through).

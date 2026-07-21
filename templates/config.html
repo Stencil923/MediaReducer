@@ -83,7 +83,6 @@
     color: var(--text-secondary);
   }
   .config-form-width-xs { max-width: 120px; }
-  .config-form-width-sm { max-width: 160px; }
   .config-form-width-xl { max-width: 420px; }
 
   .section-reset-row {
@@ -340,7 +339,6 @@
 {% set connection_warnings = connection_health.warnings or [] %}
 {% set connection_highlights = connection_health.highlights or [] %}
 {% set connection_mount_highlights = connection_health.mount_highlights or [] %}
-{% set connection_disabled_fields = connection_health.disabled_fields or [] %}
 {% set override_highlight_names = ['TAUTULLI_URL', 'TAUTULLI_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY', 'RADARR_URL', 'RADARR_API_KEY'] %}
 {% set optional_override_names = ['PLEX_URL', 'PLEX_TOKEN', 'RADARR_URL', 'RADARR_API_KEY'] %}
 {% set optional_cleanup_enabled = config.RADARR_OVERSEERR_SECTION_ID is not none %}
@@ -354,8 +352,11 @@
 {% set filesystem_ready = not (connection_health.filesystem_blocker | default(false)) %}
 {% set selected_media_apis_ready = (use_plex or use_jellyfin) and ((not use_plex) or tautulli_connected) and ((not use_jellyfin) or jellyfin_connected) and media_path_compatible and filesystem_ready %}
 {% set media_api_connected = selected_media_apis_ready %}
-{% set space_thresholds_locked = config.RUN_MODE == 'headroom' %}
-{% set manual_override_open = ((connection_highlights + connection_disabled_fields) | select('in', override_highlight_names) | list | length) > 0 %}
+{# Thresholds stay editable while automatic mode is armed — saving a threshold
+   change force-pauses Live server-side (like connection/path changes), so
+   there is no armed-state lock; only an active run locks the section. #}
+{% set space_thresholds_locked = false %}
+{% set manual_override_open = (connection_highlights | select('in', override_highlight_names) | list | length) > 0 %}
 {% set connection_section_open = connection_health.has_visible_issues if connection_health.has_visible_issues is defined else ((connection_errors|length > 0) or (connection_warnings|length > 0)) %}
 
 <div id="invalid-config-banner" class="config-card config-card-danger p-3 mb-4" hidden>
@@ -392,7 +393,7 @@
         {% set simulate_required = space_thresholds.simulate_required and config.RUN_MODE != 'headroom' %}
         {% set live_mode_ok = space_thresholds.ok_for_live and connection_required_ok and not simulate_required %}
         {% set saved_mode_disabled = config.RUN_MODE == 'headroom' and not live_mode_ok %}
-        {% set live_disabled_text = connection_disabled_text if not connection_required_ok else (space_thresholds.live_tooltip or ('Over space limits — run Simulate to review the deletion plan, then enable Live.' if simulate_required else 'Fix Space Thresholds to enable Live.')) %}
+        {% set live_disabled_text = connection_disabled_text if not connection_required_ok else (space_thresholds.live_tooltip or (space_thresholds.simulate_required_message if simulate_required else 'Fix Space Thresholds to enable Live.')) %}
         {% set live_desc = 'Scheduled live cleanup. Enforces the free-space rules, plus the Library Size Cap when enabled. Run Simulate first to preview what it would delete.' %}
 
         {% if config.get('_RUN_MODE_AUTOPAUSE_REASON') and config.RUN_MODE == 'paused' %}
@@ -575,25 +576,24 @@
             ] %}
             {% set secret_field = ('API_KEY' in name or 'TOKEN' in name) %}
             {% set is_url_field = name.endswith('_URL') %}
-            {% set field_disabled = (name in connection_disabled_fields and name not in optional_override_names) %}
             {% set server_off = (server == 'plex' and not use_plex) or (server == 'jellyfin' and not use_jellyfin) %}
-            <div class="col-md-6 conn-field-{{ server }} {{ 'connection-highlight' if name in connection_highlights else '' }} {{ 'connection-disabled' if field_disabled else '' }}{{ ' conn-field-ghost' if server_off else '' }}" id="override-field-{{ name }}">
+            <div class="col-md-6 conn-field-{{ server }} {{ 'connection-highlight' if name in connection_highlights else '' }} {{ ' conn-field-ghost' if server_off else '' }}" id="override-field-{{ name }}">
               <label class="input-label" for="{{ name }}">{{ field_labels.get(name, name) }}</label>
               {% if secret_field %}
               <div class="input-group secret-input-group">
                 <input type="password" class="form-control" id="{{ name }}" name="{{ name }}"
                        value="{{ config[name] }}" autocomplete="off" spellcheck="false"
                        data-1p-ignore data-lpignore="true" data-bwignore data-form-type="other"
-                       {{ 'disabled' if field_disabled else '' }}>
+                       >
                 <button type="button" class="btn btn-outline-secondary secret-toggle"
                         data-target="{{ name }}" aria-label="Show {{ field_labels.get(name, name) }}" aria-pressed="false"
-                        title="Show value" {{ 'disabled' if field_disabled else '' }}>
+                        title="Show value" >
                   <span class="secret-toggle-label">Show</span>
                 </button>
               </div>
               {% else %}
               <input type="text" class="form-control" id="{{ name }}" name="{{ name }}"
-                     value="{{ config[name] }}" {{ 'disabled' if field_disabled else '' }}{% if is_url_field %} placeholder="{{ connection_url_placeholders[name] }}"{% endif %}>
+                     value="{{ config[name] }}" {% if is_url_field %} placeholder="{{ connection_url_placeholders[name] }}"{% endif %}>
               {% endif %}
               {% if is_url_field %}<div class="form-text">
                 {%- if connection_url_defaults[name] %}Detected default <code>{{ connection_url_defaults[name] }}</code>{% else %}Default <code>{{ connection_url_placeholders[name] }}</code>{% endif %} — used automatically while blank. <code>http://</code> is assumed when omitted.
@@ -740,7 +740,7 @@
           <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-space" onclick="resetSectionToDefault('space')" {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>Reset to Default</button>
         </div>
 
-        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if space_thresholds_locked else 'hidden' }}>Pause Live mode before changing thresholds.</div>
+        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic mode is on — saving a threshold change pauses it until you run Simulate and re-enable Live.</div>
         <div id="space-threshold-api-note" class="config-inline-warning mb-3" {{ 'hidden' if selected_media_apis_ready else '' }}>{{ 'Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.') }}</div>
         <div id="space-threshold-paths-note" class="config-inline-warning mb-3" {{ 'hidden' if thresholds_have_library or not selected_media_apis_ready else '' }}>Save a monitored directory first.</div>
 
@@ -930,7 +930,7 @@
                 <div class="d-flex flex-column gap-3">
                 <div>
                   <div class="input-label">Cache</div>
-                  <div class="form-text">Deletes cached movie data, storage stats, and the Filtering &amp; Scoring sample, then refreshes storage.</div>
+                  <div class="form-text">Deletes cached movie data, storage stats, and the Filtering &amp; Scoring library snapshot, then refreshes storage.</div>
                   <div class="form-text mt-2" id="cache-clear-status">Checking cache file…</div>
                 </div>
                 <div>
@@ -954,7 +954,7 @@
               </div>
               <div class="config-card config-card-danger p-3">
               <div class="input-label">⚠ Reset MediaReducer</div>
-              <div class="form-text">Wipes settings, cache, and the library sample. Logs and deletion history are kept. This can't be undone.</div>
+              <div class="form-text">Wipes settings, cache, and the library snapshot. Logs and deletion history are kept. This can't be undone.</div>
               <div class="mt-2 d-flex align-items-center gap-2 flex-wrap">
                 <button type="button" class="btn btn-sm btn-danger-action btn-morph" id="btn-reset-all" onclick="onResetClick()"><span class="btn-morph-label">Reset to first-time setup</span></button>
                 <span id="reset-status" class="form-text"></span>
@@ -1020,9 +1020,11 @@ let _cacheClearStatus = null;
 let _lastConfigHealth = {{ connection_health | tojson }};
 let _savedConfigHealth = {{ connection_health | tojson }};
 let _configRunActive = {{ 'true' if run_active | default(false) else 'false' }};
-// Over space limits without a deletion plan computed under the CURRENT
-// thresholds: Live stays ghosted until a Simulate refreshes the plan.
+// Arming automatic mode needs a Simulate to have seen the library under the
+// CURRENT config (a stamped plan over limits, or first-scan proof within
+// them): Live stays ghosted until one runs. The server words the reason.
 let _simulateRequired = {{ 'true' if space_thresholds.simulate_required | default(false) else 'false' }};
+let _simulateRequiredMsg = {{ (space_thresholds.simulate_required_message | default('')) | tojson }};
 let _configSummaryActive = {{ 'true' if summary_active | default(false) else 'false' }};
 const _connectionOnboardingActive = {{ 'true' if connection_onboarding_active | default(false) else 'false' }};
 const _connectionErrorOnLoad = {{ 'true' if api_connection_error | default(false) else 'false' }};
@@ -1030,10 +1032,7 @@ let _requiredConnectionOk = {{ 'true' if connection_health.critical_ok else 'fal
 let _requiredConnectionMessage = {{ (connection_health.required_tooltip or 'Connect the selected media server first.')|tojson }};
 const CONNECTION_OVERRIDE_FIELDS = new Set(['TAUTULLI_URL', 'TAUTULLI_API_KEY', 'PLEX_URL', 'PLEX_TOKEN', 'JELLYFIN_URL', 'JELLYFIN_API_KEY', 'RADARR_URL', 'RADARR_API_KEY']);
 const SECRET_OVERRIDE_FIELDS = new Set(['TAUTULLI_API_KEY', 'PLEX_TOKEN', 'JELLYFIN_API_KEY', 'RADARR_API_KEY']);
-const OPTIONAL_CLEANUP_FIELDS = new Set(['RADARR_URL', 'RADARR_API_KEY']);
 const OPTIONAL_CLEANUP_MOUNTS = new Set(['radarr']);
-const PLEX_PROTECTED_FIELDS = new Set(['PLEX_URL', 'PLEX_TOKEN', 'PROTECTED_COLLECTIONS']);
-const ALWAYS_EDITABLE_OPTIONAL_CONNECTION_FIELDS = new Set(['PLEX_URL', 'PLEX_TOKEN', 'RADARR_URL', 'RADARR_API_KEY']);
 function _optionalCleanupEnabled() { return !!document.getElementById('section-enabled')?.checked; }
 
 // Ghost the Plex and Jellyfin connection fields when their server software is
@@ -1115,14 +1114,9 @@ function _mediaServerBlockText() {
 
 function _sectionLockReason(section) {
   if (_configActivityLocked()) return 'A run is active. Try again when it finishes.';
-  // Connections and Movie Library Paths stay editable while Live is armed:
-  // saving a change to either auto-pauses Live server-side (the library gets
-  // re-measured before the user re-enables it), so there is nothing to
-  // protect here. Space Thresholds stay locked — a live scheduler is actively
-  // relying on them.
-  if (section === 'space' && _savedLiveModeLocked()) {
-    return 'Pause Live mode before changing this section.';
-  }
+  // Connections, Movie Library Paths, AND Space Thresholds all stay editable
+  // while Live is armed: saving a change to any of them auto-pauses Live
+  // server-side, so nothing needs a hard lock here.
   if ((section === 'paths' || section === 'space') && !_filesystemReady()) {
     return _filesystemBlockingText();
   }
@@ -1310,13 +1304,6 @@ function _setSecretVisibility(name, visible) {
 
 function _hideAllSecretFields() {
   SECRET_OVERRIDE_FIELDS.forEach(name => _setSecretVisibility(name, false));
-}
-
-function _setOverrideFieldDisabled(name, disabled) {
-  const input = document.getElementById(name);
-  const toggle = document.querySelector(`.secret-toggle[data-target="${name}"]`);
-  if (input) input.disabled = !!disabled;
-  if (toggle) toggle.disabled = !!disabled;
 }
 
 // Auto Detect only fills credentials — URLs are handled by their placeholders
@@ -1763,7 +1750,9 @@ function _isLiveRunMode(mode) {
 }
 
 function _spaceThresholdsLocked() {
-  return _configActivityLocked() || _savedLiveModeLocked();
+  // Only an active run locks the thresholds — while automatic mode is merely
+  // armed they stay editable, and saving a change force-pauses Live.
+  return _configActivityLocked();
 }
 
 function _setDisabled(id, disabled) {
@@ -1789,8 +1778,16 @@ function _applySpaceThresholdLock() {
   section?.classList.toggle('space-thresholds-locked', locked);
   document.getElementById('s-space')?.classList.toggle('section-run-ghost', locked);
   if (note) {
-    note.textContent = _sectionLockReason('space') || 'Pause Live mode before changing thresholds.';
-    note.hidden = !locked;
+    if (locked) {
+      note.textContent = _sectionLockReason('space') || 'A run is active. Try again when it finishes.';
+      note.hidden = false;
+    } else if (_savedLiveModeLocked()) {
+      // Not a lock — a heads-up that a threshold save pauses automatic mode.
+      note.textContent = 'Automatic mode is on — saving a threshold change pauses it until you run Simulate and re-enable Live.';
+      note.hidden = false;
+    } else {
+      note.hidden = true;
+    }
   }
   if (apiNote) apiNote.hidden = selectedApisReady || locked;
   if (pathsNote) pathsNote.hidden = hasMonitorDirs || !selectedApisReady || locked;
@@ -2677,7 +2674,7 @@ function validateDeleteDelay({ show = false, focus = false } = {}) {
 function toggleLibraryCap() {
   if (_spaceThresholdsLocked()) {
     _applySpaceThresholdLock();
-    showToast('Pause Live mode before changing thresholds.', 'warning');
+    showToast('A run is active. Try again when it finishes.', 'warning');
     return;
   }
   if (!_spaceThresholdsHaveUsableLibrary()) {
@@ -2718,9 +2715,9 @@ function _updateRedlineOnlyUI() {
 function toggleHeadroom() {
   const box = document.getElementById('headroom-enabled');
   if (_spaceThresholdsLocked()) {
-    if (box) box.checked = !box.checked;   // revert — locked while Live
+    if (box) box.checked = !box.checked;   // revert — locked during a run
     _applySpaceThresholdLock();
-    showToast('Pause Live mode before changing thresholds.', 'warning');
+    showToast('A run is active. Try again when it finishes.', 'warning');
     return;
   }
   if (!_spaceThresholdsHaveUsableLibrary()) {
@@ -2766,7 +2763,7 @@ function toggleHeadroom() {
 function toggleRedline() {
   if (_spaceThresholdsLocked()) {
     _applySpaceThresholdLock();
-    showToast('Pause Live mode before changing thresholds.', 'warning');
+    showToast('A run is active. Try again when it finishes.', 'warning');
     return;
   }
   if (!_spaceThresholdsHaveUsableLibrary()) {
@@ -2820,11 +2817,11 @@ function _updateRunModeAvailability() {
   });
 
   // The simulate-required ghost only gates ARMING Live (paused → Live) — an
-  // already-armed Live must never be flipped to Paused by a status poll.
+  // already-armed Live must never be flipped to Paused by a status poll. The
+  // server words the reason (first-scan proof, over-limits plan, or the
+  // Redline preview).
   const simBlock = (_simulateRequired && !_isLiveRunMode(_savedConfig?.RUN_MODE))
-    ? (_headroomEnabled()
-        ? 'Over space limits — run Simulate to review the deletion plan, then enable Live.'
-        : 'Run Simulate to build the Redline deletion-order preview, then enable Live.') : '';
+    ? (_simulateRequiredMsg || 'Run Simulate first, then enable Live.') : '';
   const liveBlock = _currentConnectionBlockingText() || _spaceThresholdBlockingText() || simBlock;
 
   _setRunModeDisabled('headroom', runLocked || !!liveBlock, _liveBlockIsSafety());
@@ -2907,9 +2904,6 @@ function _applyConnectivityGating(radarrConnected) {
 function _clearConnectionHighlights() {
   document.querySelectorAll('.connection-highlight').forEach(el => el.classList.remove('connection-highlight'));
   document.querySelectorAll('.connection-disabled').forEach(el => el.classList.remove('connection-disabled'));
-  ['TAUTULLI_URL','TAUTULLI_API_KEY','PLEX_URL','PLEX_TOKEN','JELLYFIN_URL','JELLYFIN_API_KEY','RADARR_URL','RADARR_API_KEY'].forEach(name => {
-    _setOverrideFieldDisabled(name, false);
-  });
   document.querySelectorAll('.mount-card-problem').forEach(el => el.classList.remove('mount-card-problem'));
 }
 
@@ -2972,7 +2966,7 @@ async function onResetInvalidClick() {
   if (btn) btn.disabled = false;
 }
 async function onBannerFullResetClick() {
-  if (!window.confirm('Reset MediaReducer to first-time setup? Settings, cache, and the library sample are wiped. Logs are kept.')) return;
+  if (!window.confirm('Reset MediaReducer to first-time setup? Settings, cache, and the library snapshot are wiped. Logs are kept.')) return;
   if (await _bannerPost('/api/config/reset', 'message')) window.location.href = '/';
 }
 function _applyConfigHealth(d) {
@@ -3042,13 +3036,6 @@ function _applyConfigHealth(d) {
     }
     document.getElementById(`override-field-${name}`)?.classList.add('connection-highlight');
   });
-  (d.disabled_fields || []).forEach(name => {
-    if (ALWAYS_EDITABLE_OPTIONAL_CONNECTION_FIELDS.has(name)) return;
-    if (!protectedEnabled && name === 'PROTECTED_COLLECTIONS') return;
-    const wrap = document.getElementById(`override-field-${name}`);
-    if (wrap) wrap.classList.add('connection-disabled');
-    _setOverrideFieldDisabled(name, true);
-  });
   (d.mount_highlights || []).forEach(name => {
     if (!cleanupEnabled && OPTIONAL_CLEANUP_MOUNTS.has(name)) return;
     document.getElementById(`mount-card-${name}`)?.classList.add('mount-card-problem');
@@ -3095,7 +3082,7 @@ async function checkConfigErrors() {
     _applyConfigHealth(d);
     showToast(d.ok ? 'Connection check passed.' : 'Connection check found issues.', d.ok ? 'success' : (d.severity === 'warning' ? 'warning' : 'danger'));
   } catch (e) {
-    _applyConfigHealth({ transient: true, severity: 'error', summary: 'Could not run connection check.', errors: ['Could not reach MediaReducer to run the check — try again. (' + String(e && e.message || e) + ')'], warnings: [], highlights: [], disabled_fields: [], mount_highlights: [], invalid_config: (_lastConfigHealth && _lastConfigHealth.invalid_config) || [] });
+    _applyConfigHealth({ transient: true, severity: 'error', summary: 'Could not run connection check.', errors: ['Could not reach MediaReducer to run the check — try again. (' + String(e && e.message || e) + ')'], warnings: [], highlights: [], mount_highlights: [], invalid_config: (_lastConfigHealth && _lastConfigHealth.invalid_config) || [] });
   } finally {
     if (btn) { btn.disabled = !!_sectionLockReason('connections'); btn.classList.remove('btn-busy'); btn.textContent = 'Check for Errors'; }
   }
@@ -3751,6 +3738,7 @@ async function refreshConfigRuntimeState() {
     _configRunActive = !!d.run_active;
     _configSummaryActive = !!d.summary_active;
     _simulateRequired = !!(d.live_state?.space_thresholds?.simulate_required);
+    _simulateRequiredMsg = d.live_state?.space_thresholds?.simulate_required_message || '';
     _captureMarkedWaitingAges(d);
     updateCurrentLibrarySizeBadge(d.library_gb);
   } catch (_) {
@@ -4100,9 +4088,9 @@ async function saveConfig() {
         showToast('Saved. Connection issues found.', 'danger');
       } else if (d.api_config_changed && health && health.severity === 'warning') {
         showToast('Saved with connection warnings.', 'warning');
-      } else if (d.pending_cleared > 0) {
-        showToast(`Saved. Space limits are satisfied — cleared ${d.pending_cleared} movie`
-          + `${d.pending_cleared === 1 ? '' : 's'} from the deletion queue.`, 'success');
+      } else if (d.pending_unscheduled > 0) {
+        showToast(`Saved. Space limits are satisfied — unscheduled ${d.pending_unscheduled} marked `
+          + `deletion${d.pending_unscheduled === 1 ? '' : 's'}; the eligible queue remains.`, 'success');
       } else {
         showToast('Configuration saved', 'success');
       }
@@ -4288,7 +4276,7 @@ function revertForm() {
 function resetSectionToDefault(section) {
   if (section === 'space' && _spaceThresholdsLocked()) {
     _applySpaceThresholdLock();
-    showToast(_sectionLockReason('space') || 'Pause Live mode before changing thresholds.', 'warning');
+    showToast(_sectionLockReason('space') || 'A run is active. Try again when it finishes.', 'warning');
     return;
   }
   if (section === 'space' && !_spaceThresholdsHaveUsableLibrary()) {
