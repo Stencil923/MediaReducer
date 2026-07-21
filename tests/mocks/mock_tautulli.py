@@ -33,7 +33,6 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(urlparse(self.path).query)
         cmd = (q.get("cmd") or [""])[0]
         CALLS[cmd] = CALLS.get(cmd, 0) + 1
-        open("/tmp/mock_calls.log", "a").write(cmd + "\n")  # CALLLOG
         if cmd == "get_libraries":
             data = [{"section_id": "1", "section_name": "Movies",
                      "section_type": "movie", "is_active": 1}]
