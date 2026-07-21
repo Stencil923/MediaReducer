@@ -36,7 +36,7 @@ E._match_keys = lambda p: {str(p)}
 
 merged = E.get_all_movies()
 resolve = [c for c in calls if str(c.get("message", "")).startswith("Resolving")]
-scanning_denominatored = [c for c in calls if c.get("phase") == "scanning" and "total" in c]
+denominatored = [c for c in calls if "total" in c or "scanned" in c]
 
 check("merge produced rows", len(merged) > 0)
 check("path resolution emitted progress", len(resolve) > 0)
@@ -44,8 +44,12 @@ check("resolution reports under the library step, not scanning",
       all(c.get("phase") == "library" for c in resolve))
 check("resolution is indeterminate (no scanned/total denominator)",
       all("total" not in c and "scanned" not in c for c in resolve))
-check("no denominatored scanning fill during the merge — the scan loop is the only one",
-      len(scanning_denominatored) == 0)
+# The merge+resolve path must emit only indeterminate progress: a denominatored
+# bar (scanned/total) belongs to the real scan loop, which this path never runs.
+# Asserting over EVERY emit (not just phase=="scanning") catches a regression
+# that mislabels the phase but still carries a denominator.
+check("no denominatored progress bar anywhere in the merge",
+      len(denominatored) == 0)
 
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
