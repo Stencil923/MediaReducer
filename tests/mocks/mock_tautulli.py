@@ -1,4 +1,4 @@
-"""Tiny mock Tautulli server for exercising the engine's sample_pool mode."""
+"""Tiny mock Tautulli server for the app/engine tests and browser e2e runs."""
 import json
 import random
 import sys
