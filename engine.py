@@ -1394,6 +1394,12 @@ def _coerce_config_number(raw, name, *, allow_none=False, min_value=None, max_va
     except (TypeError, ValueError):
         CONFIG_ERRORS.append(f"{name} must be a number.")
         return default
+    if not math.isfinite(value):
+        # inf/nan slip past the min/max comparisons below (every comparison with
+        # nan is False, and a bound-less field never catches inf), so reject them
+        # up front — a hand-edited "Infinity"/"NaN" must not become a threshold.
+        CONFIG_ERRORS.append(f"{name} must be a finite number.")
+        return default
     if min_value is not None and value < min_value:
         CONFIG_ERRORS.append(f"{name} must be {min_value} or greater.")
         return default
@@ -1413,6 +1419,9 @@ def _coerce_config_positive_or_none(raw, name, *, default=None):
         value = float(raw)
     except (TypeError, ValueError):
         CONFIG_ERRORS.append(f"{name} must be a number, or null to disable it.")
+        return default
+    if not math.isfinite(value):
+        CONFIG_ERRORS.append(f"{name} must be a finite number, or null to disable it.")
         return default
     if value <= 0:
         CONFIG_ERRORS.append(f"{name} must be greater than zero, or null to disable it.")

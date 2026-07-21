@@ -8,6 +8,7 @@ RUN_MODE is forced Paused on every startup.
 """
 
 import configparser
+import copy
 import gzip
 try:
     import fcntl
@@ -36,7 +37,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from scoring_constants import SCORING
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, render_template, request, send_from_directory, has_request_context
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -586,8 +587,13 @@ def _read_saved_config_file() -> dict | None:
         return None
 
 
-def load_config() -> dict:
-    global _CONFIG_FILE_ISSUES
+_config_memo_lock = threading.Lock()
+_config_memo = {"key": None, "cfg": None, "issues": []}
+
+
+def _build_config() -> tuple[dict, list]:
+    """Parse + validate + normalize config.json into the runtime cfg. Returns
+    (cfg, issues); the caller memoizes and sets the _CONFIG_FILE_ISSUES global."""
     with open(DEFAULT_CFG_PATH) as f:
         cfg = json.load(f)
     # A corrupt/non-object config.json must not take every route down (including
@@ -601,7 +607,6 @@ def load_config() -> dict:
     else:
         issues = _config_file_issues(saved)
         cfg.update(saved)
-    _CONFIG_FILE_ISSUES = issues
     cfg["SKIP_UNPLAYED_MOVIES"] = _coerce_bool(cfg.get("SKIP_UNPLAYED_MOVIES"))
     cfg["PROTECT_JELLYFIN_FAVORITES"] = _coerce_bool(cfg.get("PROTECT_JELLYFIN_FAVORITES"))
     cfg["USE_PLEX"] = _coerce_bool(cfg.get("USE_PLEX"))
@@ -612,7 +617,30 @@ def load_config() -> dict:
     cfg["TAUTULLI_APPDATA"] = TAUTULLI_APPDATA_DIR
     cfg["RADARR_APPDATA"] = RADARR_APPDATA_DIR
     cfg["JELLYFIN_APPDATA"] = JELLYFIN_APPDATA_DIR
-    return cfg
+    return cfg, issues
+
+
+def load_config() -> dict:
+    """The runtime config, memoized by config.json's (mtime, size): a single
+    /api/status poll asks for it hundreds of times (every timestamp render calls
+    it for the display format), and the file only changes on save. Each call
+    returns a fresh copy so callers can mutate it freely; the parse + GUI-rule
+    validation runs once per file version, not once per consult."""
+    global _CONFIG_FILE_ISSUES
+    try:
+        st = CONFIG_PATH.stat()
+        key = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = None   # missing file (fresh install) — a stable, memoizable state
+    with _config_memo_lock:
+        if _config_memo["key"] == key and _config_memo["cfg"] is not None:
+            _CONFIG_FILE_ISSUES = _config_memo["issues"]
+            return copy.deepcopy(_config_memo["cfg"])
+    cfg, issues = _build_config()
+    with _config_memo_lock:
+        _config_memo.update({"key": key, "cfg": cfg, "issues": issues})
+    _CONFIG_FILE_ISSUES = issues
+    return copy.deepcopy(cfg)
 
 
 def _invalid_config_response():
@@ -1085,12 +1113,15 @@ def _validate_display_time_format(value: str | None) -> str:
     raise ValueError("Time format must be 12h or 24h.")
 
 def _request_time_format() -> str:
-    requested = request.args.get("time_format") or request.args.get("fmt")
-    if requested:
-        try:
-            return _validate_display_time_format(requested)
-        except ValueError:
-            pass
+    # Callable outside a request (a background/test caller rendering timestamps):
+    # fall back to the configured format when there is no query string to read.
+    if has_request_context():
+        requested = request.args.get("time_format") or request.args.get("fmt")
+        if requested:
+            try:
+                return _validate_display_time_format(requested)
+            except ValueError:
+                pass
     return _validate_display_time_format(load_config().get("DISPLAY_TIME_FORMAT", "12h"))
 
 def _format_dt_for_display(dt: datetime, fmt: str | None = None) -> str:
@@ -1110,11 +1141,12 @@ def _format_epoch_for_display(epoch_seconds: float | int | None) -> str | None:
     # Local time IS the operating zone — TIME_ZONE is applied to the process.
     return _format_dt_for_display(datetime.fromtimestamp(float(epoch_seconds)))
 
-def _format_log_timestamp_for_display(ts: str) -> str:
+def _format_log_timestamp_for_display(ts: str, fmt: str | None = None) -> str:
     """Re-render a script log timestamp in the configured 12/24-hour format.
-    Log timestamps are already written in the operating time zone."""
+    Log timestamps are already written in the operating time zone. Pass fmt to
+    reuse a format resolved once when rendering many timestamps in a loop."""
     try:
-        return _format_dt_for_display(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+        return _format_dt_for_display(datetime.strptime(ts, "%Y-%m-%d %H:%M:%S"), fmt)
     except Exception:
         return ts
 
@@ -4734,7 +4766,7 @@ def _entry_size_bytes(e: dict) -> int:
         return 0
 
 
-def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
+def pending_deletion_entries(cfg: dict | None = None, *, with_lines: bool = True) -> list[dict]:
     """The marked & eligible queue, in the file's own (deletion) order for every
     mode. MARKED entries are the ones actually scheduled: in normal modes the
     entries the engine clocked (marked_at set — delay info computed against the
@@ -4742,7 +4774,12 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
     redline-only mode the queue prefix covering the current Redline deficit.
     Everything else is merely ELIGIBLE — visible deletion order with no dates.
     Pass an already-loaded cfg when you have one — the default reloads
-    config.json."""
+    config.json.
+
+    with_lines=False skips the per-entry display strings (title, size label,
+    "when" text, formatted timestamp, joined line) — the /api/status forecast
+    reads only marked_at/days_remaining/delete_on/size_bytes and pays for none
+    of that formatting on a queue that can be thousands of entries."""
     raw = _pending_raw()
     if not raw:
         return []
@@ -4753,6 +4790,8 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
     today = datetime.now().date()
     _deficit_bytes = _redline_deficit_bytes(cfg)
     _marked_bytes = 0
+    # The display format is one config value; resolve it once, not per entry.
+    _fmt = _request_time_format() if with_lines else None
     out = []
     for i, (path, e) in enumerate(raw.items(), start=1):
         if not isinstance(e, dict):
@@ -4770,18 +4809,13 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
                 datetime.fromtimestamp(marked_at).date() + timedelta(days=400)
             except (OverflowError, OSError, ValueError):
                 marked_at = now
-        title = str(e.get("title") or Path(path).name)
         size_bytes = _entry_size_bytes(e)
-        size_label = _format_reclaimed_size(size_bytes) if size_bytes else ""
         marked = False
         remaining = delete_on = None
         if rl_only:
             if _marked_bytes < _deficit_bytes:
                 _marked_bytes += size_bytes
                 marked = True
-                when = f"#{i} — deletes on the next Live Run (Redline breached)"
-            else:
-                when = f"#{i} — deletes when Redline hits"
         elif marked_at is not None:
             # Calendar-day aging, matching the engine: marked date + delay is
             # when the mark becomes deletable at that day's daily run (or any
@@ -4789,12 +4823,27 @@ def pending_deletion_entries(cfg: dict | None = None) -> list[dict]:
             marked = True
             delete_on = datetime.fromtimestamp(marked_at).date() + timedelta(days=delay)
             remaining = max(0, (delete_on - today).days)
+        if not with_lines:
+            out.append({
+                "marked_at": marked_at,
+                "size_bytes": size_bytes,
+                "marked": marked,
+                "days_remaining": remaining,
+                "delete_on": delete_on.isoformat() if delete_on else None,
+            })
+            continue
+        title = str(e.get("title") or Path(path).name)
+        size_label = _format_reclaimed_size(size_bytes) if size_bytes else ""
+        if rl_only:
+            when = (f"#{i} — deletes on the next Live Run (Redline breached)" if marked
+                    else f"#{i} — deletes when Redline hits")
+        elif marked_at is not None:
             when = ("deletable now" if remaining <= 0
                     else f"deletable from {delete_on.isoformat()}")
         else:
             when = f"#{i} — next in line if more space is needed"
         marked_disp = "" if marked_at is None else _format_log_timestamp_for_display(
-            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(marked_at)))
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(marked_at)), _fmt)
         line_parts = [p for p in (marked_disp, title) if p]
         if size_label:
             line_parts.append(size_label)
@@ -4859,7 +4908,7 @@ def pending_delete_forecast(cfg: dict | None = None) -> dict:
     (ripe marks, or failing any, the earliest upcoming eligibility date's batch) with
     its true movie count and bytes. Pass an already-loaded cfg when you have one."""
     cfg = cfg or load_config()
-    entries = pending_deletion_entries(cfg)
+    entries = pending_deletion_entries(cfg, with_lines=False)
     # Redline-only mode schedules nothing: the queue is the deletion-order preview
     # and only a Redline breach deletes, so there is no ripe set, no next event,
     # and no delay to age against.
