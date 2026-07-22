@@ -104,8 +104,30 @@ PY
   # the already-booted Plex app.
   if [[ "$MODE" == "--e2e" ]]; then
     if node -e "import(process.env.PLAYWRIGHT_MODULE||'playwright').then(()=>process.exit(0)).catch(()=>process.exit(1))" 2>/dev/null; then
-      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_smoke   node tests/e2e/smoke_all.mjs
-      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_runlock node tests/e2e/e2e_runlock.mjs
+      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_smoke      node tests/e2e/smoke_all.mjs
+      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_runlock    node tests/e2e/e2e_runlock.mjs
+      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_debugghost   node tests/e2e/e2e_debugghost.mjs
+      MR_BASE_URL="http://127.0.0.1:$PORT" run e2e_prune_confirm node tests/e2e/e2e_prune_confirm.mjs
+
+      # A Debug-mode dashboard (its own app + isolated OUTPUT_DIR): the Live
+      # button morphs to Debug Live Run, which must stay enabled through status
+      # polls that report the live/safety thresholds blocked.
+      DBG_OUT="$TMP/e2e-dbg-out"; mkdir -p "$DBG_OUT"
+      DBG_CFG="$TMP/e2e-dbg-config.json"
+      python3 - "$MEDIAREDUCER_CONFIG" "$DBG_CFG" "$DBG_OUT" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+cfg["DEBUG_MODE"] = True
+cfg["RUN_MODE"] = "paused"
+cfg["OUTPUT_DIR"] = sys.argv[3]
+json.dump(cfg, open(sys.argv[2], "w"))
+PY
+      # +33, not +3: PORT+3 (5060 by default) is SIP, which Chromium blocks as
+      # an "unsafe port" (net::ERR_UNSAFE_PORT). Keep clear of reserved ports.
+      DBG_PORT=$((PORT+33))
+      DBG_APP_PID="$(boot_app "$DBG_CFG" "$TMP/e2e/library" "$DBG_PORT")"
+      MR_BASE_URL="http://127.0.0.1:$DBG_PORT" run e2e_debuglive_btn node tests/e2e/e2e_debuglive_btn.mjs
+      kill "$DBG_APP_PID" 2>/dev/null
     else
       echo "SKIP browser tests — playwright not installed (set PLAYWRIGHT_MODULE, or run: npm i playwright)"
     fi
