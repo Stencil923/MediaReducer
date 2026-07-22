@@ -33,7 +33,7 @@ async function runSimulate() {
 // Health must be green first (the fixture points Tautulli at the mock).
 const s0 = await status();
 check('media server connected before the run',
-  (s0.live_state?.connection_health?.critical_ok) === true);
+  (s0.cleanup_state?.connection_health?.critical_ok) === true);
 
 // First Simulate: builds the plan and snapshot from scratch.
 const r1 = await runSimulate();
