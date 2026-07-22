@@ -124,12 +124,13 @@ code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=20
                                                     REDLINE_ONLY_MODE=True))
 check("unticking headroom (mode) saves and stores memory",
       code == 200 and cfg.get("HEADROOM_GB") == 0 and cfg.get("_HEADROOM_GB_LAST") == 500)
-# Redline-only mode (the explicit flag) can't carry a Library Size Cap; a
-# ticked-0 Headroom with a cap is a valid cap-only config.
+# Headroom off (the explicit flag) may now carry a Library Size Cap — the cap
+# drives the daily cleanup with Headroom off.
 code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=200, MAX_LIBRARY_GB=5000,
                                                     REDLINE_ONLY_MODE=True,
                                                     MONITOR_DIRS=["/library/movies"]))
-check("redline-only mode with a cap rejected", code == 400)
+check("headroom off with a cap and redline saves",
+      code == 200 and cfg.get("MAX_LIBRARY_GB") == 5000)
 code, body, cfg = save_cfg(BASE_SAVED, base_payload(HEADROOM_GB=0, REDLINE_GB=None, MAX_LIBRARY_GB=5000,
                                                     MONITOR_DIRS=["/library/movies"]))
 check("headroom 0 with a cap saves (cap-only config)",

@@ -29,7 +29,7 @@ A._mark_progress_terminal = lambda status, msg, **k: marks.append((status, msg))
 proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
 A._run_process = proc
 A._run_active = True
-A._run_live = True
+A._run_cleanup = True
 A._run_stop_requested = threading.Event()
 A._shutting_down = False
 

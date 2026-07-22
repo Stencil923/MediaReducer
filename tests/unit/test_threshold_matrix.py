@@ -6,7 +6,8 @@ Live/Simulate gating direction. Guards the contract:
 
   mode=False: redline must sit STRICTLY below the headroom VALUE (ties and
               0 included — at-or-above needs the mode); cap free.
-  mode=True:  redline required, cap forbidden, headroom value must be 0.
+  mode=True:  headroom value must be 0, and a Redline floor and/or a Library Size
+              Cap must be armed (either or both) to drive cleanup.
 """
 import sys
 from pathlib import Path
@@ -55,7 +56,9 @@ BASE_SAVED = {
 def expected_valid(mode, h, r, c):
     """The single source of truth all three validators must reproduce."""
     if mode:
-        return r is not None and c is None and h == 0
+        # Headroom off: valid when its value is 0 AND something else drives cleanup
+        # — a Redline floor and/or a Library Size Cap (either or both).
+        return h == 0 and (r is not None or c is not None)
     return r is None or r < h
 
 def api_status_for(mode, h, r, c):
@@ -112,17 +115,17 @@ def gate(mode, h, r, c):
 
 st = gate(False, 0, None, None)
 check("no-thresholds: Live blocked with setup message, Simulate open",
-      st["ok_for_live"] is False and "Set a Headroom target" in st["live_tooltip"]
+      st["ok_for_cleanup"] is False and "Set a Headroom target" in st["cleanup_tooltip"]
       and st["ok_for_simulate"] is True)
 st = gate(False, 0, None, 5000)
-check("cap-only: Live allowed", st["ok_for_live"] is True and st["ok_for_simulate"] is True)
+check("cap-only: Live allowed", st["ok_for_cleanup"] is True and st["ok_for_simulate"] is True)
 st = gate(False, 500, 200, None)
-check("normal + redline: Live allowed", st["ok_for_live"] is True)
+check("normal + redline: Live allowed", st["ok_for_cleanup"] is True)
 st = gate(False, 500, None, 5000)
-check("normal + cap: Live allowed", st["ok_for_live"] is True)
+check("normal + cap: Live allowed", st["ok_for_cleanup"] is True)
 st = gate(True, 0, 200, None)
 check("redline-only: Live allowed (plan gate handled separately)",
-      st["ok_for_live"] is True)
+      st["ok_for_cleanup"] is True)
 
 # ── Onboarding (no dirs): the locked form's saved-through values stay valid ──
 for mode, h, r, c in ((False, 0, None, None), (False, 500, 200, None)):

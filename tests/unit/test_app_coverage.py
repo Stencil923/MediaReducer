@@ -40,7 +40,7 @@ A.run_script = _fake_run_script
 A._refresh_connection_health_cache = lambda cfg=None, probe=True: {"critical_ok": True}
 A.disk_stats = lambda: {}
 A._space_threshold_state = lambda cfg=None, disk=None, **k: {
-    "ok_for_simulate": True, "ok_for_live": True, "simulate_required": False}
+    "ok_for_simulate": True, "ok_for_cleanup": True, "simulate_required": False}
 A._has_monitored_dirs = lambda cfg=None: True
 # Skip the "already satisfied" precheck (degrade-don't-block else branch) so the
 # route proceeds straight to the launch regardless of disk state.
@@ -57,7 +57,7 @@ check("an empty /api/run body launches, not rejected", r.status_code == 200)
 check("a missing run mode falls back to the non-destructive Simulate",
       _launched.get("mode") == "debug_sim")
 check("the safety default is NOT a live deletion mode",
-      not A._is_live_mode(_launched.get("mode")))
+      not A._is_cleanup_mode(_launched.get("mode")))
 
 _launched.clear()
 r = client.post("/api/run", json={"mode": "headroom"}, headers=HDR)

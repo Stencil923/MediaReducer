@@ -46,6 +46,9 @@ check("mode off: ticked-0 with redline is NOT the mode",
 check("mode off: headroom set", A._redline_only_mode_cfg(HR_CFG) is False)
 check("mode off: flag without redline",
       A._redline_only_mode_cfg({"HEADROOM_GB": 0, "REDLINE_GB": None, "REDLINE_ONLY_MODE": True}) is False)
+check("mode off: headroom off WITH a cap is NOT redline-only (the cap drives the daily run)",
+      A._redline_only_mode_cfg({"HEADROOM_GB": 0, "REDLINE_GB": 200,
+                                "REDLINE_ONLY_MODE": True, "MAX_LIBRARY_GB": 5000}) is False)
 
 # ── File validator cross-rules (hand edits) ──────────────────────────────────
 # The rules only bind once monitored directories exist: 0/null with none is the
@@ -54,10 +57,16 @@ _DIRS = {"MONITOR_DIRS": ["/library/movies"]}
 check("file validator: headroom 0 without redline is the valid no-thresholds state",
       not any(i["key"] == "HEADROOM_GB"
               for i in A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=None))))
-check("file validator: redline-only with a cap locks out",
-      any(i["key"] == "MAX_LIBRARY_GB"
-          for i in A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=200,
-                                              REDLINE_ONLY_MODE=True, MAX_LIBRARY_GB=5000))))
+check("file validator: headroom off WITH a cap and redline is now valid",
+      not A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=200,
+                                     REDLINE_ONLY_MODE=True, MAX_LIBRARY_GB=5000)))
+check("file validator: headroom off with a cap and NO redline is valid",
+      not A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=None,
+                                     REDLINE_ONLY_MODE=True, MAX_LIBRARY_GB=5000)))
+check("file validator: headroom off with neither redline nor cap locks out",
+      any(i["key"] == "REDLINE_ONLY_MODE"
+          for i in A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=None,
+                                              REDLINE_ONLY_MODE=True, MAX_LIBRARY_GB=None))))
 check("file validator: ticked-0 with a cap is a valid cap-only config",
       not A._config_file_issues(dict(_DIRS, HEADROOM_GB=0, REDLINE_GB=None, MAX_LIBRARY_GB=5000)))
 check("file validator: clean redline-only passes",
@@ -138,13 +147,13 @@ try:
     A.library_stats = lambda: {"library_gb": 100.0}
     # A media server must be selected or the connection gate ghosts everything
     # before the threshold logic runs.
-    lb = A._live_button_state(dict(BASE, USE_PLEX=True, **RL_CFG), _disk)
+    lb = A._cleanup_button_state(dict(BASE, USE_PLEX=True, **RL_CFG), _disk)
     check("mode: Simulate stays enabled while satisfied", lb["simulate_disabled"] is False)
-    check("mode: Live ghosts pending the preview plan", lb["live_disabled"] is True)
-    check("mode: tooltip names the preview requirement", "preview" in lb["live_tooltip"])
-    lb = A._live_button_state(dict(BASE, USE_PLEX=True, **HR_CFG), _disk)
+    check("mode: Live ghosts pending the preview plan", lb["cleanup_disabled"] is True)
+    check("mode: tooltip names the preview requirement", "preview" in lb["cleanup_tooltip"])
+    lb = A._cleanup_button_state(dict(BASE, USE_PLEX=True, **HR_CFG), _disk)
     check("normal: satisfied keeps Simulate enabled, ghosts Live",
-          lb["simulate_disabled"] is False and lb["live_disabled"] is True)
+          lb["simulate_disabled"] is False and lb["cleanup_disabled"] is True)
     A.library_stats = _orig_lib_stats
     A._refresh_connection_health_cache = _orig_health
 finally:
@@ -156,10 +165,10 @@ finally:
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, **RL_CFG, OUTPUT_DIR=td)
     now = time.time()
-    Path(td, "pending_deletions.json").write_text(json.dumps({"schema": 1, "entries": {
+    Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
         "/library/movies/A/A.mkv": {"title": "Worst", "size_bytes": 1000, "marked_at": now - 86400},
         "/library/movies/B/B.mkv": {"title": "Next", "size_bytes": 1000, "marked_at": now},
-    }}), encoding="utf-8")
+    }}}), encoding="utf-8")
     # Pin the disk read: the marked/eligible split keys on real free space vs
     # the Redline floor, and the test machine's disk must not decide the case.
     _orig_ds = A.disk_stats
@@ -180,7 +189,7 @@ with tempfile.TemporaryDirectory() as td:
     entries = A.pending_deletion_entries()
     check("mode breached: deficit prefix is marked, rest queued",
           entries[0]["marked"] is True
-          and entries[0]["when"] == "#1 — deletes on the next Live Run (Redline breached)"
+          and entries[0]["when"] == "#1 — deletes on the next Cleanup (Redline breached)"
           and entries[1]["marked"] is False
           and entries[1]["when"] == "#2 — deletes when Redline hits")
     A.disk_stats = _orig_ds
@@ -219,6 +228,10 @@ try:
     engine.REDLINE_ONLY_MODE = True
     engine.MONITOR_DIRS = ["/library/movies"]   # the 0-rules bind only with dirs
     check("engine mode helper", engine._redline_only_mode() is True)
+    engine.MAX_LIBRARY_GB = 5000
+    check("engine mode helper: headroom off + cap is NOT redline-only",
+          engine._redline_only_mode() is False)
+    engine.MAX_LIBRARY_GB = None
     errs, _t, _m = engine._space_threshold_errors()
     check("engine validator: clean redline-only passes", errs == [])
     engine.REDLINE_GB = None
@@ -228,12 +241,16 @@ try:
           errs == [])
     engine.REDLINE_ONLY_MODE = True
     errs, _t, _m = engine._space_threshold_errors()
-    check("engine validator: mode without redline flagged",
-          any("REDLINE_GB" in e for e in errs))
-    engine.REDLINE_GB, engine.MAX_LIBRARY_GB = 200, 5000
+    check("engine validator: headroom off with neither redline nor cap flagged",
+          any("Redline floor" in e and "Library Size Cap" in e for e in errs))
+    # Headroom off WITH a cap (no redline) is now valid — the cap drives cleanup.
+    engine.MAX_LIBRARY_GB = 5000
     errs, _t, _m = engine._space_threshold_errors()
-    check("engine validator: cap flagged in redline-only",
-          any("MAX_LIBRARY_GB" in e for e in errs))
+    check("engine validator: headroom off with a cap (no redline) is valid", errs == [])
+    # Headroom off with BOTH a redline and a cap is valid too.
+    engine.REDLINE_GB = 200
+    errs, _t, _m = engine._space_threshold_errors()
+    check("engine validator: headroom off with redline + cap is valid", errs == [])
     engine.MAX_LIBRARY_GB = None
     # The safety cap now bounds the REDLINE floor (15% of 1000 GB = 150 GB).
     errs, _t, _m = engine._space_threshold_errors(usage_info={"total": 1000 * 1_000_000_000})
@@ -254,13 +271,13 @@ try:
     _orig_exists = engine.Path.exists
     try:
         engine.Path.exists = lambda self: True   # queue files all still on disk
-        engine._revalidate_pending_marks(limits_breached=False)
+        engine._revalidate_pending_marks(0)   # deficit 0 = within limits
         check("engine upkeep: satisfied does NOT clear the preview", "v" not in _saved_pending)
         # Normal mode: satisfied stops any running delay clocks but KEEPS the
         # queue — it is the standing eligible deletion order in every mode now.
         engine.HEADROOM_GB, engine.REDLINE_ONLY_MODE = 500, False
         _store["/x/A.mkv"]["marked_at"] = 123.0   # a running clock
-        engine._revalidate_pending_marks(limits_breached=False)
+        engine._revalidate_pending_marks(0)   # deficit 0 = within limits
         _v = _saved_pending.get("v") or {}
         check("engine upkeep: normal mode unschedules clocks but keeps the queue",
               set(_v) == {"/x/A.mkv", "/x/B.mkv"}
@@ -300,8 +317,8 @@ _state_uncfg = A._space_threshold_state(_uncfg, disk={"total_gb": 1000.0}, libra
 check("no-thresholds state: Simulate stays available",
       _state_uncfg["ok_for_simulate"] is True)
 check("no-thresholds state: Live blocked with the setup message",
-      _state_uncfg["ok_for_live"] is False
-      and "Set a Headroom target" in _state_uncfg["live_tooltip"])
+      _state_uncfg["ok_for_cleanup"] is False
+      and "Set a Headroom target" in _state_uncfg["cleanup_tooltip"])
 check("no-thresholds state is not redline-only mode",
       A._redline_only_mode_cfg(_uncfg) is False)
 

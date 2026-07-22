@@ -33,6 +33,7 @@ def setup(td):
     engine.LOGFILE = out / "lastrun.log"
     engine.DELETED_LOG = out / "deleted.log"
     engine.PROGRESS_FILE = out / "progress.json"
+    engine.CACHE_FILE = out / "cache.json"     # the queue now lives under cache.json["pending"]
     engine.PENDING_FILE = out / "pending_deletions.json"
     engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
     engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,
@@ -40,17 +41,31 @@ def setup(td):
     entries = {str(p): {"title": p.stem, "score": i + 1.0, "size_bytes": 2 * MB,
                         "marked_at": 1000000000 + i}
                for i, p in enumerate(paths)}
-    engine.PENDING_FILE.write_text(json.dumps({
-        "schema": 1, "entries": entries,
-        "plan_config": dict(engine._PLAN_CONFIG_RAW),
-        "monitor_dirs": sorted(str(d) for d in engine.MONITOR_DIRS),
-    }), encoding="utf-8")
+    engine.save_pending(entries, stamp_thresholds=True)   # -> cache.json["pending"], stamped
     return paths
+
+
+def _pending():
+    """The pending doc ({entries, plan_config, monitor_dirs}) from cache.json."""
+    return engine.load_cache().get("pending", {})
 
 engine.fetch_protected_paths = lambda: ([], None, None, None)
 engine._jellyfin_protected_items = lambda: (set(), set(), set(), set())
 engine.RUN_MODE = "headroom"
 engine.REDLINE_ONLY_MODE = True   # the fixture plan is a redline-only preview
+
+# The fast path now re-checks fresh watch data before an emergency delete: a
+# movie is deletable only if CONFIRMED unwatched since marking. Give the test a
+# snapshot join (each movie known 0 plays) and a fresh fetch; by default every
+# movie reads back unwatched, so the plan deletes as before. FRESH_PLAYS lets a
+# case mark a specific movie as watched-since so it must be spared.
+FRESH_PLAYS = {}   # source_id -> play_count reported by the fresh fetch
+engine._snapshot_by_store_key = lambda store: {
+    k: {"source_id": Path(k).stem, "jf_source_id": None, "plays": 0, "last_played": 0}
+    for k in store}
+engine._fresh_watch_data = lambda ids: {
+    str(i): {"play_count": FRESH_PLAYS.get(str(i), 0), "last_played": 0, "favorite": False}
+    for i in ids}
 
 # ── Plan-currency stamp ──────────────────────────────────────────────────────
 with tempfile.TemporaryDirectory() as td:
@@ -71,7 +86,7 @@ with tempfile.TemporaryDirectory() as td:
     check("emergency handled from the queue", handled is True)
     check("first three deleted in plan order",
           deleted == ["Movie A.mkv", "Movie B.mkv", "Movie C.mkv"] and kept == ["Movie D.mkv"])
-    data = json.loads(engine.PENDING_FILE.read_text())
+    data = _pending()
     check("deleted marks trimmed, survivor kept",
           list(data["entries"]) == [str(paths[3])])
     check("trim preserves the plan stamp", isinstance(data.get("plan_config"), dict))
@@ -82,6 +97,61 @@ with tempfile.TemporaryDirectory() as td:
     check("terminal progress asks for a preview rebuild",
           prog.get("status") == "done" and prog.get("queue_rebuild") is True
           and prog.get("deleted") == 3)
+
+# ── Fast path: a marked movie whose file is already gone is dropped silently ──
+# The user deleted the movie manually since the queue was built. The dead mark
+# must be dropped from the queue (not lingered), and the next in line must be
+# consumed so the target is still covered — no fallback to the full scan.
+with tempfile.TemporaryDirectory() as td:
+    paths = setup(td)
+    paths[0].unlink()                                    # Movie A gone from disk
+    handled = engine._redline_fast_path(4 * MB)          # needs 2 → A dead, B/C go
+    check("a dead mark is skipped and the next in line covers the target",
+          handled is True and not paths[0].exists()
+          and not paths[1].exists() and not paths[2].exists() and paths[3].exists())
+    data = _pending()
+    check("the dead mark is dropped from the queue; deleted ones trimmed",
+          list(data["entries"]) == [str(paths[3])])
+
+# ── Fast path: a dead mark is dropped from the cache even when coverage falls
+#    short and the run falls back to the full scan ─────────────────────────────
+with tempfile.TemporaryDirectory() as td:
+    paths = setup(td)
+    paths[1].unlink()                                    # Movie B gone from disk
+    handled = engine._redline_fast_path(50 * MB)         # queue can't cover → fall back
+    check("thin coverage with a dead mark still falls back to the full scan",
+          handled is False)
+    data = _pending()
+    check("the dead mark is dropped from the cache on the fallback path too",
+          str(paths[1]) not in data["entries"]
+          and [str(p) for p in (paths[0], paths[2], paths[3])]
+              == [k for k in data["entries"] if k != str(paths[1])])
+
+# ── Fast path: a movie watched since it was marked is spared, next in line used
+with tempfile.TemporaryDirectory() as td:
+    paths = setup(td)
+    FRESH_PLAYS.clear(); FRESH_PLAYS["Movie A"] = 3      # A watched after marking
+    try:
+        handled = engine._redline_fast_path(5 * MB)      # needs 3 → A spared, B/C/D go
+    finally:
+        FRESH_PLAYS.clear()
+    check("a movie watched since marking is spared; the next in line covers the target",
+          handled is True and paths[0].exists()
+          and not paths[1].exists() and not paths[2].exists() and not paths[3].exists())
+    data = _pending()
+    check("the spared (watched) movie keeps its mark; deleted ones trimmed",
+          list(data["entries"]) == [str(paths[0])])
+
+# ── Fast path: if the fresh fetch is unavailable, fall back to the full scan ──
+with tempfile.TemporaryDirectory() as td:
+    paths = setup(td)
+    _fwd = engine._fresh_watch_data
+    engine._fresh_watch_data = lambda ids: (_ for _ in ()).throw(RuntimeError("api down"))
+    try:
+        check("an unavailable fresh re-check falls back, deletes nothing",
+              engine._redline_fast_path(2 * MB) is False and all(p.exists() for p in paths))
+    finally:
+        engine._fresh_watch_data = _fwd
 
 # ── Fallbacks: stale plan, protected marks, thin queue, protection failure ───
 with tempfile.TemporaryDirectory() as td:
@@ -128,7 +198,7 @@ with tempfile.TemporaryDirectory() as td:
     check("undeletable head is routed around with later queue entries",
           handled is True and paths[0].exists()
           and not paths[1].exists() and not paths[2].exists() and paths[3].exists())
-    data = json.loads(engine.PENDING_FILE.read_text())
+    data = _pending()
     check("failed file keeps its mark; deleted ones trimmed",
           list(data["entries"]) == [str(paths[0]), str(paths[3])])
 
@@ -204,7 +274,7 @@ with tempfile.TemporaryDirectory() as td:
         engine.DELETED_LOG = _dl_saved
     check("unwritable deleted.log doesn't abort the emergency",
           handled is True and not paths[0].exists() and not paths[1].exists())
-    data = json.loads(engine.PENDING_FILE.read_text())
+    data = _pending()
     check("marks still trimmed when the audit write fails",
           list(data["entries"]) == [str(paths[2]), str(paths[3])])
 
@@ -221,24 +291,160 @@ try:
         engine.REDLINE_ONLY_MODE = True
         cand = {"path": paths[0], "title": "Movie A", "retention_score": 1.0}
         engine.write_plan_to_queue([(cand, 2 * MB)], "test")    # scheduled_count 0
-        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        e = _pending()["entries"][str(paths[0])]
         check("redline-only plans carry no delay clocks", e["marked_at"] is None)
         # Mode exits and a normal-mode plan schedules the same entry: its clock
         # starts NOW — the eligible time never counted as served delay.
         engine.HEADROOM_GB, engine.REDLINE_GB = 500, 200
         engine.REDLINE_ONLY_MODE = False
         engine.write_plan_to_queue([(cand, 2 * MB)], "test", scheduled_count=1)
-        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        e = _pending()["entries"][str(paths[0])]
         check("entering the marked prefix starts a fresh clock", e["marked_at"] > 1700000000)
         _first_clock = e["marked_at"]
         engine.write_plan_to_queue([(cand, 2 * MB)], "test", scheduled_count=1)
-        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        e = _pending()["entries"][str(paths[0])]
         check("re-simulate keeps a running clock", e["marked_at"] == _first_clock)
         engine.write_plan_to_queue([(cand, 2 * MB)], "test")    # left the prefix
-        e = json.loads(engine.PENDING_FILE.read_text())["entries"][str(paths[0])]
+        e = _pending()["entries"][str(paths[0])]
         check("leaving the marked prefix stops the clock", e["marked_at"] is None)
 finally:
     engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE = _hr_saved
+
+# ── do_radarr: a manual-style queue delete forgets each movie in Radarr ───────
+# The manual Cleanup runs THIS same fast path (trigger set, do_radarr=True), so
+# it must clean up Radarr from the TMDB id + section the queue now stores — while
+# a Redline emergency (the default) still skips Radarr.
+_radarr_calls = []
+_cr_saved = engine.cleanup_radarr
+engine.cleanup_radarr = lambda c: _radarr_calls.append((c.get("title"), c.get("tmdb_id"), c.get("section_id")))
+try:
+    with tempfile.TemporaryDirectory() as td:
+        paths = setup(td)
+        d = _pending()
+        for i, k in enumerate(d["entries"]):             # stamp Radarr identity
+            d["entries"][k]["tmdb_id"] = 1000 + i
+            d["entries"][k]["section_id"] = 1
+        engine.save_pending(d["entries"], stamp_thresholds=True)
+        handled = engine._redline_fast_path(3 * MB, trigger="HEADROOM", do_radarr=True)  # A, B go
+        check("a manual-style queue delete forgets each deleted movie in Radarr (stored tmdb/section)",
+              handled is True and len(_radarr_calls) == 2
+              and _radarr_calls[0][1] == 1000 and _radarr_calls[0][2] == 1
+              and _radarr_calls[1][1] == 1001)
+    with tempfile.TemporaryDirectory() as td:
+        paths = setup(td)
+        _radarr_calls.clear()
+        engine._redline_fast_path(3 * MB)                # default: Redline emergency
+        check("a Redline emergency still skips Radarr cleanup (do_radarr defaults off)",
+              len(_radarr_calls) == 0)
+finally:
+    engine.cleanup_radarr = _cr_saved
+
+# ── write_plan_to_queue stores the Radarr identity for the incremental delete ──
+_hr2 = (engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE)
+try:
+    with tempfile.TemporaryDirectory() as td:
+        paths = setup(td)
+        engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE = 0, 200, True
+        cand = {"path": paths[0], "title": "Movie A", "retention_score": 1.0,
+                "tmdb_id": 4242, "section_id": 1}
+        engine.write_plan_to_queue([(cand, 2 * MB)], "test")
+        e = _pending()["entries"][str(paths[0])]
+        check("the queue entry carries tmdb_id + section_id for Radarr cleanup",
+              e.get("tmdb_id") == 4242 and e.get("section_id") == 1)
+finally:
+    engine.HEADROOM_GB, engine.REDLINE_GB, engine.REDLINE_ONLY_MODE = _hr2
+
+# ── File size optimization in the fast path (the user's scenario) ─────────────
+# A group of near-tied-score movies sits at the deletion boundary: three 1 MB
+# files and one 5.5 MB file, all within NEAR_TIE_PTS. Target 5 MB. Strict order
+# would delete all three small ones and still fall short; File size optimization
+# deletes the single 5.5 MB file that covers the target on its own and SPARES the
+# three small near-ties.
+with tempfile.TemporaryDirectory() as td:
+    lib = Path(td, "library"); movies = lib / "movies"
+    out = Path(td, "out"); out.mkdir(parents=True, exist_ok=True)
+    engine.LIBRARY_ROOT = lib
+    engine.MONITOR_DIRS = [str(movies)]
+    engine._RESOLVED_MONITORED_ROOTS = None
+    engine.OUTPUT_DIR = out
+    engine.LOGFILE = out / "lastrun.log"
+    engine.DELETED_LOG = out / "deleted.log"
+    engine.PROGRESS_FILE = out / "progress.json"
+    engine.CACHE_FILE = out / "cache.json"
+    engine.NEAR_TIE_PTS = 2.0
+    engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
+    engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,
+                                    "REDLINE_ONLY_MODE": True, "NEAR_TIE_PTS": 2.0})
+    # Plan order = score ascending: three 1 MB near-ties, then a 5.5 MB near-tie.
+    specs = [("S1", 1 * MB, 1.0), ("S2", 1 * MB, 1.5),
+             ("S3", 1 * MB, 1.8), ("BIG", 5 * MB + MB // 2, 2.0)]
+    fpaths = {}
+    entries = {}
+    for name, sz, score in specs:
+        d = movies / f"Movie {name}"; d.mkdir(parents=True)
+        f = d / f"Movie {name}.mkv"; f.write_bytes(b"\0" * sz)
+        fpaths[name] = f
+        entries[str(f)] = {"title": name, "score": score, "size_bytes": sz, "marked_at": None}
+    engine.save_pending(entries, stamp_thresholds=True)
+    handled = engine._redline_fast_path(5 * MB)
+    check("file size optimization deletes the one 5.5 MB near-tie that covers the target",
+          handled is True and not fpaths["BIG"].exists())
+    check("the three small near-ties are spared (one big movie saved the others)",
+          all(fpaths[n].exists() for n in ("S1", "S2", "S3")))
+    data = _pending()
+    check("only the big movie is trimmed; the spared small near-ties keep their marks",
+          set(Path(k).stem for k in data["entries"]) == {"Movie S1", "Movie S2", "Movie S3"})
+    # With the optimization OFF, the same queue deletes in strict score order:
+    # the three small ones first (3 MB, still short of 5 MB) and then BIG too — so
+    # ALL FOUR go (4 deletions) instead of the single one. Proves the setting gates it.
+    engine.NEAR_TIE_PTS = None
+    for name, sz, score in specs:
+        d = movies / f"Movie {name}"; d.mkdir(parents=True, exist_ok=True)
+        (d / f"Movie {name}.mkv").write_bytes(b"\0" * sz)   # BIG's folder was removed on delete
+    engine.save_pending(entries, stamp_thresholds=True)
+    engine._redline_fast_path(5 * MB)
+    check("optimization off: strict order deletes all four (small near-ties first, then BIG)",
+          not any(fpaths[n].exists() for n in ("S1", "S2", "S3", "BIG")))
+    engine.NEAR_TIE_PTS = 2.0
+
+# ── Stored queue in NON-score order still deletes worst-first ────────────────
+# The queue is written in file-size-optimized order by Simulate (NOT pure score
+# order). _pop_next_deletion assumes score-ascending input, so the fast path must
+# re-sort worst-first before selecting — otherwise the near-tie window forms from
+# a high-scored head and would delete a GOOD movie over the WORST ones. (Regression
+# for the sim-vs-debug-live log mismatch.)
+with tempfile.TemporaryDirectory() as td:
+    lib = Path(td, "library"); movies = lib / "movies"
+    out = Path(td, "out"); out.mkdir(parents=True, exist_ok=True)
+    engine.LIBRARY_ROOT = lib
+    engine.MONITOR_DIRS = [str(movies)]
+    engine._RESOLVED_MONITORED_ROOTS = None
+    engine.OUTPUT_DIR = out
+    engine.LOGFILE = out / "lastrun.log"
+    engine.DELETED_LOG = out / "deleted.log"
+    engine.PROGRESS_FILE = out / "progress.json"
+    engine.CACHE_FILE = out / "cache.json"
+    engine.NEAR_TIE_PTS = 2.0
+    engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
+    engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,
+                                    "REDLINE_ONLY_MODE": True, "NEAR_TIE_PTS": 2.0})
+    # Three worst near-ties (1 MB each) + one GOOD large movie (2.5 MB). The queue
+    # is STORED with GOOD first (as a file-size-opt Simulate would), not by score.
+    specs = [("GOOD", 5 * MB // 2, 9.0), ("W1", 1 * MB, 1.0),
+             ("W2", 1 * MB, 1.5), ("W3", 1 * MB, 1.8)]
+    fp = {}
+    entries = {}
+    for name, sz, score in specs:
+        d = movies / f"Movie {name}"; d.mkdir(parents=True)
+        f = d / f"Movie {name}.mkv"; f.write_bytes(b"\0" * sz)
+        fp[name] = f
+        entries[str(f)] = {"title": name, "score": score, "size_bytes": sz, "marked_at": None}
+    engine.save_pending(entries, stamp_thresholds=True)
+    engine._redline_fast_path(2 * MB)             # needs 2 MB
+    check("worst-first: the two lowest-scored movies go, GOOD is spared",
+          not fp["W1"].exists() and not fp["W2"].exists()
+          and fp["GOOD"].exists() and fp["W3"].exists())
+    engine.NEAR_TIE_PTS = 2.0
 
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

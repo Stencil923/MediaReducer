@@ -103,17 +103,20 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, OUTPUT_DIR=td, DELETE_DELAY_DAYS=7)
     now = time.time()
-    Path(td, "pending_deletions.json").write_text(json.dumps({"schema": 1, "entries": {
+    Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
         "/library/movies/A/A.mkv": {"title": "Movie A", "size_bytes": 2_000_000_000,
                                     "score": 1.5, "marked_at": now - 86400},        # 1 day ago
         "/library/movies/B/B.mkv": {"title": "Movie B", "size_bytes": 1_000_000_000,
                                     "score": 2.0, "marked_at": now - 9 * 86400},    # expired
         "/library/movies/C/C.mkv": {"title": "Movie C", "size_bytes": 500_000_000,
                                     "score": 3.0, "marked_at": now},                # just now
-    }}), encoding="utf-8")
+    }}}), encoding="utf-8")
     entries = A.pending_deletion_entries()
     check("queue count", A.pending_count() == 3 and len(entries) == 3)
-    check("queue keeps its own (deletion) order", entries[0]["title"] == "Movie A" and entries[-1]["title"] == "Movie C")
+    # Marked entries display SOONEST deletion first: B is expired (0 days), A has
+    # 6 left, C (marked just now) has the full 7 — so the order is B, A, C.
+    check("marked shown soonest-deletion first",
+          [e["title"] for e in entries] == ["Movie B", "Movie A", "Movie C"])
     by_title = {e["title"]: e for e in entries}
     check("days remaining honors the current delay", by_title["Movie A"]["days_remaining"] == 6)
     check("expired mark reads as deletable now",
@@ -144,10 +147,10 @@ A.library_stats = lambda: {"library_gb": 100.0}
 try:
     with tempfile.TemporaryDirectory() as td:
         def _write_queue():
-            Path(td, "pending_deletions.json").write_text(json.dumps({"schema": 1, "entries": {
+            Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
                 "/library/movies/A/A.mkv": {"title": "Movie A", "marked_at": time.time()},
                 "/library/movies/B/B.mkv": {"title": "Movie B", "marked_at": time.time()},
-            }}), encoding="utf-8")
+            }}}), encoding="utf-8")
 
         def _save_over(payload_over, saved_over=None):
             _state["cfg"] = dict(BASE, OUTPUT_DIR=td, **(saved_over or {}))
@@ -202,11 +205,11 @@ with tempfile.TemporaryDirectory() as td:
                          MAX_LIBRARY_GB=2000, MONITOR_DIRS=["/library/movies"],
                          GRACE_PERIOD_DAYS=30, SCORE_BALANCE=50,
                          PROTECTED_COLLECTIONS=["Keepers"])
-    p = Path(td, "pending_deletions.json")
+    p = Path(td, "cache.json")
     entry = {"/library/movies/A/A.mkv": {"title": "Movie A", "marked_at": 0}}
     stamp = {k: _state["cfg"].get(k) for k in A._PLAN_CONFIG_KEYS}
-    p.write_text(json.dumps({"schema": 1, "entries": entry, "plan_config": stamp,
-                             "monitor_dirs": ["/library/movies"]}))
+    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp,
+                             "monitor_dirs": ["/library/movies"]}}))
     check("plan current when the stamps match", A._pending_plan_current(_state["cfg"]))
     check("int/float spelling does not stale a plan",
           A._pending_plan_current(dict(_state["cfg"], HEADROOM_GB=500.0)))
@@ -221,17 +224,17 @@ with tempfile.TemporaryDirectory() as td:
           A._pending_plan_current(dict(_state["cfg"], PROTECTED_COLLECTIONS=["Keepers"])))
     check("changed monitored paths stale the plan",
           not A._pending_plan_current(dict(_state["cfg"], MONITOR_DIRS=["/library/other"])))
-    p.write_text(json.dumps({"schema": 1, "entries": entry, "plan_config": stamp}))
+    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp}}))
     check("path-unstamped plan reads as stale", not A._pending_plan_current(_state["cfg"]))
-    p.write_text(json.dumps({"schema": 1, "entries": entry,
+    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry,
                              "thresholds": {"HEADROOM_GB": 500},
-                             "monitor_dirs": ["/library/movies"]}))
+                             "monitor_dirs": ["/library/movies"]}}))
     check("old-format / partial stamp reads as stale", not A._pending_plan_current(_state["cfg"]))
     # A stamped EMPTY queue is a real plan — a completed Simulate that found
     # nothing eligible (all filtered/protected). It must read as current or the
     # user loops through "run Simulate" forever.
-    p.write_text(json.dumps({"schema": 1, "entries": {}, "plan_config": stamp,
-                             "monitor_dirs": ["/library/movies"]}))
+    p.write_text(json.dumps({"pending": {"schema": 1, "entries": {}, "plan_config": stamp,
+                             "monitor_dirs": ["/library/movies"]}}))
     check("stamped empty plan reads as current", A._pending_plan_current(_state["cfg"]))
     # The candidate-config comparison (the save handler's view): the same stamp
     # must read stale against a cfg with different thresholds even though the
@@ -246,8 +249,8 @@ with tempfile.TemporaryDirectory() as td:
     # still match the stamp (else every fresh Simulate instantly reads stale).
     _raw_file["value"] = dict(_state["cfg"], SCORE_BALANCE=50.4)
     stamp_raw = {k: _raw_file["value"].get(k) for k in A._PLAN_CONFIG_KEYS}
-    p.write_text(json.dumps({"schema": 1, "entries": entry, "plan_config": stamp_raw,
-                             "monitor_dirs": ["/library/movies"]}))
+    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp_raw,
+                             "monitor_dirs": ["/library/movies"]}}))
     check("hand-edited off-grid value matches its own stamp (raw vs raw)",
           A._pending_plan_current(dict(_state["cfg"], SCORE_BALANCE=50)))
     _raw_file["value"] = None
@@ -266,7 +269,7 @@ A._restart_schedule_clock = lambda: None
 # plan; within limits: proof any Simulate has run (plan or library snapshot) —
 # without depending on this sandbox's actual disk numbers.
 A._space_threshold_state = lambda cfg, disk=None, library_gb=None, **kw: {
-    "ok_for_live": True, "live_tooltip": "", "safety_blocked": False,
+    "ok_for_cleanup": True, "cleanup_tooltip": "", "safety_blocked": False,
     "simulate_required": (not A._pending_plan_current(cfg)
                           if A._deletion_limits_exceeded(cfg, disk, library_gb)
                           else not (A._pending_plan_current(cfg) or A._simulate_evidence())),
@@ -278,12 +281,12 @@ A.cached_disk_stats = lambda s=None: {"total_gb": 1000, "used_gb": 900, "free_gb
 A._pending_plan_current = lambda cfg, **k: False
 A._simulate_evidence = lambda *a, **k: False
 code, cfg = save({"RUN_MODE": "headroom", "DELETE_DELAY_DAYS": 7})
-check("arming Live over limits without a current plan is refused", code == 400)
+check("arming Automatic Cleanup over limits without a current plan is refused", code == 400)
 code, cfg = save({"RUN_MODE": "headroom", "DELETE_DELAY_DAYS": 0})
 check("delay 0 over limits also requires a plan (manual Live deletes now)", code == 400)
 A._pending_plan_current = lambda cfg, **k: True
 code, cfg = save({"RUN_MODE": "headroom", "DELETE_DELAY_DAYS": 7})
-check("arming Live with a current plan is allowed",
+check("arming Automatic Cleanup with a current plan is allowed",
       code == 200 and cfg.get("RUN_MODE") == "headroom")
 # Over limits, the snapshot alone is NOT enough — the plan must be current.
 A._pending_plan_current = lambda cfg, **k: False

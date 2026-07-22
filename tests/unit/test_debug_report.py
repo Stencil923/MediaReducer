@@ -72,7 +72,7 @@ pend = {
             {"marked_at": now - 10 * 86400, "title": PRIVATE_PATH_SEG, "size_bytes": 8_200_000_000, "score": 7.0},
     },
 }
-(tmp / "pending_deletions.json").write_text(json.dumps(pend), encoding="utf-8")
+(tmp / "cache.json").write_text(json.dumps({"pending": pend}), encoding="utf-8")
 
 # A run log with flagged lines embedding a private collection name and — the
 # regression that matters — an UNQUOTED absolute path whose folder/file names
@@ -97,7 +97,7 @@ for section in ("SCHEDULER & CLOCK", "SPACE VERDICT & FORECAST",
 check("app version line present", "mediareducer:" in report)
 
 # (2) The plan section reports currency + a de-identified sample row.
-check("plan reported stale (Live locked)", "Live is LOCKED" in report)
+check("plan reported stale (Live locked)", "Automatic Cleanup is LOCKED" in report)
 check("marked queue count shown", "marked queue: 2 total" in report)
 check("sample row shows score", "score=12.5" in report)
 check("sample row shows size, not title", "size=5.00 GB" in report)

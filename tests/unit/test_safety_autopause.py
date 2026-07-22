@@ -1,4 +1,4 @@
-"""A Live tick whose Space Thresholds are no longer safe (e.g. the library
+"""A cleanup tick whose Space Thresholds are no longer safe (e.g. the library
 grew past the cap's safety floor) pauses Live with a reason instead of
 silently skipping ticks forever."""
 import sys
@@ -8,7 +8,7 @@ import app as A
 
 calls = {"clock": 0, "run": 0, "summary": 0}
 _state = {"cfg": {}}
-_threshold = {"ok_for_live": True, "live_tooltip": ""}
+_threshold = {"ok_for_cleanup": True, "cleanup_tooltip": ""}
 
 A.load_config = lambda: dict(_state["cfg"])
 def _save(cfg, **k):
@@ -38,8 +38,8 @@ def check(name, cond):
 # 1. Live + unsafe thresholds -> paused, with the tooltip as the reason,
 #    and the schedule clock reset (a Live<->Paused transition).
 _state["cfg"] = {"RUN_MODE": "headroom"}
-_threshold.update({"ok_for_live": False,
-                   "live_tooltip": "Library Size Cap would delete more than the safety percentage of the library."})
+_threshold.update({"ok_for_cleanup": False,
+                   "cleanup_tooltip": "Library Size Cap would delete more than the safety percentage of the library."})
 A._scheduled_tick()
 check("unsafe tick pauses Live",
       _state["cfg"].get("RUN_MODE") == "paused")
@@ -56,7 +56,7 @@ check("paused mode untouched", _state["cfg"] == before)
 
 # 3. Live + safe thresholds + limits satisfied -> stays Live, nothing runs.
 _state["cfg"] = {"RUN_MODE": "headroom"}
-_threshold.update({"ok_for_live": True, "live_tooltip": ""})
+_threshold.update({"ok_for_cleanup": True, "cleanup_tooltip": ""})
 A._scheduled_tick()
 check("safe satisfied tick keeps Live armed",
       _state["cfg"].get("RUN_MODE") == "headroom" and calls["run"] == 0)
