@@ -26,8 +26,8 @@ It is a normal Docker Compose app and runs anywhere the container can see your
 movie files at `/library`.
 
 > **This app deletes movie files — there is no recycle bin.** Stay on Paused
-> and use Simulate until the output matches exactly what you expect before
-> ever using Live.
+> and lean on Simulate until the output matches exactly what you expect before
+> you ever run a real Cleanup.
 
 > **Do not expose the web UI to the internet.** There is no login — anyone who
 > can reach port 7474 can reconfigure MediaReducer and delete your media. Keep
@@ -133,7 +133,7 @@ http://your-server-ip:7474
 | `/jellyfin` | Jellyfin appdata for Auto Detect and health checks. |
 | `/radarr` | Radarr appdata for Auto Detect and optional cleanup. |
 
-The `/library` mount must be writable for Live runs to delete files.
+The `/library` mount must be writable for Cleanups to delete files.
 
 ## Running Outside Docker
 
@@ -182,11 +182,11 @@ disclaimers. Reopen it any time with the **?** button in the header.
 
 Work through the Configuration tab from top to bottom.
 
-### 1. Automatic Run Mode
+### 1. Scheduler Mode
 
 Leave this on **Paused** while setting up — you can still run everything
-manually from the Dashboard. Live stays locked until setup is complete and the
-health check passes.
+manually from the Dashboard. Automatic Cleanup stays locked until setup is
+complete and the health check passes.
 
 ### 2. Connections
 
@@ -230,7 +230,8 @@ Space Thresholds unlock after a monitored path is saved.
 
 - **Headroom target** — cleanup runs when free space drops below this amount
   and frees back up to it. 0 (the default) turns this trigger off; unticking
-  the checkbox instead switches to **redline-only mode** (below).
+  the checkbox turns the headroom trigger off entirely — then a Redline floor
+  and/or a Library Size Cap (either or both) drives cleanup instead.
 - **Redline emergency floor** — optional. When free space drops below it,
   cleanup runs immediately and frees just enough to get back above the floor.
   It has to sit below the Headroom target.
@@ -242,13 +243,18 @@ Space Thresholds unlock after a monitored path is saved.
 Anything that could delete more than you expect — or delete right away —
 tells you so and asks for a second confirming click.
 
-### Redline-only mode
+### Running without a Headroom target
 
-If you don't care about a headroom target and just want a standing list of
-what will go when space runs low: set a Redline floor, then untick Headroom.
-Redline becomes the only thing that ever deletes, and Simulate keeps every
-eligible movie visible in deletion order, so you always know what's on the
-chopping block.
+Untick Headroom to turn the headroom trigger off. It's valid as long as a
+Redline floor and/or a Library Size Cap is armed to drive cleanup:
+
+- **Redline only** (a floor, no cap) is *redline-only mode*: Redline becomes the
+  only thing that ever deletes, the deletion delay is retired, and Simulate keeps
+  every eligible movie visible in deletion order so you always know what's on the
+  chopping block.
+- **Library Size Cap** (with or without a Redline floor) keeps running on the
+  normal daily schedule with the deletion delay — just without a free-space
+  headroom target. A Redline floor added alongside still handles emergencies.
 
 ### 5. Advanced
 
@@ -305,7 +311,7 @@ order: type an **Over headroom calculator** target and it reorders live, exactly
 real run would (the order always spans the whole library, not just the
 visible page).
 
-The table is empty until your first Simulate; every Simulate or Live run
+The table is empty until your first Simulate; every Simulate or Cleanup
 refreshes it, and an interrupted run keeps the previous snapshot. Ratings come
 from the run itself — it downloads the IMDb dataset when scoring needs it, and
 stops rather than score against stale ratings. There's also a set of sliders
@@ -318,9 +324,12 @@ for dialing up a hypothetical movie and watching its score react.
 - **Cleanup Targets** — the configured headroom and library cap. When a
   target is currently breached it shows the ~GB a run would free.
 - **Last Run** — outcome, trigger, and the current automatic mode.
-- **Run Controls** — Simulate, one-time Live Run (double-click to confirm),
+- **Run Controls** — Simulate, one-time Cleanup (double-click to confirm),
   and Stop.
-- **Detailed Log** — streams the active or most recent run.
+- **Detailed Log** — streams the active or most recent run. Every run log opens
+  with a **RUN CONTEXT** block — the mode, your targets, current disk and
+  library size, and which target (if any) is breached — so it's the first thing
+  to read when a run didn't do what you expected.
 - **Marked & Eligible Deletions** — the standing deletion plan as "X - Y
   movies": how many are marked to delete (red when it's more than zero) and
   how many are eligible behind them, with the full ordered list a click away.
@@ -329,57 +338,62 @@ for dialing up a hypothetical movie and watching its score react.
   want a clean slate.
 
 Buttons disable while setup is incomplete, a selected API is unhealthy, or a
-run is already active; the Live button also ghosts while every space limit is
-satisfied (a run would delete nothing). The tooltip always says which.
+run is already active; the Cleanup button also ghosts while every space limit
+is satisfied (a run would delete nothing). The tooltip always says which.
 
 ## Run Modes
 
 ### Simulate
 
 Scans, scores, and logs exactly what would be deleted, without deleting
-anything. This is also what writes the deletion plan Live runs work from: in
+anything. This is also what writes the deletion plan Cleanups work from: in
 every mode it queues the entire eligible list in deletion order, and only the
 movies needed to meet the current targets are **marked** (and delay-clocked) —
 the rest just show as eligible, next in line if more space is ever needed.
 
-### Live Run
+### Cleanup
 
 The manual button deletes to every breached target immediately — no delay, no
 daily schedule. It stays ghosted until a Simulate has shown you the plan for
 your current settings, so you always see what a run removes before it can —
 and while every limit is satisfied, since there'd be nothing to do.
 
-### Automatic Live
+### Automatic Cleanup
 
-Turning automatic mode on always requires that a Simulate has seen your
-library first — over breached limits that means a plan built under your
-current settings; within limits, one completed Simulate is enough.
+Set Scheduler Mode to **Automatic Cleanup** and MediaReducer runs on its own.
+Arming it always requires that a Simulate has seen your library first — over a
+breached limit that means a plan built under your current settings; within
+limits, one completed Simulate is enough.
 
-With Automatic Run Mode on **Live**, the scheduler checks every 15 minutes:
+Once armed, the scheduler checks every 15 minutes:
 
 - **Headroom** and **Library Size Cap** cleanups run at most once per calendar
   day, at the **Daily run time** you pick (default midnight).
 - **Redline** fires immediately on any check that finds free space below the
-  floor, and frees only enough to get back above it. When the current plan is
-  still valid it deletes straight down the marked list without a full rescan
-  (still re-verifying each file's protections fresh), so space frees in
-  seconds.
-- **Deletion delay** holds daily deletions for N days: a run first *marks*
-  its candidates, and a daily run deletes each mark once it comes due.
-  Marked movies top the **Marked & Eligible Deletions** list with their
-  dates, and protecting a movie or changing the rules unmarks it.
-- **The plan must match the config.** Change any setting that affects what
-  gets deleted and Live locks until a fresh Simulate rebuilds the plan.
-- **Time zone** (Automatic Run Mode) is the clock all of this runs on. Auto
-  follows the container clock — often UTC in Docker — so set your zone if you
-  care when daily runs fire.
+  floor and frees just enough to get back above it — no delay, no waiting for
+  the daily window.
+- **Deletion delay** holds daily deletions for N days: a run first *marks* its
+  candidates, and a later daily run deletes each mark once it comes due. Marked
+  movies sit at the top of the **Marked & Eligible Deletions** list with their
+  due dates; protecting a movie or changing the rules unmarks it.
+- **The marked list keeps itself current between daily scans.** Every 15
+  minutes MediaReducer re-checks the disk and re-sizes the marked set to what
+  actually needs freeing: it drops movies whose files are gone, that you've
+  since protected, or that a recent watch pulled out of the running, and marks
+  more or fewer as the library grows or shrinks.
+- **The plan must match your config.** Change any setting that affects what
+  gets deleted and Automatic Cleanup locks until a fresh Simulate rebuilds the
+  plan.
+- **Time zone** is the clock all of this runs on. Auto follows the container
+  clock — often UTC in Docker — so set your zone if you care when daily runs
+  fire.
 
-After a container restart the app always starts Paused — re-enable Live when
-you're ready. Stopping or restarting mid-run is safe: the engine finishes the
-file it's on, records it, and shuts down cleanly; the next run just starts
-fresh. And if the thresholds stop being safe while Live is armed — say a bulk
-copy pushes the cap past the safety percentage — the scheduler pauses Live
-with the reason instead of running.
+After a container restart the app always starts Paused — re-enable Automatic
+Cleanup when you're ready. Stopping or restarting mid-run is safe: the engine
+finishes the file it's on, records it, and shuts down cleanly; the next run
+just starts fresh. And if your thresholds stop being safe while Automatic
+Cleanup is armed — say a bulk copy pushes the cap past the safety percentage —
+the scheduler pauses it with the reason instead of running.
 
 ## Safety Rules
 
@@ -393,9 +407,9 @@ MediaReducer is intentionally conservative:
 - Plex/Jellyfin identity mismatches are skipped, never deleted.
 - Protected collections and filtered movies are hard exclusions, not score
   penalties.
-- Editing connection, monitoring, or threshold settings while Live is on drops
-  the mode back to Paused — review with Simulate, then re-enable. Settings are
-  locked only while a run is actually active.
+- Editing connection, monitoring, or threshold settings while Automatic Cleanup
+  is on drops it back to Paused — review with Simulate, then re-enable. Settings
+  are locked only while a run is actually active.
 - Every run does a fresh safety pre-check before acting. Stop is always safe:
   deletions already made are permanent and always recorded in `deleted.log`,
   but nothing is ever left half-done.
@@ -415,12 +429,11 @@ These live in the `/config` mount (`MEDIAREDUCER_DATA` on the host).
 | File or folder | Purpose |
 | --- | --- |
 | `config.json` | Saved configuration. |
-| `lastrun.log` | Most recent run log. |
+| `lastrun.log` | Most recent run log — archived into `logs/` on startup so the run panel starts clean against the freshly-cleared plan. |
 | `deleted.log` | Deletion history (erasable from the Dashboard). |
-| `pending_deletions.json` | The marked & eligible deletion plan the last Simulate built. |
 | `logs/` | Archived logs from runs that performed cleanup. |
-| `cache.json` | Movie metadata cache, schedule state, storage stats, and the Filtering & Scoring library snapshot. |
-| `progress.json` | Live run progress for the web UI. |
+| `cache.json` | All cached state in one file: movie metadata, schedule state, storage stats, the Filtering & Scoring library snapshot, and (under `pending`) the marked & eligible deletion plan the last Simulate built. Cleared on startup so a restart requires a fresh Simulate. |
+| `progress.json` | Cleanup progress for the web UI — reset to "no runs yet" on startup alongside the cache. |
 | `title.ratings.tsv` | IMDb ratings dataset. |
 
 **Reset MediaReducer** (Advanced) removes the configuration and state files
@@ -467,7 +480,7 @@ Read the warning banner on the locked section. Common causes:
 - `/config` cannot be read or written.
 - Server-reported media paths do not match files under `/library`.
 - No monitored path has been saved.
-- Automatic Run Mode is Live, or a run is active.
+- Scheduler Mode is Automatic Cleanup, or a run is active.
 
 ### Protected collections do not appear
 

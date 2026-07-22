@@ -23,7 +23,7 @@ MediaReducer is two Python processes plus a set of Jinja templates:
 
 - **`app.py`** — the Flask server. Serves the three pages, exposes the JSON API
   the UI polls, launches `engine.py` as a subprocess for every run, runs the
-  scheduler that fires automatic Live deletion, gates Live behind
+  scheduler that fires automatic Cleanup deletions, gates cleanup behind
   plan-currency, and builds the sanitized debug report. Run state
   (`_run_active`, `_run_process`, …) is in-memory and resets on restart.
 - **`engine.py`** — the deletion engine. A standalone script: it loads the same
@@ -46,9 +46,10 @@ The engine's behavior is chosen by `RUN_MODE` (from config) or, more often, the
 | --- | --- | --- |
 | `debug_info` | Summary refresh (dashboard/scheduler upkeep) | Status + library-size vs. limits, then exits. No scan, no delete. Quiet (log discarded, no progress events). |
 | `debug_sim` | **Simulate** button | Full dry run: scans, scores, logs the ranked candidate list and what *would* be deleted. Writes the marked-for-deletion plan. |
-| `headroom` | **Live** run / scheduler tick | Live mode: enforces `HEADROOM_GB`/`REDLINE_GB`/`MAX_LIBRARY_GB`, actually deletes. |
+| `headroom` | **Cleanup** button / scheduler tick | Enforces `HEADROOM_GB`/`REDLINE_GB`/`MAX_LIBRARY_GB` and actually deletes — both the manual Cleanup and the automatic (scheduler) run. |
+| `debug_cleanup` | **Debug Cleanup** button (Debug mode) | "Cleanup minus deletion": runs the marked-queue upkeep from cache and PERSISTS it (drops gone/protected marks, refreshes plays/scores in the queue + snapshot) exactly like a cleanup tick, then only PREVIEWS what it would delete. Never unlinks a file or trims the queue for deletions. |
 
-`MEDIAREDUCER_MANUAL=1` marks a manual Live Run (deletes immediately, no delay,
+`MEDIAREDUCER_MANUAL=1` marks a manual Cleanup (deletes immediately, no delay,
 no daily-window gate — the user has just seen the plan).
 
 ## A run, end to end
@@ -75,15 +76,25 @@ share the once-per-day window + `DAILY_RUN_TIME` and the deletion delay; either
 alone is a valid setup (cap-only included). `REDLINE_GB` fires immediately on
 any 15-minute tick and frees only back to its own floor; while Headroom is
 ticked it must sit strictly below the headroom value. `REDLINE_ONLY_MODE` (the
-GUI's Headroom checkbox unticked; requires a Redline floor, retires the cap and
-delay) makes Redline the only trigger, with Simulate maintaining a standing
-queue of every eligible movie in deletion order. With a current plan, a Redline breach takes a
+GUI's Headroom checkbox unticked) turns the headroom trigger off; it is valid as
+long as a Redline floor and/or a Library Size Cap is armed (headroom value 0).
+TRUE redline-only — a Redline floor with NO cap — makes Redline the only trigger,
+retires the delay, and has Simulate maintain a standing queue of every eligible
+movie in deletion order; a cap armed alongside instead keeps running on the daily
+schedule with the delay (`_redline_only_mode()` returns False in that case). With a current plan, a Redline breach takes a
 fast path: it deletes straight down the marked queue — re-verifying monitored
 roots, protected collections, and Jellyfin favorites fresh — instead of a full
-rescan, then a background Simulate rebuilds the preview.
+rescan, then a background Simulate rebuilds the preview. **File size
+optimization is honored in EVERY delete path** — the fast path (redline
+emergency and manual Cleanup), the full scan (daily and manual), and the Debug
+Cleanup preview all pick via the same `_pop_next_deletion`, re-applied against
+the live remaining target: when what's left to free lands inside a group of
+near-tied-score movies, the cheapest cover goes (the smallest-scoring single
+file that covers, else the largest tied file), so one big movie can spare
+several small near-ties even after a since-watched spare shifts the target.
 
-**Marked & eligible queue** — every full plan (Simulate or a daily/manual Live
-run) writes the ENTIRE eligible list to `pending_deletions.json` in deletion
+**Marked & eligible queue** — every full plan (Simulate or a daily/manual
+Cleanup) writes the ENTIRE eligible list to cache.json's `pending` key in deletion
 order. Only the prefix covering the current space targets is *marked*
 (`marked_at` set — the deletion-delay clock); the rest is merely *eligible*
 (`marked_at` null), visible order that starts a fresh clock only if it is ever
@@ -95,6 +106,41 @@ satisfied territory (`_unschedule_pending_marks`, reported as
 `pending_unscheduled` — and only a save that actually changed a threshold
 touches the clocks, so a stale cached library size can never reset them).
 
+**Summary maintenance (the 15-minute pipeline)** — the quiet Summary keeps the
+whole cache accurate between daily full scans, and every cached-queue cleanup run
+(a manual Cleanup, a Debug Cleanup) runs the SAME pipeline as its pre-check, then
+acts on the result — so even though Headroom/Library-Cap only *delete* at their
+daily trigger, the marked set, scores, and disk numbers stay current every 15
+minutes. The pipeline, in order:
+
+1. **Refresh filesystem capacity + library size** and persist them (`emit_stats`).
+2. **Drop dead marks** — files that are gone, or that joined a protected collection.
+3. **Re-size the marked set to the CURRENT headroom/cap deficit**
+   (`_daily_deficit_bytes`) from the cached queue, no full scan: mark the
+   File-size-optimized covering set (the SAME `_pop_next_deletion` a real delete
+   uses), scored on FRESH watch data. A movie a recent watch lifted out of the set
+   is dropped and the next in line — re-checked fresh before it's trusted — takes
+   its place; the set GROWS or SHRINKS with the deficit (a newly-marked movie starts
+   its delay clock now, a dropped one loses its clock). Within limits (or
+   redline-only, or no deficit) nothing is scheduled — the clocks stop but the queue
+   stays as the standing eligible order.
+4. The fresh watch data is **persisted in ONE atomic write**
+   (`save_pending(..., snapshot_watch_updates=…)`): each re-checked movie's belt-max
+   plays/last-played/favorite into the library snapshot and its refreshed score into
+   the queue entry, so the queue and snapshot can never drift apart on a half-failure
+   (the snapshot's `built_at` is preserved — a watch refresh, not a rescan).
+5. The marked list **displays in deletion-delay order** (soonest first) for
+   headroom/cap.
+
+A **Debug Cleanup runs this exact pipeline and persists it** — "Cleanup minus
+deletion": it refreshes the cache like a real run, then only PREVIEWS what it would
+delete (deletes nothing, trims nothing). The daily full scan is the one path that
+rebuilds the whole queue + snapshot from a fresh library scan instead (adding
+newly-added movies); when it carries a still-marked movie forward it refreshes that
+entry's score/title too, so the marked prefix never keeps a stale score against a
+freshly-rewritten snapshot. Redline emergencies delete straight from the queue and
+skip the pipeline (the last tick already maintained it).
+
 **Radarr cleanup** — fires the moment the deleted file is the copy in Radarr's
 own section, regardless of surviving duplicates elsewhere. A copy KNOWN to be
 in a different section never triggers it; only rows with unknown section
@@ -102,23 +148,24 @@ identity fall back to matching Radarr's folder against the deleted one. The
 Redline fast path skips Radarr cleanup entirely (its queue entries carry no
 TMDB/section identity).
 
-**Deletion delay** (`DELETE_DELAY_DAYS`) — a daily Live run deletes a mark only
+**Deletion delay** (`DELETE_DELAY_DAYS`) — a daily Cleanup deletes a mark only
 once its clock has aged N calendar days. Marks never authorize a deletion on
 their own; a deletion re-verifies eligibility fresh (the full scan, or the
 Redline fast path's own protection re-fetch), so a stale mark can never delete
-a protected movie. Redline emergencies and manual Live Runs bypass the delay.
+a protected movie. Redline emergencies and manual Cleanups bypass the delay.
 
-**Plan currency** — Live (arming automatic mode or the manual button) is locked
-whenever the saved config changed in a way that affects *what* gets deleted. A
-completed Simulate stamps the deletion-affecting keys (`_PLAN_CONFIG_KEYS`, kept
-identical in both files) plus the monitored paths into `pending_deletions.json`;
-if the current config doesn't match the stamp, `simulate_required` is set and
-Live ghosts until a new Simulate. Arming automatic mode additionally requires
-proof a Simulate has run at all — within satisfied limits the queue can be
-legitimately empty, so the library snapshot (written by every completed scan)
-serves as that evidence (`_simulate_evidence()`). The manual Live button stays
-ghosted while every limit is satisfied regardless. See
-`_pending_plan_current()` (app) / `write_plan_to_queue()` (engine).
+**Plan currency** — cleanup (arming automatic mode or pressing the manual
+Cleanup button) is locked whenever the saved config changed in a way that
+affects *what* gets deleted. A completed Simulate stamps the deletion-affecting
+keys (`_PLAN_CONFIG_KEYS`, kept identical in both files) plus the monitored
+paths into that `pending` record; if the current config doesn't match the
+stamp, `simulate_required` is set and cleanup ghosts until a new Simulate.
+Arming automatic mode additionally requires proof a Simulate has run at all —
+within satisfied limits the queue can be legitimately empty, so the library
+snapshot (written by every completed scan) serves as that evidence
+(`_simulate_evidence()`). The manual Cleanup button stays ghosted while every
+limit is satisfied regardless. See `_pending_plan_current()` (app) /
+`write_plan_to_queue()` (engine).
 
 **Fail-closed protection** — protected collections (Plex/Jellyfin), identity
 mismatches between servers, and (when IMDb is in use) movies with no rating are
@@ -130,12 +177,11 @@ guessing.
 | File | Written by | Purpose |
 | --- | --- | --- |
 | `config.json` | app | Saved settings (single source of truth for both processes). |
-| `cache.json` | engine + app | Movie metadata cache, schedule state (the app burns/reopens the daily window under a shared flock), storage stats, and the library snapshot every completed scan rewrites (the Filtering & Scoring table). |
-| `pending_deletions.json` | engine + app | Marked & eligible queue + the plan-currency stamp (the app only nulls delay clocks on satisfied threshold saves). |
-| `lastrun.log` | engine | Most recent run log (overwritten each run). |
-| `logs/` | engine | Archived logs from runs that deleted something. |
-| `deleted.log` | engine (app can truncate) | Deletion history; the dashboard's Erase button empties it. |
-| `progress.json` | engine | Live run progress for the dashboard. |
+| `cache.json` | engine + app | Movie metadata cache, schedule state (the app burns/reopens the daily window under a shared flock), storage stats, the library snapshot every completed scan rewrites (the Filtering & Scoring table), and (under `pending`) the marked & eligible queue + plan-currency stamp. Cleared on startup so a restart requires a fresh Simulate. |
+| `lastrun.log` | engine | Most recent run log (overwritten each run; the app archives the prior one into `logs/` on startup). |
+| `logs/` | engine + app | Archived run logs — the engine keeps any run that deleted; the app also archives the last `lastrun.log` here on startup. |
+| `deleted.log` | engine (app can truncate) | Deletion history (survives startup); the dashboard's Erase button empties it. |
+| `progress.json` | engine (app resets) | Cleanup progress for the dashboard; reset to "no runs yet" on startup alongside the cache. |
 | `title.ratings.tsv` | engine | IMDb ratings dataset (downloaded when needed). |
 
 Writes are atomic (temp file + `replace()`), so a crash or kill mid-write never

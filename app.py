@@ -88,7 +88,7 @@ JELLYFIN_APPDATA_DIR  = _root_from_env("MEDIAREDUCER_JELLYFIN_APPDATA", "/jellyf
 # Single background clock. Each tick runs an automatic Live cleanup when Live is
 # enabled, else a quiet Summary/debug_info refresh so dashboard disk/library
 # numbers never go stale. Paused while any run/Summary is in flight and restarted
-# from zero when it finishes. Coarse because a Live tick can trigger a full
+# from zero when it finishes. Coarse because a cleanup tick can trigger a full
 # deletion pass.
 SCHEDULE_INTERVAL_MINUTES = 15
 CONNECTION_CONFIG_FIELDS = (
@@ -142,7 +142,7 @@ def _tpl_group_int(value):
 # ── Drive-by request protection ──────────────────────────────────────────────
 # No login (LAN tool), so two browser attack paths stay open: cross-origin POSTs
 # from any site the user visits (a simple request needs no preflight, and /api/run
-# with an empty body starts a live run), and DNS rebinding (an attacker domain
+# with an empty body starts a cleanup), and DNS rebinding (an attacker domain
 # resolving to this LAN IP, making its page same-origin). Two cheap checks close both:
 #   1. Every mutating request must carry the X-MediaReducer header. base.html's
 #      fetch wrapper adds it; a cross-origin page cannot without a CORS preflight
@@ -485,19 +485,19 @@ def _config_file_issues(saved: dict) -> list[dict]:
         if (not bool(saved.get("REDLINE_ONLY_MODE", _CONFIG_DEFAULTS.get("REDLINE_ONLY_MODE")))
                 and redline is not None and headroom is not None and redline >= headroom):
             bad("REDLINE_GB", "must be lower than HEADROOM_GB (untick Headroom for redline-only mode)")
-        # REDLINE_ONLY_MODE (the GUI's Headroom checkbox unticked): Redline is
-        # the only trigger, so it must exist, the cap is off, and the headroom
-        # value is 0. WITHOUT the mode, HEADROOM_GB 0 just means the headroom
-        # trigger is off — Redline and/or the cap may still be armed alone.
+        # REDLINE_ONLY_MODE = the GUI's Headroom checkbox unticked (the headroom
+        # trigger is off). Valid as long as SOMETHING else drives cleanup — a Redline
+        # floor and/or a Library Size Cap (either or both) — with the headroom value at
+        # 0. WITHOUT the flag, HEADROOM_GB 0 just means the headroom trigger is off and
+        # Redline and/or the cap may still be armed alone.
         has_dirs = bool(saved.get("MONITOR_DIRS", _CONFIG_DEFAULTS.get("MONITOR_DIRS")) or [])
         rl_mode = bool(saved.get("REDLINE_ONLY_MODE", _CONFIG_DEFAULTS.get("REDLINE_ONLY_MODE")))
         if rl_mode and has_dirs:
-            if redline is None:
-                bad("REDLINE_ONLY_MODE", "needs a REDLINE_GB floor")
-            if cap is not None:
-                bad("MAX_LIBRARY_GB", "is not used in REDLINE_ONLY_MODE — disable one of them")
+            if redline is None and cap is None:
+                bad("REDLINE_ONLY_MODE", "with the headroom trigger off, arm a Redline floor "
+                    "and/or a Library Size Cap")
             if headroom not in (None, 0):
-                bad("HEADROOM_GB", "must be 0 in REDLINE_ONLY_MODE (the headroom trigger is retired)")
+                bad("HEADROOM_GB", "must be 0 when the headroom trigger is off (REDLINE_ONLY_MODE)")
     for key in ("SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES", "USE_PLEX",
                 "USE_JELLYFIN", "KEEP_INTERRUPTED_LOGS", "DEBUG_MODE",
                 "REDLINE_ONLY_MODE"):
@@ -505,6 +505,12 @@ def _config_file_issues(saved: dict) -> list[dict]:
             bad(key, "must be true or false")
     if "RUN_MODE" in saved and saved["RUN_MODE"] not in ("paused", "headroom"):
         bad("RUN_MODE", 'must be "paused" or "headroom"')
+    # Debug mode and Live are mutually exclusive: Debug mode is a no-delete
+    # diagnostic state, so it can only be turned on while Scheduler Mode is
+    # Paused, and it can't be on while the mode is Live.
+    if saved.get("DEBUG_MODE") and saved.get("RUN_MODE", "paused") != "paused":
+        bad("DEBUG_MODE", "can only be on while Scheduler Mode is Paused — "
+                          "Debug mode does not run cleanup deletions")
     if "IMDB_RATINGS_URL" in saved:
         try:
             _validate_imdb_url(saved["IMDB_RATINGS_URL"])
@@ -560,14 +566,16 @@ def _config_file_issues(saved: dict) -> list[dict]:
 
 
 def _redline_only_mode_cfg(cfg: dict | None = None) -> bool:
-    """The explicit REDLINE_ONLY_MODE flag (Headroom checkbox unticked) with a
-    Redline floor set: Redline is the only deletion trigger. Simulate maintains
-    a standing preview of the deletion order and is always required before
-    Live; the deletion delay and Library Size Cap do not apply. A ticked
-    Headroom at 0 GB is NOT the mode — that is a normal config whose headroom
-    trigger is off (Redline and/or the cap may still be armed on their own)."""
+    """True when Redline is the ONLY deletion trigger: the Headroom checkbox is
+    unticked (REDLINE_ONLY_MODE), a Redline floor is set, AND no Library Size Cap is
+    armed. Simulate maintains a standing preview of the deletion order and is always
+    required before Live; the deletion delay does not apply. Unticking Headroom with a
+    Library Size Cap is a DIFFERENT state — the cap runs on the daily schedule with the
+    delay, so it is not redline-only (this returns False). A ticked Headroom at 0 GB is
+    likewise not the mode — a normal config whose headroom trigger is off."""
     c = cfg if cfg is not None else load_config()
-    return bool(c.get("REDLINE_ONLY_MODE")) and c.get("REDLINE_GB") is not None
+    return (bool(c.get("REDLINE_ONLY_MODE")) and c.get("REDLINE_GB") is not None
+            and c.get("MAX_LIBRARY_GB") is None)
 
 
 def _read_saved_config_file() -> dict | None:
@@ -821,9 +829,9 @@ def force_paused_run_mode_on_startup():
         if cfg.get("RUN_MODE") != "paused":
             cfg["RUN_MODE"] = "paused"
             # Recorded so the dashboard/config can EXPLAIN the flip; a silent reset
-            # read as "my Live setting didn't stick". Cleared by the next config save
+            # read as "my Automatic Cleanup setting didn't stick". Cleared by the next config save
             # (the form never posts internal underscore keys).
-            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "Live is paused automatically after every restart."
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "Automatic Cleanup is paused automatically after every restart."
             if save_config(cfg):
                 print("Startup safety: RUN_MODE reset to paused.", flush=True)
     except Exception as e:
@@ -937,6 +945,46 @@ def log_path()     -> Path: return output_dir() / "lastrun.log"
 def deleted_path() -> Path: return output_dir() / "deleted.log"
 def progress_path()-> Path: return output_dir() / "progress.json"
 def logs_dir()     -> Path: return output_dir() / "logs"
+
+
+def _archive_lastrun_log(out_dir: Path) -> None:
+    """Move out_dir/lastrun.log into out_dir/logs/ under a timestamped name (the same
+    naming the engine uses for archived cleanup runs), so the Dashboard run panel starts
+    empty while the run's log is preserved — never deleted. A zero-byte/empty log is just
+    removed. Best-effort: a failure here must never fail the caller. out_dir is passed in
+    (not re-resolved via log_path()) so a caller mid-reset — with config.json already gone
+    — still targets the pre-reset OUTPUT_DIR, and covers a logs/ folder on another mount."""
+    last_log = out_dir / "lastrun.log"
+    try:
+        if last_log.exists() and last_log.stat().st_size > 0:
+            archive_dir = out_dir / "logs"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            target = archive_dir / f"{stamp}.log"
+            n = 1
+            while target.exists():
+                target = archive_dir / f"{stamp}_{n}.log"
+                n += 1
+            shutil.move(str(last_log), str(target))
+        else:
+            last_log.unlink(missing_ok=True)
+    except OSError as e:
+        print(f"WARNING: could not archive lastrun.log: {e}", flush=True)
+
+
+def _clear_progress_state(out_dir: Path) -> None:
+    """Delete progress.json and its writer temp files so the Dashboard run panel resets to
+    'no runs yet' — api_run_progress() returns {} when the file is absent. Best-effort."""
+    targets = [out_dir / "progress.json", out_dir / "progress.json.tmp"]
+    try:
+        targets.extend(out_dir.glob("progress.json.*.tmp"))  # pid-unique writer tmps
+    except OSError:
+        pass
+    for p in targets:
+        try:
+            p.unlink(missing_ok=True)
+        except OSError as e:
+            print(f"WARNING: could not clear progress state ({p.name}): {e}", flush=True)
 
 
 _cache_file_memo_lock = threading.Lock()
@@ -1260,7 +1308,8 @@ def api_timezone_init():
 # All in-memory: a restart resets every flag (no run survives a container stop).
 _run_lock      = threading.Lock()
 _run_active    = False
-_run_live      = False         # True while the active run is a Live (deleting) run, not a simulation
+_run_cleanup      = False         # True while the active run is a Live (deleting) run, not a simulation
+_run_debug_cleanup = False        # True while the active run is a Debug Cleanup (live path, no deletions)
 _run_start     = None          # datetime
 _run_process   = None          # subprocess.Popen
 _run_stop_requested = threading.Event()
@@ -1336,12 +1385,12 @@ def _mark_progress_terminal(status: str, message: str, *, force: bool = False):
         pass
 
 
-def _preview_rebuild_needed(live_run: bool) -> bool:
+def _preview_rebuild_needed(cleanup_run: bool) -> bool:
     """Should a background Simulate rebuild the standing queue after a run?
 
     Two triggers: the engine's queue_rebuild progress flag (a Redline fast path
     consumed marks), or — the invariant that catches every other path — any LIVE
-    run in redline-only mode that actually deleted something (manual Live Runs
+    run in redline-only mode that actually deleted something (manual Cleanups
     and full-scan Redline fallbacks trim the queue too, and the mode has no
     daily runs to replenish it). Sim runs never qualify: the Simulate IS the
     rebuild, so they'd loop forever."""
@@ -1352,7 +1401,7 @@ def _preview_rebuild_needed(live_run: bool) -> bool:
         deleted_any = (prog.get("deleted") or 0) > 0
     except Exception:
         deleted_any = False
-    if not live_run:
+    if not cleanup_run:
         return False
     try:
         return _redline_only_mode_cfg() and deleted_any
@@ -1360,13 +1409,13 @@ def _preview_rebuild_needed(live_run: bool) -> bool:
         return False
 
 
-def _maybe_rebuild_preview_after_run(live_run: bool = False) -> None:
+def _maybe_rebuild_preview_after_run(cleanup_run: bool = False) -> None:
     """After a successful run, rebuild the standing preview when needed (see
     _preview_rebuild_needed): kick a background Simulate so it grows back to
     full strength. The post-run Summary owns the lock briefly, so retry for a
     while rather than failing; any new engine run rewrites progress.json, which
     clears the fast path's flag."""
-    if not _preview_rebuild_needed(live_run):
+    if not _preview_rebuild_needed(cleanup_run):
         return
 
     def _kick():
@@ -1402,9 +1451,9 @@ def _maybe_rebuild_preview_after_run(live_run: bool = False) -> None:
 
 def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[bool, str]:
     """Launch engine.py as a subprocess. manual=True marks a Dashboard-button run:
-    a manual Live Run prunes every breached target immediately — the deletion delay
+    a manual Cleanup prunes every breached target immediately — the deletion delay
     and once-per-day window pace automatic runs only. Returns (started, message)."""
-    global _run_active, _run_live, _run_start
+    global _run_active, _run_cleanup, _run_debug_cleanup, _run_start
 
     with _run_lock:
         if _run_active:
@@ -1412,8 +1461,10 @@ def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[
         if _summary_active:
             return False, "A background status refresh is finishing — try again in a moment."
         _run_stop_requested.clear()
+        _effective_mode = mode_override or load_config().get("RUN_MODE")
         _run_active  = True
-        _run_live    = _is_live_mode(mode_override or load_config().get("RUN_MODE"))
+        _run_cleanup    = _is_cleanup_mode(_effective_mode)
+        _run_debug_cleanup = (_effective_mode == "debug_cleanup")
         _run_start   = datetime.now()
         _pause_scheduler_for_run()
         _write_progress_start_stub(mode_override)
@@ -1447,9 +1498,9 @@ def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[
                 _mark_progress_terminal("stopped", "Run stopped.", force=True)
             elif returncode == 0:
                 # A completed Redline fast path asks for its preview to be rebuilt;
-                # any live run in redline-only mode that thinned the preview does too.
+                # any cleanup in redline-only mode that thinned the preview does too.
                 _maybe_rebuild_preview_after_run(
-                    live_run=_is_live_mode(mode_override or load_config().get("RUN_MODE")))
+                    cleanup_run=_is_cleanup_mode(mode_override or load_config().get("RUN_MODE")))
             elif returncode != 0:
                 _mark_progress_terminal("error", "Run failed — see the detailed log.")
                 # Runs fail closed on any API error, so re-probe now: the cached
@@ -1476,7 +1527,7 @@ def run_script(mode_override: str | None = None, manual: bool = False) -> tuple[
             # nothing and writes fresh stats during its own pass, so it just needs
             # the clock restarted.
             effective_mode = mode_override or load_config().get("RUN_MODE")
-            if _is_live_mode(effective_mode):
+            if _is_cleanup_mode(effective_mode):
                 run_summary()
             else:
                 _restart_schedule_clock()
@@ -1697,13 +1748,13 @@ def _coerce_float(value) -> tuple[float | None, bool]:
 
 
 
-def _is_live_mode(mode: str | None) -> bool:
+def _is_cleanup_mode(mode: str | None) -> bool:
     return mode == "headroom"
 
 
 def _ui_run_mode(mode: str | None) -> str:
     """Snap any stored value to the GUI's two modes: paused/live."""
-    return "headroom" if _is_live_mode(mode) else "paused"
+    return "headroom" if _is_cleanup_mode(mode) else "paused"
 
 
 def _threshold_gb_or_none(value):
@@ -1716,7 +1767,7 @@ def _threshold_gb_or_none(value):
 
 def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
                            library_gb=None, *, candidate_cfg: bool = False) -> dict:
-    """Validate Space Thresholds for simulate and live runs.
+    """Validate Space Thresholds for Simulate and cleanup runs.
 
     Simulate is deliberately allowed when HEADROOM_GB is above the safety percentage,
     or when the Library Size Cap would delete more than that percentage of the library,
@@ -1805,12 +1856,12 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
             cap_safety_message = "Library Size Cap would delete more than the safety percentage of the library."
             safety_errors.append(cap_safety_message)
 
-    # A Live run needs at least one active space target. Headroom 0 + no Redline + no
+    # A Cleanup needs at least one active space target. Headroom 0 + no Redline + no
     # cap means nothing to enforce, so block Live (Simulate can preview an empty plan).
     if (headroom_ok and headroom_gb == 0
             and cfg.get("REDLINE_GB") is None
             and cfg.get("MAX_LIBRARY_GB") is None):
-        safety_errors.append("Set a Headroom target, Redline, or Library Size Cap to enable Live.")
+        safety_errors.append("Set a Headroom target, Redline, or Library Size Cap to enable Automatic Cleanup.")
 
     # Dedupe (order-preserving): a message can be reached by multiple paths.
     def _dedupe(items: list[str]) -> list[str]:
@@ -1825,7 +1876,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     simulate_errors = _dedupe(hard_errors)
     headroom_errors = _dedupe(hard_errors + safety_errors)
 
-    # User-facing Live (arming automatic mode, the manual Live Run button) always
+    # User-facing Live (arming automatic mode, the manual Cleanup button) always
     # requires that a Simulate has seen the library under the CURRENT config:
     #   • limits breached (or redline-only, which deletes the moment its floor is
     #     hit): a deletion plan stamped with exactly these thresholds — moving
@@ -1834,7 +1885,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     #     stamp when there is one, else the library snapshot every completed
     #     scan writes (within limits the eligible queue can legitimately be
     #     empty, so the snapshot is the evidence).
-    # Deliberately NOT part of ok_for_live — the scheduler recomputes its own
+    # Deliberately NOT part of ok_for_cleanup — the scheduler recomputes its own
     # plan every run and must not auto-pause an armed Live over this.
     simulate_required = False
     simulate_first_time = False
@@ -1855,7 +1906,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
         simulate_required_message = ""
     elif _redline_only_mode_cfg(cfg):
         simulate_required_message = ("Run Simulate to build the Redline deletion-order "
-                                     "preview before enabling Live.")
+                                     "preview before enabling Automatic Cleanup.")
     elif simulate_first_time:
         simulate_required_message = ("Run Simulate once so MediaReducer has scanned "
                                      "your library before enabling automatic mode.")
@@ -1868,7 +1919,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
 
     return {
         "ok_for_simulate": not simulate_errors,
-        "ok_for_live": not headroom_errors,
+        "ok_for_cleanup": not headroom_errors,
         "has_library_cap": cap_configured,
         # Live blocked specifically because a target exceeds the safety percentage
         # (headroom over the cap, or a cap below the floor) — the dashboard's breach
@@ -1877,7 +1928,7 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
         "simulate_required": simulate_required,
         "simulate_required_message": simulate_required_message,
         "simulate_tooltip": " ".join(simulate_errors),
-        "live_tooltip": " ".join(headroom_errors),
+        "cleanup_tooltip": " ".join(headroom_errors),
     }
 
 
@@ -3036,72 +3087,6 @@ def _fmt_epoch(ts) -> str:
         return "unknown"
 
 
-@app.route("/api/debug/run-state", methods=["POST"])
-def api_debug_run_state():
-    """Dashboard debug: live run/scheduler/storage state as the app sees it."""
-    cfg = load_config()
-    lines = ["Run & engine state debug", ""]
-    lines.append(f"RUN_MODE={cfg.get('RUN_MODE')!r}")
-    lines.append(f"run_active={_run_active} | summary_refresh_active={_summary_active}")
-    job = scheduler.get_job("engine")
-    next_run = getattr(job, "next_run_time", None)
-    lines.append(f"scheduler: tick every {SCHEDULE_INTERVAL_MINUTES} min | next tick: "
-                 f"{next_run.strftime('%Y-%m-%d %H:%M:%S') if next_run else 'paused'}")
-
-    lines.append("")
-    lines.append("Thresholds:")
-    lines.append(f"  HEADROOM_GB={cfg.get('HEADROOM_GB')} | REDLINE_GB={cfg.get('REDLINE_GB')} | "
-                 f"MAX_LIBRARY_GB={cfg.get('MAX_LIBRARY_GB')} | MAX_HEADROOM_PCT={cfg.get('MAX_HEADROOM_PCT')}")
-    disk = disk_stats()
-    if disk:
-        lines.append(f"  disk: used={disk.get('used_gb')} GB / total={disk.get('total_gb')} GB "
-                     f"(free={disk.get('free_gb')} GB)")
-    stats = library_stats()
-    lines.append(f"  cached library size: {stats.get('library_gb', 'n/a')} GB "
-                 f"(refreshed {_fmt_epoch(stats.get('updated_at'))})")
-
-    lines.append("")
-    lines.append("Connection health (cached — no probe):")
-    with _connection_health_cache_lock:
-        cached_health = _connection_health_cache.get("health")
-        checked_at = _connection_health_cache.get("checked_at")
-    if isinstance(cached_health, dict):
-        lines.append(f"  checked: {_fmt_epoch(checked_at)} | critical_ok={cached_health.get('critical_ok')} | "
-                     f"severity={cached_health.get('severity')}")
-        for err in cached_health.get("errors") or []:
-            lines.append(f"  ERROR: {err}")
-        for warn in cached_health.get("warnings") or []:
-            lines.append(f"  warning: {warn}")
-    else:
-        lines.append("  (no probe has run yet)")
-
-    lines.append("")
-    lines.append("progress.json (dashboard run panel source):")
-    try:
-        prog = json.loads(progress_path().read_text(encoding="utf-8"))
-        for key in ("status", "phase", "mode", "trigger", "scanned", "total", "eligible",
-                    "protected", "skipped", "deleted", "bytes_freed", "message",
-                    "error_code", "completed_with_errors"):
-            if key in prog:
-                lines.append(f"  {key}: {prog.get(key)}")
-        lines.append(f"  started_at: {_fmt_epoch(prog.get('started_at'))} | "
-                     f"updated_at: {_fmt_epoch(prog.get('updated_at'))} | "
-                     f"ended_at: {_fmt_epoch(prog.get('ended_at'))}")
-    except FileNotFoundError:
-        lines.append("  (no progress file — no run has happened yet)")
-    except Exception as e:
-        lines.append(f"  unreadable: {e}")
-
-    try:
-        archived = sorted(p.name for p in logs_dir().glob("*.log"))
-    except Exception:
-        archived = []
-    lines.append("")
-    lines.append(f"Archived run logs: {len(archived)}"
-                 + (f" (latest: {archived[-1]})" if archived else ""))
-    return jsonify({"ok": True, "text": "\n".join(lines)})
-
-
 @app.route("/api/debug/library-snapshot", methods=["POST"])
 def api_debug_library_snapshot():
     """Filtering & Scoring debug: what the current library snapshot holds."""
@@ -3139,6 +3124,91 @@ def api_debug_library_snapshot():
                      + (" | FAVORITE" if m.get("favorite") else ""))
     if len(movies) > _dump_cap:
         lines.append(f"  … and {len(movies) - _dump_cap} more (first {_dump_cap} shown)")
+    return jsonify({"ok": True, "text": "\n".join(lines)})
+
+
+@app.route("/api/debug/cache", methods=["POST"])
+def api_debug_cache():
+    """Advanced/Cache debug: a readable dump of what cache.json currently holds — the
+    library-snapshot summary, the marked & eligible deletion queue + its plan stamp,
+    dashboard storage stats, and the top-level bookkeeping keys. Mirrors the other
+    /api/debug/* popups (returns {ok, text} for prRunDebug)."""
+    p = cache_path()
+    lines = ["Cache contents debug", ""]
+    try:
+        st = p.stat()
+        lines.append(f"cache.json: {p} | {st.st_size:,} bytes | modified {_fmt_epoch(st.st_mtime)}")
+    except OSError:
+        lines.append(f"cache.json: {p} | not present (cleared on startup — run a Simulate to rebuild)")
+        return jsonify({"ok": True, "text": "\n".join(lines)})
+    try:
+        cache = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(cache, dict):
+            raise ValueError("top-level JSON is not an object")
+    except Exception as e:
+        lines.append(f"  (unreadable — {e})")
+        return jsonify({"ok": True, "text": "\n".join(lines)})
+
+    lines.append("top-level keys: " + (", ".join(sorted(cache.keys())) or "(none)"))
+    lines.append(f"code_checksum: {cache.get('code_checksum')!r}")
+    lines.append(f"last_cleanup_date: {cache.get('last_cleanup_date')!r}")
+
+    # Library snapshot (the Filtering & Scoring table) — summary only; the Filtering
+    # & Scoring "Debug" button dumps it per-movie.
+    lines.append("")
+    snap = cache.get("library_snapshot")
+    if isinstance(snap, dict):
+        sm = snap.get("movies") or []
+        dirs = snap.get("monitor_dirs")
+        lines.append(f"library_snapshot: built {_fmt_epoch(snap.get('built_at'))} | {len(sm)} movies"
+                     + (f" | monitor_dirs={dirs}" if dirs else ""))
+    else:
+        lines.append("library_snapshot: (none — run a Simulate to build it)")
+
+    # Deletion queue + plan-currency stamp (cache.json["pending"]).
+    lines.append("")
+    pend = cache.get("pending")
+    if isinstance(pend, dict):
+        entries = pend.get("entries") if isinstance(pend.get("entries"), dict) else {}
+        marked = sum(1 for e in entries.values() if isinstance(e, dict) and e.get("marked_at") is not None)
+        lines.append(f"pending (deletion queue): schema={pend.get('schema')} | {len(entries)} entries | "
+                     f"{marked} marked (delay clock running) | {len(entries) - marked} eligible")
+        stamp = pend.get("plan_config")
+        if isinstance(stamp, dict):
+            lines.append("  plan_config stamp: " + ", ".join(f"{k}={v}" for k, v in sorted(stamp.items())))
+        else:
+            lines.append(f"  plan_config stamp: {stamp!r}")
+        if pend.get("monitor_dirs") is not None:
+            lines.append(f"  monitor_dirs: {pend.get('monitor_dirs')}")
+        _cap = 200
+        lines.append(f"  entries (stored deletion order, first {_cap} shown):")
+        for pth, e in list(entries.items())[:_cap]:
+            e = e if isinstance(e, dict) else {}
+            marked_at = e.get("marked_at")
+            tag = "marked  " if marked_at is not None else "eligible"
+            size_gb = round((e.get("size_bytes") or 0) / 1e9, 2)
+            lines.append(f"    [{tag}] {e.get('title') or pth} | score={e.get('score')} | "
+                         f"size={size_gb} GB | marked_at={_fmt_epoch(marked_at) if marked_at else '—'}")
+        if len(entries) > _cap:
+            lines.append(f"    … and {len(entries) - _cap} more (first {_cap} shown)")
+    else:
+        lines.append("pending (deletion queue): (none — run a Simulate to build it)")
+
+    # Dashboard storage stats.
+    lines.append("")
+    ds = cache.get("dashboard_stats")
+    if isinstance(ds, dict):
+        lines.append("dashboard_stats: " + ", ".join(f"{k}={v}" for k, v in sorted(ds.items())))
+    else:
+        lines.append(f"dashboard_stats: {ds!r}")
+
+    # Any top-level keys not covered above, so nothing in the cache is hidden.
+    _known = {"code_checksum", "last_cleanup_date", "library_snapshot", "pending", "dashboard_stats"}
+    other = sorted(k for k in cache.keys() if k not in _known)
+    if other:
+        lines.append("")
+        lines.append("other keys: " + ", ".join(other))
+
     return jsonify({"ok": True, "text": "\n".join(lines)})
 
 
@@ -3365,8 +3435,8 @@ def _build_debug_report() -> str:
             add(f"  a run would delete now: {'yes — limits exceeded' if limits_exceeded else 'no — limits satisfied'}")
         except Exception as e:
             add(f"  a run would delete now: (undetermined — {s.redact(str(e))})")
-        live = _live_button_state(cfg, disk).get("space_thresholds", {})
-        add(f"  ok_for_simulate={live.get('ok_for_simulate')} ok_for_live={live.get('ok_for_live')} "
+        live = _cleanup_button_state(cfg, disk).get("space_thresholds", {})
+        add(f"  ok_for_simulate={live.get('ok_for_simulate')} ok_for_cleanup={live.get('ok_for_cleanup')} "
             f"safety_blocked={live.get('safety_blocked')} simulate_required={live.get('simulate_required')}")
     except Exception as e:
         add(f"  verdict unavailable: {s.redact(str(e))}")
@@ -3565,7 +3635,7 @@ def _build_debug_report() -> str:
         plan_current = _pending_plan_current(cfg)
         add(f"  pending plan file: {'present' if data else 'missing'}")
         add(f"  plan current under saved config: {plan_current}"
-            + ("" if plan_current else "  → Live is LOCKED until a new Simulate"))
+            + ("" if plan_current else "  → Automatic Cleanup is LOCKED until a new Simulate"))
         if data and not plan_current:
             # Name only WHICH keys drifted (key names, never their values) so the
             # report stays private while still pinpointing the staleness cause.
@@ -3596,7 +3666,7 @@ def _build_debug_report() -> str:
         # score / size / schedule fields, per the privacy requirement.
         entries = pending_deletion_entries(cfg)
         if entries:
-            add(f"  sample marked entries (up to 5, de-identified):")
+            add("  sample marked entries (up to 5, de-identified):")
             for e in entries[:5]:
                 add(f"    score={e.get('score')} | size={e.get('size') or 'n/a'} | "
                     f"delete_on={e.get('delete_on')} | days_remaining={e.get('days_remaining')}")
@@ -4032,7 +4102,7 @@ def _connection_health_signature(cfg: dict | None = None) -> str:
 
 
 def _api_config_signature(cfg: dict | None = None) -> str:
-    """Hash user-edited API/connection settings that should pause Live when changed."""
+    """Hash user-edited API/connection settings that should pause Automatic Cleanup when changed."""
     return _config_signature(cfg, _API_CREDENTIAL_KEYS, strip=True)
 
 
@@ -4267,7 +4337,7 @@ def _has_monitored_dirs(cfg: dict | None = None) -> bool:
     cfg = cfg or load_config()
     return bool(cfg.get("MONITOR_DIRS") or [])
 
-def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dict:
+def _cleanup_button_state(cfg: dict | None = None, disk: dict | None = None) -> dict:
     cfg = cfg or load_config()
     threshold_state = _space_threshold_state(cfg, disk)
     health = _connection_health_for_ui(cfg)
@@ -4287,8 +4357,10 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
             "summary_tooltip": msg,
             "simulate_disabled": True,
             "simulate_tooltip": msg,
-            "live_disabled": True,
-            "live_tooltip": msg,
+            "cleanup_disabled": True,
+            "cleanup_tooltip": msg,
+            "debug_disabled": True,
+            "debug_tooltip": msg,
             "space_satisfied": False,
             "space_thresholds": threshold_state,
             "connection_health": health,
@@ -4303,21 +4375,23 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
             "summary_tooltip": "",
             "simulate_disabled": True,
             "simulate_tooltip": NO_MONITORED_DIRS_MESSAGE,
-            "live_disabled": True,
-            "live_tooltip": NO_MONITORED_DIRS_MESSAGE,
+            "cleanup_disabled": True,
+            "cleanup_tooltip": NO_MONITORED_DIRS_MESSAGE,
+            "debug_disabled": True,
+            "debug_tooltip": NO_MONITORED_DIRS_MESSAGE,
             "space_satisfied": False,
             "space_thresholds": threshold_state,
             "connection_health": health,
         }
 
     # Everything configured and connected — but if every space limit is satisfied a
-    # LIVE run would delete nothing, so ghost Live with the reason. Simulate never
-    # ghosts on satisfied limits in any mode: its job includes building/refreshing
+    # Cleanup would delete nothing, so ghost the Cleanup button with the reason. Simulate
+    # never ghosts on satisfied limits in any mode: its job includes building/refreshing
     # the standing marked & eligible queue, which exists regardless of breach state.
     # Unknown values fail OPEN (buttons stay enabled; the engine is the authority
     # and no-ops safely), like _deletion_limits_exceeded.
     satisfied_msg = ""
-    if threshold_state["ok_for_simulate"] or threshold_state["ok_for_live"]:
+    if threshold_state["ok_for_simulate"] or threshold_state["ok_for_cleanup"]:
         try:
             _lib_gb = library_stats().get("library_gb")
         except Exception:
@@ -4337,9 +4411,19 @@ def _live_button_state(cfg: dict | None = None, disk: dict | None = None) -> dic
         "summary_tooltip": "",
         "simulate_disabled": not threshold_state["ok_for_simulate"],
         "simulate_tooltip": threshold_state["simulate_tooltip"],
-        "live_disabled": (not threshold_state["ok_for_live"] or bool(satisfied_msg)
+        # Debug Cleanup replays the standing marked queue, so it needs a CURRENT
+        # plan to exist: ghost it (like Live) until a Simulate has built/refreshed
+        # the queue under the current settings. Uses the Simulate gate for hard
+        # config errors, but ignores the live/safety thresholds (it deletes nothing).
+        "debug_disabled": (not threshold_state["ok_for_simulate"]
+                           or bool(threshold_state.get("simulate_required"))),
+        "debug_tooltip": (threshold_state["simulate_tooltip"]
+                          or ("Run Simulate first — Debug Cleanup replays the marked "
+                              "& eligible queue a Simulate builds."
+                              if threshold_state.get("simulate_required") else "")),
+        "cleanup_disabled": (not threshold_state["ok_for_cleanup"] or bool(satisfied_msg)
                           or simulate_required),
-        "live_tooltip": (threshold_state["live_tooltip"]
+        "cleanup_tooltip": (threshold_state["cleanup_tooltip"]
                          or (threshold_state.get("simulate_required_message", "") if simulate_required and rl_only else "")
                          or satisfied_msg
                          or (threshold_state.get("simulate_required_message", "") if simulate_required else "")),
@@ -4571,34 +4655,13 @@ def pending_path() -> Path:
     return output_dir() / "pending_deletions.json"
 
 
-_pending_file_memo_lock = threading.Lock()
-_pending_file_memo = {"key": None, "data": None}
-
-
 def _pending_file_data() -> dict | None:
-    """pending_deletions.json parsed, memoized by (path, mtime, size) — the same
-    pattern as _deleted_log_lines and _cache_file_data, and for the same reason:
-    /api/status consults the marked queue every ~3s per open page, while the
-    file only changes when the engine (or a queue clear) writes it."""
-    p = pending_path()
-    try:
-        st = p.stat()
-        key = (str(p), st.st_mtime_ns, st.st_size)
-    except OSError:
-        return None
-    with _pending_file_memo_lock:
-        if _pending_file_memo["key"] == key:
-            return _pending_file_memo["data"]
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        data = None
-    with _pending_file_memo_lock:
-        _pending_file_memo["key"] = key
-        _pending_file_memo["data"] = data
-    return data
+    """The marked & eligible queue document ({schema, entries, plan_config,
+    monitor_dirs}), now stored UNDER cache.json's "pending" key — one file for all
+    persisted state. Read through the memoized _cache_file_data(), so the frequent
+    /api/status consults reuse the same once-per-version cache parse."""
+    doc = _cache_file_data().get("pending")
+    return doc if isinstance(doc, dict) else None
 
 
 def _pending_raw() -> dict:
@@ -4617,27 +4680,34 @@ def _unschedule_pending_marks() -> int:
     queue itself — it is the standing eligible deletion order in every mode,
     and the engine's own satisfied-limits upkeep does exactly the same
     (_revalidate_pending_marks). Returns how many marks were unscheduled.
-    Callers must ensure no run is active (the engine owns the file during a
+    Callers must ensure no run is active (the engine owns the queue during a
     run); the config-save path guards that by re-checking
-    _run_active/_summary_active under _run_lock right at the write."""
-    data = _pending_file_data()
-    if not isinstance(data, dict):
+    _run_active/_summary_active under _run_lock right at the write. The queue
+    lives under cache.json's "pending" key, so the read-modify-write takes the
+    shared cache flock and rewrites cache.json — preserving every other section."""
+    p = cache_path()
+    try:
+        with _cache_write_lock():
+            try:
+                cache = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+            except Exception:
+                cache = {}
+            if not isinstance(cache, dict):
+                return 0
+            doc = cache.get("pending")
+            entries = doc.get("entries") if isinstance(doc, dict) else None
+            if not isinstance(entries, dict):
+                return 0
+            unscheduled = 0
+            for e in entries.values():
+                if isinstance(e, dict) and e.get("marked_at") is not None:
+                    e["marked_at"] = None
+                    unscheduled += 1
+            if unscheduled:
+                _atomic_write_json(p, cache, indent=2)
+            return unscheduled
+    except OSError:
         return 0
-    data = json.loads(json.dumps(data))  # never mutate the shared memo in place
-    entries = data.get("entries")
-    if not isinstance(entries, dict):
-        return 0
-    unscheduled = 0
-    for e in entries.values():
-        if isinstance(e, dict) and e.get("marked_at") is not None:
-            e["marked_at"] = None
-            unscheduled += 1
-    if unscheduled:
-        try:
-            _atomic_write_json(pending_path(), data, indent=2)
-        except OSError:
-            return 0
-    return unscheduled
 
 
 def _normalized_monitor_dirs(cfg: dict) -> list[str]:
@@ -4652,7 +4722,7 @@ def _normalized_monitor_dirs(cfg: dict) -> list[str]:
 # Everything that changes WHAT a run would mark or delete. A completed Simulate
 # stamps the raw values of these keys (plus the monitored paths) into the plan;
 # changing ANY of them ghosts both Live actions — arming automatic mode and the
-# manual Live Run button — until a fresh Simulate rebuilds the plan. Mirrored in
+# manual Cleanup button — until a fresh Simulate rebuilds the plan. Mirrored in
 # engine.py (_PLAN_CONFIG_KEYS); keep the two lists identical.
 _PLAN_CONFIG_KEYS = (
     "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
@@ -4819,7 +4889,7 @@ def pending_deletion_entries(cfg: dict | None = None, *, with_lines: bool = True
         elif marked_at is not None:
             # Calendar-day aging, matching the engine: marked date + delay is
             # when the mark becomes deletable at that day's daily run (or any
-            # manual Live Run from then on).
+            # manual Cleanup from then on).
             marked = True
             delete_on = datetime.fromtimestamp(marked_at).date() + timedelta(days=delay)
             remaining = max(0, (delete_on - today).days)
@@ -4835,7 +4905,7 @@ def pending_deletion_entries(cfg: dict | None = None, *, with_lines: bool = True
         title = str(e.get("title") or Path(path).name)
         size_label = _format_reclaimed_size(size_bytes) if size_bytes else ""
         if rl_only:
-            when = (f"#{i} — deletes on the next Live Run (Redline breached)" if marked
+            when = (f"#{i} — deletes on the next Cleanup (Redline breached)" if marked
                     else f"#{i} — deletes when Redline hits")
         elif marked_at is not None:
             when = ("deletable now" if remaining <= 0
@@ -4865,6 +4935,17 @@ def pending_deletion_entries(cfg: dict | None = None, *, with_lines: bool = True
             "delete_on": delete_on.isoformat() if delete_on else None,
             "line": " | ".join(line_parts),
         })
+    # Normal (delay) modes: float the marked entries to the top, SOONEST deletion
+    # first — with the incremental re-verify a backfilled mark starts a fresh,
+    # longer countdown, so it sinks below the aging original marks and the list
+    # reads "what's about to go" downward. Eligible entries keep the deletion
+    # order behind them (stable sort). Redline-only has no delay clock, so its
+    # deficit-order display is left untouched. Only the displayed list is
+    # reordered; the /api/status forecast (with_lines=False) never sorts.
+    if with_lines and not rl_only:
+        out.sort(key=lambda r: (0 if r.get("marked") else 1,
+                                r["days_remaining"] if (r.get("marked")
+                                and r.get("days_remaining") is not None) else 0))
     return out
 
 
@@ -4948,7 +5029,7 @@ def pending_delete_forecast(cfg: dict | None = None) -> dict:
 def dashboard():
     cfg  = load_config()
     disk = disk_stats()
-    live_state = _live_button_state(cfg, disk)
+    cleanup_state = _cleanup_button_state(cfg, disk)
     deleted = deleted_stats()
     stats = library_stats()
     return render_template("dashboard.html",
@@ -4963,7 +5044,7 @@ def dashboard():
                            headroom_window_used_today=_headroom_window_used_today(),
                            disk=disk,
                            library_gb=stats.get("library_gb"),
-                           live_state=live_state,
+                           cleanup_state=cleanup_state,
                            run_active=_run_active,
                            last_run=last_run_time(),
                            last_run_ts=last_run_epoch(),
@@ -5043,7 +5124,7 @@ def _score_page_config(cfg: dict) -> dict:
 def api_library_snapshot():
     """The full-library snapshot from the last completed scan (cache.json
     "library_snapshot"): every monitored-path movie with merged Plex+Jellyfin
-    data. Built by Simulate and full-scan Live runs; the Filtering & Scoring
+    data. Built by Simulate and full-scan Cleanups; the Filtering & Scoring
     page paginates and scores it client-side."""
     data, pool_err = _read_library_snapshot()
     if pool_err == "missing":
@@ -5066,6 +5147,11 @@ def api_library_snapshot():
     # the explorer uses this to explain whether the next run will annotate.
     tsv = imdb_ratings_path()
     imdb_on_disk = tsv.exists() or tsv.with_name(tsv.name + ".gz").exists()
+    # The snapshot carries each movie's /library path as an internal join key for
+    # the engine's incremental re-verify. Paths never leave the server (the debug
+    # report redacts them too), so strip it from the browser payload.
+    movies = [{k: v for k, v in m.items() if k != "path"} if isinstance(m, dict) else m
+              for m in movies]
     resp = jsonify({"ok": True, "built_at": data.get("built_at"), "movies": movies,
                     "imdb_dataset_on_disk": imdb_on_disk})
     resp.headers["Cache-Control"] = "no-store"
@@ -5076,14 +5162,14 @@ def api_status():
     cfg = load_config()
     stats = library_stats()
     disk = cached_disk_stats(stats)
-    live_state = _live_button_state(cfg, disk)
+    cleanup_state = _cleanup_button_state(cfg, disk)
     job = scheduler.get_job("engine")
     next_run = None
     mode = cfg.get("RUN_MODE")
     if (
-        job and job.next_run_time and _is_live_mode(mode) and not _run_active
-        and live_state.get("connection_health", {}).get("critical_ok", True)
-        and live_state["space_thresholds"].get("ok_for_live", False)
+        job and job.next_run_time and _is_cleanup_mode(mode) and not _run_active
+        and cleanup_state.get("connection_health", {}).get("critical_ok", True)
+        and cleanup_state["space_thresholds"].get("ok_for_cleanup", False)
     ):
         next_run = job.next_run_time.isoformat()
     deleted = deleted_stats()
@@ -5091,7 +5177,10 @@ def api_status():
     _delay_days = _delete_delay_days(cfg)
     resp = jsonify({
         "run_active":              _run_active,
-        "run_live":                _run_active and _run_live,
+        "run_cleanup":                _run_active and _run_cleanup,
+        # A Debug Cleanup drives the cleanup path but deletes nothing — the dashboard
+        # header badge and run pill read "Debugging" in yellow for it.
+        "run_debug_cleanup":          _run_active and _run_debug_cleanup,
         "summary_active":          _summary_active,
         "last_run":                last_run_time(),
         "last_run_ts":             last_run_epoch(),
@@ -5135,7 +5224,7 @@ def api_status():
         # once it's used (redline/cap ignore it); the dashboard red countdown keys off
         # this.
         "headroom_window_used_today": _headroom_window_used_today(),
-        "live_state":              live_state,
+        "cleanup_state":              cleanup_state,
         # Drives the red Configuration tab live (no reload): onboarding cue or an API
         # error in the saved config's cached health.
         "config_attention":        _connection_onboarding_needed(cfg) or _api_connection_error(cfg),
@@ -5459,27 +5548,10 @@ def api_reset_config():
             errors.append(f"{p.name}: {e}")
 
     # lastrun.log drives the Last Run timestamp, the detailed-log window, and the
-    # run-stat jump targets — after a reset those must read as "no runs yet". Never
-    # delete a log: move it into logs/ instead (same naming as engine-archived runs).
-    # Best-effort — a failed move must not fail the reset; shutil.move also covers a
-    # logs/ folder on a different mount. out_dir was captured above, BEFORE config.json
-    # was deleted; log_path() here would re-resolve OUTPUT_DIR from the now-default config.
-    last_log = out_dir / "lastrun.log"
-    try:
-        if last_log.exists() and last_log.stat().st_size > 0:
-            archive_dir = out_dir / "logs"
-            archive_dir.mkdir(parents=True, exist_ok=True)
-            stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            target = archive_dir / f"{stamp}.log"
-            n = 1
-            while target.exists():
-                target = archive_dir / f"{stamp}_{n}.log"
-                n += 1
-            shutil.move(str(last_log), str(target))
-        else:
-            last_log.unlink(missing_ok=True)
-    except OSError as e:
-        print(f"WARNING: reset could not archive lastrun.log: {e}", flush=True)
+    # run-stat jump targets — after a reset those must read as "no runs yet". It is
+    # archived into logs/ (never deleted). out_dir was captured above, BEFORE config.json
+    # was deleted; the helper takes it explicitly so it can't re-resolve to the default.
+    _archive_lastrun_log(out_dir)
 
     # Return to the first-time (paused) default and drop stale in-memory caches.
     try:
@@ -5630,7 +5702,7 @@ def api_save_config():
             _radarr_section_detection_signature(cfg)
             != _radarr_section_detection_signature(saved_cfg)
         )
-        saved_was_live = _is_live_mode(saved_cfg.get("RUN_MODE"))
+        saved_was_cleanup = _is_cleanup_mode(saved_cfg.get("RUN_MODE"))
         forced_pause_for_api_change = False
         forced_pause_for_tautulli = False
         forced_pause_for_threshold_change = False
@@ -5678,8 +5750,8 @@ def api_save_config():
         # save force-pauses Live below (same pattern as connection/path
         # changes) so the scheduler never runs on targets no Simulate has
         # previewed. The user reviews with Simulate and re-enables.
-        threshold_change_while_live = (
-            _is_live_mode(saved_cfg.get("RUN_MODE"))
+        threshold_change_while_cleanup = (
+            _is_cleanup_mode(saved_cfg.get("RUN_MODE"))
             and _threshold_snapshot(cfg) != _threshold_snapshot(saved_cfg)
         )
 
@@ -5706,22 +5778,20 @@ def api_save_config():
                                                       "target — untick Headroom for redline-only "
                                                       "mode instead."}), 400
 
-        # REDLINE_ONLY_MODE (the Headroom checkbox unticked): Redline is the only
-        # trigger, so it must exist, the cap is off, and the headroom value is 0.
-        # WITHOUT the mode, HEADROOM_GB 0 just means the headroom trigger is off
-        # — Redline and/or the Library Size Cap may still be armed on their own,
-        # and 0/null/null is the valid "no thresholds set" default.
+        # REDLINE_ONLY_MODE = the Headroom checkbox unticked (the headroom trigger is
+        # off). Valid as long as a Redline floor and/or a Library Size Cap is armed to
+        # drive cleanup, with the headroom value at 0. WITHOUT the flag, HEADROOM_GB 0
+        # just means the headroom trigger is off — Redline and/or the cap may still be
+        # armed on their own, and 0/null/null is the valid "no thresholds set" default.
         cfg["REDLINE_ONLY_MODE"] = _coerce_bool(cfg.get("REDLINE_ONLY_MODE"))
         if cfg["REDLINE_ONLY_MODE"] and (cfg.get("MONITOR_DIRS") or []):
-            if cfg.get("REDLINE_GB") is None:
-                return jsonify({"ok": False, "error": "Redline-only mode needs a Redline floor — "
-                                                      "set one or re-tick Headroom."}), 400
-            if cfg.get("MAX_LIBRARY_GB") is not None:
-                return jsonify({"ok": False, "error": "The Library Size Cap is not used in "
-                                                      "redline-only mode — disable it first."}), 400
+            if cfg.get("REDLINE_GB") is None and cfg.get("MAX_LIBRARY_GB") is None:
+                return jsonify({"ok": False, "error": "With Headroom off, arm a Redline floor "
+                                                      "and/or a Library Size Cap — or re-tick "
+                                                      "Headroom."}), 400
             if headroom_gb != 0:
-                return jsonify({"ok": False, "error": "Redline-only mode retires the headroom "
-                                                      "trigger — its value must be 0."}), 400
+                return jsonify({"ok": False, "error": "With Headroom off, its value must be 0 "
+                                                      "(the headroom trigger is retired)."}), 400
 
         try:
             max_headroom_pct = float(cfg.get("MAX_HEADROOM_PCT", 15))
@@ -5795,7 +5865,7 @@ def api_save_config():
             return jsonify({"ok": False, "error": str(e)}), 400
 
         if cfg.get("RUN_MODE") not in ("paused", "headroom"):
-            return jsonify({"ok": False, "error": "Choose Paused or Live before saving."}), 400
+            return jsonify({"ok": False, "error": "Choose Paused or Automatic Cleanup before saving."}), 400
         cfg["RUN_MODE"] = _ui_run_mode(cfg.get("RUN_MODE"))
 
         # Optional Radarr cleanup is a plain on/off — a Radarr node maps to exactly one
@@ -5843,52 +5913,52 @@ def api_save_config():
         monitoring_changed = (
             _monitoring_summary_signature(cfg) != _monitoring_summary_signature(saved_cfg)
         )
-        if api_config_changed and saved_was_live:
+        if api_config_changed and saved_was_cleanup:
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_api_change = True
             cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "connection settings changed."
-        if monitoring_changed and _is_live_mode(cfg.get("RUN_MODE")):
+        if monitoring_changed and _is_cleanup_mode(cfg.get("RUN_MODE")):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_monitor_change = True
-            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "monitored paths changed — run Simulate under the new paths, then re-enable Live."
-        if threshold_change_while_live and _is_live_mode(cfg.get("RUN_MODE")):
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "monitored paths changed — run Simulate under the new paths, then re-enable Automatic Cleanup."
+        if threshold_change_while_cleanup and _is_cleanup_mode(cfg.get("RUN_MODE")):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_threshold_change = True
             cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed — run Simulate to review "
-                                                 "the new plan, then re-enable Live.")
-        if _is_live_mode(cfg.get("RUN_MODE")) and not save_health.get("critical_ok", True):
+                                                 "the new plan, then re-enable Automatic Cleanup.")
+        if _is_cleanup_mode(cfg.get("RUN_MODE")) and not save_health.get("critical_ok", True):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_tautulli = True
             cfg["_RUN_MODE_AUTOPAUSE_REASON"] = (save_health.get("required_tooltip")
                                                  or "the media server connection is not healthy.")
 
-        if _is_live_mode(cfg.get("RUN_MODE")):
+        if _is_cleanup_mode(cfg.get("RUN_MODE")):
             # candidate_cfg: the plan stamp must be judged against the config
             # BEING SAVED, not the old file it replaces — otherwise one save
             # could change thresholds AND arm automatic mode against a stamp
             # only the old thresholds match.
             thresholds = _space_threshold_state(cfg, disk_stats(), candidate_cfg=True)
-            if not thresholds.get("ok_for_live"):
+            if not thresholds.get("ok_for_cleanup"):
                 # Only reachable with UNCHANGED thresholds (a threshold change
                 # while armed force-pauses above): point at the fix.
-                _hint = ("" if not _is_live_mode(saved_cfg.get("RUN_MODE"))
+                _hint = ("" if not _is_cleanup_mode(saved_cfg.get("RUN_MODE"))
                          else " Adjust the thresholds — saving a threshold change "
-                              "pauses Automatic Run Mode so you can review with Simulate.")
+                              "pauses Scheduler Mode so you can review with Simulate.")
                 return jsonify({
                     "ok": False,
-                    "error": (thresholds.get("live_tooltip") or "Fix Space Thresholds first.") + _hint,
+                    "error": (thresholds.get("cleanup_tooltip") or "Fix Space Thresholds first.") + _hint,
                 }), 400
             # Arming automatic mode always requires that a Simulate has seen the
             # library: over breached limits that means a deletion plan stamped
             # under exactly these thresholds; within limits, proof that at least
             # one Simulate has run (the library snapshot). Without it the first
             # automatic run would act sight-unseen.
-            if (not _is_live_mode(saved_cfg.get("RUN_MODE"))
+            if (not _is_cleanup_mode(saved_cfg.get("RUN_MODE"))
                     and thresholds.get("simulate_required")):
                 return jsonify({
                     "ok": False,
                     "error": (thresholds.get("simulate_required_message")
-                              or "Run Simulate first, then enable Live."),
+                              or "Run Simulate first, then enable Automatic Cleanup."),
                 }), 400
 
         # An empty MONITOR_DIRS is valid and means "manage nothing" until the
@@ -5977,7 +6047,7 @@ def api_save_config():
             jf_prot = [p.strip() for p in jf_prot.split(",")]
         cfg["JELLYFIN_PROTECTED_COLLECTIONS"] = [p for p in (jf_prot or []) if str(p).strip()]
 
-        should_abort_active_run = _is_live_mode(saved_cfg.get("RUN_MODE")) and cfg.get("RUN_MODE") == "paused"
+        should_abort_active_run = _is_cleanup_mode(saved_cfg.get("RUN_MODE")) and cfg.get("RUN_MODE") == "paused"
         # Refresh the carried Filtering & Scoring fields from the CURRENT file, not the
         # snapshot taken before the multi-second probes above — a /api/score-config save
         # that landed mid-probe would otherwise be reverted by this write.
@@ -6016,7 +6086,7 @@ def api_save_config():
         # with 5s left and re-enabling Live later inherited that near-expired timer and
         # the first automatic run fired almost immediately. (Covers user changes and
         # every forced pause, which all mutate RUN_MODE before this save.)
-        if _is_live_mode(saved_cfg.get("RUN_MODE")) != _is_live_mode(cfg.get("RUN_MODE")):
+        if _is_cleanup_mode(saved_cfg.get("RUN_MODE")) != _is_cleanup_mode(cfg.get("RUN_MODE")):
             _restart_schedule_clock()
         # Point the process clock at the saved zone. Moving the zone moves the midnight
         # boundary, so re-burn today's run window — like the startup burn, a clock change
@@ -6088,9 +6158,9 @@ def api_save_config():
             "automatic_run_mode_paused_reason": (
                 "connection settings changed."
                 if forced_pause_for_api_change else
-                "monitored paths changed — run Simulate under the new paths, then re-enable Live."
+                "monitored paths changed — run Simulate under the new paths, then re-enable Automatic Cleanup."
                 if forced_pause_for_monitor_change else
-                "space thresholds changed — run Simulate to review the new plan, then re-enable Live."
+                "space thresholds changed — run Simulate to review the new plan, then re-enable Automatic Cleanup."
                 if forced_pause_for_threshold_change else
                 (save_health.get("required_tooltip") if save_health else "")
                 or "the media server connection is not healthy."
@@ -6215,7 +6285,7 @@ def api_clear_cache():
         pass
 
     # Full wipe — the library snapshot goes with it, so the Filtering & Scoring
-    # table stays empty until the next Simulate or Live run rewrites it. The
+    # table stays empty until the next Simulate or Cleanup rewrites it. The
     # unlink takes the shared cache flock like every other cache.json writer, so
     # it can't land inside an engine read-modify-write cycle.
     try:
@@ -6254,14 +6324,23 @@ def api_run():
 
     # SAFETY: a missing/unparseable mode must never become a live deletion. Both
     # Dashboard buttons send an explicit mode ("debug_sim" for Simulate, "headroom" for
-    # a manual Live Run, which works even while the scheduler is paused). Anything
+    # a manual Cleanup, which works even while the scheduler is paused). Anything
     # ambiguous (empty body, garbled JSON, a scripted request with no mode) falls back
     # to Simulate, the non-destructive path. debug_info is not user-facing; the
     # Dashboard's ↻ storage refresh goes through /api/summary/run.
     if mode is None:
         mode = "debug_sim"
-    if mode not in ("debug_sim", "headroom"):
+    if mode not in ("debug_sim", "headroom", "debug_cleanup"):
         return jsonify({"ok": False, "message": f"Unknown run mode: {mode}"}), 400
+    # Debug mode ↔ live are mutually exclusive. "debug_cleanup" is the no-delete
+    # diagnostic run that replaces the manual Cleanup while Debug mode is on, so
+    # it requires Debug mode; conversely a real live "headroom" run is refused
+    # while Debug mode is on (the dashboard morphs the button to Debug Cleanup).
+    _debug_on = bool(cfg.get("DEBUG_MODE"))
+    if mode == "debug_cleanup" and not _debug_on:
+        return jsonify({"ok": False, "message": "Turn on Debug mode in Configuration to use Debug Cleanup."}), 400
+    if mode == "headroom" and _debug_on:
+        return jsonify({"ok": False, "message": "Debug mode is on — use Debug Cleanup (no deletions)."}), 400
     effective_mode = mode
 
     health = _refresh_connection_health_cache(cfg, probe=True)
@@ -6273,30 +6352,44 @@ def api_run():
 
     disk = disk_stats()
     thresholds = _space_threshold_state(cfg, disk)
-    if effective_mode in ("debug_sim", "headroom") and not _has_monitored_dirs(cfg):
+    if effective_mode in ("debug_sim", "headroom", "debug_cleanup") and not _has_monitored_dirs(cfg):
         return jsonify({
             "ok": False,
             "message": NO_MONITORED_DIRS_MESSAGE,
         }), 400
 
-    if effective_mode == "debug_sim" and not thresholds.get("ok_for_simulate"):
+    # debug_cleanup uses the SIMULATE gate, not the Live gate: like Simulate it runs
+    # even past the 15% headroom safety cap (it deletes nothing), so it must not
+    # be blocked by ok_for_cleanup — only by an actually-invalid config.
+    if effective_mode in ("debug_sim", "debug_cleanup") and not thresholds.get("ok_for_simulate"):
         return jsonify({
             "ok": False,
             "message": thresholds.get("simulate_tooltip") or "Fix Space Thresholds first.",
         }), 400
 
-    if _is_live_mode(effective_mode) and not thresholds.get("ok_for_live"):
+    # Debug Cleanup replays the standing marked queue, so it needs a CURRENT plan.
+    # Without one (no Simulate yet, or settings changed since), refuse with a hint
+    # instead of spinning up a run that can only log "run Simulate first".
+    if effective_mode == "debug_cleanup" and thresholds.get("simulate_required"):
         return jsonify({
             "ok": False,
-            "message": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
+            "message": (thresholds.get("simulate_required_message")
+                        or "Run Simulate first — Debug Cleanup replays the marked "
+                           "& eligible queue a Simulate builds."),
         }), 400
 
-    # A manual Live Run deletes immediately (no delay, no daily window), so over
+    if _is_cleanup_mode(effective_mode) and not thresholds.get("ok_for_cleanup"):
+        return jsonify({
+            "ok": False,
+            "message": thresholds.get("cleanup_tooltip") or "Fix Space Thresholds first.",
+        }), 400
+
+    # A manual Cleanup deletes immediately (no delay, no daily window), so over
     # breached limits it needs a deletion plan computed under the current
     # thresholds. Within satisfied limits the run is a harmless no-op — the
     # fresh-stats check below reports "already satisfied" instead, which is the
     # same reason the dashboard ghosts the button; don't demand a Simulate here.
-    if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
+    if _is_cleanup_mode(effective_mode) and thresholds.get("simulate_required"):
         try:
             _breached_now = _deletion_limits_exceeded(cfg, disk, library_stats().get("library_gb"))
         except Exception:
@@ -6305,9 +6398,9 @@ def api_run():
             return jsonify({"ok": False, "message": thresholds.get("simulate_required_message")
                                                     or "Run Simulate first."}), 400
 
-    # Same pre-check the automatic Live tick uses: if every space limit is already
+    # Same pre-check the automatic cleanup tick uses: if every space limit is already
     # satisfied (nothing over Headroom/Redline against the current filesystem, library
-    # under the cap), a Simulate or Live run would delete nothing, so report it instead
+    # under the cap), a Simulate or Cleanup would delete nothing, so report it instead
     # of spinning one up. debug_info (status refresh) is exempt.
     if effective_mode in ("debug_sim", "headroom"):
         refresh_ok, refresh_msg, fresh_stats = run_summary_sync()
@@ -6321,14 +6414,14 @@ def api_run():
                         "ok": False,
                         "message": thresholds.get("simulate_tooltip") or "Fix Space Thresholds first.",
                     }), 400
-                if _is_live_mode(effective_mode) and not thresholds.get("ok_for_live"):
+                if _is_cleanup_mode(effective_mode) and not thresholds.get("ok_for_cleanup"):
                     return jsonify({
                         "ok": False,
-                        "message": thresholds.get("live_tooltip") or "Fix Space Thresholds first.",
+                        "message": thresholds.get("cleanup_tooltip") or "Fix Space Thresholds first.",
                     }), 400
             # A Simulate is exempt from the satisfied skip in EVERY mode: its job
             # includes building/refreshing the standing marked & eligible queue,
-            # which exists regardless of breach state. Only live runs skip —
+            # which exists regardless of breach state. Only cleanups skip —
             # and "already satisfied" outranks "run Simulate first", matching
             # the dashboard's ghost reason for the same state.
             if effective_mode != "debug_sim" and not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
@@ -6337,10 +6430,10 @@ def api_run():
                     "started": False,
                     "message": "Space limits are already satisfied.",
                 })
-            if _is_live_mode(effective_mode) and thresholds.get("simulate_required"):
+            if _is_cleanup_mode(effective_mode) and thresholds.get("simulate_required"):
                 return jsonify({"ok": False, "message": thresholds.get("simulate_required_message")
                                                         or "Run Simulate first."}), 400
-            # A manual Live Run needs no daily-window pre-check: it prunes every breached
+            # A manual Cleanup needs no daily-window pre-check: it prunes every breached
             # target immediately, ignoring the once-per-day schedule and deletion delay
             # (both pace automatic runs).
         else:
@@ -6757,7 +6850,7 @@ def _deletion_limits_exceeded(cfg: dict, disk: dict | None, library_gb) -> bool:
     Mirrors engine.py's trigger formula: over_limit (used ≥ total − Headroom),
     redline_hit (free ≤ Redline), library_cap_hit (library size > Library Size Cap).
     Disk figures are live; the library size is the last value the engine wrote to
-    cache.json (kept fresh by the Summary after every Live run, on save, on startup, and
+    cache.json (kept fresh by the Summary after every Cleanup, on save, on startup, and
     on paused/idle ticks).
 
     ONLY an optimization to avoid spinning up a run that would delete nothing (e.g. the
@@ -6811,7 +6904,7 @@ def _scheduled_tick():
         return
 
     cfg = load_config()
-    if _is_live_mode(cfg.get("RUN_MODE")):
+    if _is_cleanup_mode(cfg.get("RUN_MODE")):
         # Only launch a deletion pass when it's actually safe. If connections aren't
         # ready, fall back to a Summary so stats still refresh. Otherwise refresh storage
         # first, then decide whether a cleanup run is needed.
@@ -6820,26 +6913,26 @@ def _scheduled_tick():
             return
         refresh_ok, refresh_msg, fresh_stats = run_summary_sync()
         if not refresh_ok:
-            print(f"Scheduled Live precheck failed: {refresh_msg}", flush=True)
+            print(f"Scheduled cleanup precheck failed: {refresh_msg}", flush=True)
             return
         disk = cached_disk_stats(fresh_stats) or disk_stats()
         threshold_state = _space_threshold_state(cfg, disk, fresh_stats.get("library_gb"))
-        if not threshold_state.get("ok_for_live"):
+        if not threshold_state.get("ok_for_cleanup"):
             # Thresholds safe when Live was armed can stop being safe later — e.g. files
             # copied in push the cap past the safety floor. Silently skipping every tick
             # left Live armed with nothing running and no explanation: pause with the
             # reason, like every other forced pause. Re-arming takes the two-click confirm.
             fresh_cfg = load_config()   # fresh: don't clobber a save that landed mid-summary
-            if _is_live_mode(fresh_cfg.get("RUN_MODE")):
+            if _is_cleanup_mode(fresh_cfg.get("RUN_MODE")):
                 fresh_cfg["RUN_MODE"] = "paused"
-                fresh_cfg["_RUN_MODE_AUTOPAUSE_REASON"] = (threshold_state.get("live_tooltip")
+                fresh_cfg["_RUN_MODE_AUTOPAUSE_REASON"] = (threshold_state.get("cleanup_tooltip")
                                                            or "Space Thresholds are no longer safe.")
                 if save_config(fresh_cfg):
                     _restart_schedule_clock()
-                    print("Scheduled tick: Space Thresholds unsafe — Live paused "
+                    print("Scheduled tick: Space Thresholds unsafe — Automatic Cleanup paused "
                           f"({fresh_cfg['_RUN_MODE_AUTOPAUSE_REASON']})", flush=True)
             return
-        # Nothing to delete? Don't launch a Live run. The Summary precheck above already
+        # Nothing to delete? Don't launch a Cleanup. The Summary precheck above already
         # refreshed both filesystem capacity and media library size.
         if not _deletion_limits_exceeded(cfg, disk, fresh_stats.get("library_gb")):
             return
@@ -6866,9 +6959,40 @@ def _scheduled_tick():
         # touching lastrun.log, or updating the progress panel.
         run_summary()
 
-# Always start safe: adopt the configured time zone before anything reads the clock,
-# never resume a saved Live mode after a restart, never leave an undersized Library Size
-# Cap armed, and burn today's daily-run window so a restart can't grant an immediate run.
+def invalidate_cache_on_startup() -> None:
+    """Every startup begins with a clean slate: drop cache.json — which now holds the
+    library snapshot/metadata AND the marked & eligible queue (under its "pending"
+    key) — plus any legacy pending_deletions.json left by an older version.
+
+    Files can be added, removed, or replaced while the app is down, which would leave
+    the plan describing a library that no longer matches disk. Rather than trust a
+    possibly-stale cache, we delete it so a fresh Simulate must rebuild it. That also
+    correctly ghosts the manual and Debug Cleanup buttons (both replay the cached
+    queue) until that Simulate runs — matching the startup Live-mode pause. Runs
+    BEFORE burn_daily_window_on_startup so the re-stamped daily window survives.
+
+    The wiped plan no longer describes what's on disk, so the last run's progress panel
+    (Scanning/Simulating/Done + the stat tiles) is stale too. Archive its log into logs/
+    (never lost) and clear progress.json so the Dashboard reads "no runs yet" until the
+    rebuilding Simulate runs. Keeps deleted.log (deletion history) and the logs/ archive."""
+    for label, p in (("cache + queue", cache_path()), ("legacy queue file", pending_path())):
+        try:
+            if p.exists():
+                p.unlink()
+                print(f"Startup: cleared the {label} ({p.name}) — a fresh Simulate will "
+                      f"rebuild it (the queue-based runs stay ghosted until then).", flush=True)
+        except OSError as e:
+            print(f"WARNING: could not clear the {label} on startup: {e}", flush=True)
+    out = output_dir()
+    _archive_lastrun_log(out)   # last run's log → logs/<timestamp>.log (preserved)
+    _clear_progress_state(out)  # progress panel → stock "no runs yet"
+
+
+# Always start safe: clear a possibly-stale cache/plan first, adopt the configured time
+# zone before anything reads the clock, never resume a saved Live mode after a restart,
+# never leave an undersized Library Size Cap armed, and burn today's daily-run window so
+# a restart can't grant an immediate run.
+invalidate_cache_on_startup()
 _apply_configured_time_zone()
 force_paused_run_mode_on_startup()
 disable_undersized_library_cap_on_startup()
