@@ -196,6 +196,12 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
 .prunestat.active{color:var(--text-warning)}
 .snapshot-imdb-note{margin:0 0 8px;padding:9px 12px;border:1px solid var(--border);border-left:3px solid var(--text-warning);border-radius:6px;background:var(--bg-warning,color-mix(in srgb,var(--text-warning) 12%,transparent));color:var(--text-secondary);font-size:12px;line-height:1.4}
 .stackctl{font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:5px;white-space:nowrap}
+/* "Eligible first" checkbox and the Debug button share the left of the sub-row.
+   The Debug button keeps the app's standard btn-sm size (32px tall, auto width —
+   like the Revert/Save buttons) everywhere; the mobile .ttop .btn{width:100%;
+   min-height:40px} stretch below must not reach it. */
+.ttopsub-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.ttop .ttopsub .pr-debug-btn{width:auto;min-height:32px;flex:0 0 auto}
 
 /* Single movie explorer: organized as inputs -> score breakdown */
 .explainer{font-size:12px;color:var(--text-secondary);line-height:1.45;margin:-.25rem 0 1rem;max-width:760px}
@@ -287,7 +293,6 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
   .ttopmain .fieldrow{white-space:nowrap;gap:6px}
   .ttopmain .fieldrow span:first-child{font-size:11px}
   .ttopmain .fieldrow .form-select{max-width:90px}
-  .ttopmain .btn{min-width:82px;padding-left:8px;padding-right:8px}
   .scorewrap{display:grid;grid-template-columns:auto 1fr;align-items:center;width:100%}
   .snum{font-size:34px}
   .scorewrap > div{min-width:0}
@@ -301,13 +306,11 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
   .ttopmain .fieldrow{gap:5px}
   .ttopmain .fieldrow span:first-child{font-size:10px}
   .ttopmain .fieldrow .form-select{max-width:78px}
-  .ttopmain .btn{min-width:74px;font-size:11px;padding-left:6px;padding-right:6px}
   .twrap table{min-width:620px}
 }
 
 
 /* Desktop/table fit and refined phone toolbar layout */
-.ttop-actions{display:inline-flex;gap:8px;align-items:center}
 @media (min-width:761px){
   .twrap table{min-width:0}
 }
@@ -315,17 +318,12 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
 @media (max-width:760px){
   .ttopmain{
     display:grid;
-    grid-template-columns:minmax(0,1fr) minmax(0,1fr);
+    grid-template-columns:minmax(0,1fr);
     gap:10px;
     align-items:end;
   }
-  .ttopmain > .fieldrow:first-child{grid-column:1;grid-row:1}
-  .ttopmain > .ttop-actions{grid-column:2;grid-row:1}
-  .ttopmain > .overctl{grid-column:1 / -1;grid-row:2;margin-left:0}
-  .ttopmain > #prunestat{grid-column:1 / -1;grid-row:3}
-  .ttopmain .ttop-actions{display:flex;gap:8px;align-items:end;width:100%}
-  .ttopmain .ttop-actions .btn{flex:1 1 auto;min-width:0!important;width:auto}
-  .ttopmain .ttop-actions .pr-debug-btn{flex:0 0 auto}
+  .ttopmain > .overctl{grid-column:1;margin-left:0}
+  .ttopmain > #prunestat{grid-column:1}
   .ttopmain .fieldrow{
     width:auto;
     min-width:0;
@@ -353,19 +351,10 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
   }
   .ttopmain .overctl > span:first-child{grid-area:label}
   .ttopmain .overctl > .score-gb-input{grid-area:input}
-  .ttopmain .btn{
-    min-width:0!important;
-    width:100%;
-    height:44px;
-    align-self:end;
-    padding-left:10px;
-    padding-right:10px;
-  }
 }
 
 @media (max-width:380px){
   .ttopmain{gap:8px}
-  .ttopmain .btn{font-size:12px;padding-left:8px;padding-right:8px}
   .ttopmain .fieldrow .form-select,
   .ttopmain .fieldrow .score-gb-input{height:42px}
 }
@@ -555,16 +544,9 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
 
 <div class="card">
   <div class="slbl">Library</div>
-  <div class="paneldesc" style="margin:.2rem 0 .6rem">Every movie from your monitored library paths as of the last run, using merged Plex/Jellyfin data — scored live with the settings on screen. Simulate (or any Live run) refreshes it.</div>
+  <div class="paneldesc" style="margin:.2rem 0 .6rem">Every movie from your monitored library paths as of the last run, using merged Plex/Jellyfin data — scored live with the settings on screen. Simulate (or any Cleanup) refreshes it.</div>
   <div class="ttop">
     <div class="ttoprow ttopmain">
-      <span class="ttop-actions">
-        {% if debug_mode %}
-        <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-snapshot"
-                onclick="prRunDebug('/api/debug/library-snapshot', 'Library snapshot state', this)"
-                title="Debug: what the current library snapshot holds">Debug</button>
-        {% endif %}
-      </span>
       <label class="fieldrow overctl" title="Pretend the disk is this many GB over the Headroom target — # marks what a run would delete">
         <span>Over headroom calculator</span>
         <span class="input-group input-group-sm score-gb-input">
@@ -575,10 +557,17 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
       <span id="prunestat" class="prunestat"></span>
     </div>
     <div class="ttoprow ttopsub">
-      <label class="stackctl" title="Keep eligible/prunable rows grouped above filtered rows while still sorting within each group">
-        <input class="form-check-input" type="checkbox" id="stack-eligible" checked onchange="renderT()">
-        <span>Eligible first</span>
-      </label>
+      <div class="ttopsub-left">
+        <label class="stackctl" title="Keep eligible/prunable rows grouped above filtered rows while still sorting within each group">
+          <input class="form-check-input" type="checkbox" id="stack-eligible" checked onchange="renderT()">
+          <span>Eligible first</span>
+        </label>
+        {% if debug_mode %}
+        <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn" id="btn-debug-snapshot"
+                onclick="prRunDebug('/api/debug/library-snapshot', 'Library snapshot state', this)"
+                title="Debug: what the current library snapshot holds">Debug</button>
+        {% endif %}
+      </div>
       <span id="tstat" class="toolbarstat"></span>
     </div>
   </div>

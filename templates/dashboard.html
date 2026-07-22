@@ -516,15 +516,15 @@
       <div class="stat-card">
         {% set is_live = run_mode == 'headroom' %}
         {% set mode_labels = {
-          'paused': 'Paused', 'headroom': 'Live',
+          'paused': 'Paused', 'headroom': 'Automatic Cleanup',
         } %}
         <div class="metric-topline">
           <div class="label">Last Run</div>
           {% set run_mode_config_href = '/config?onboarding=connections#automatic-run-mode' if connection_onboarding_needed else '/config#automatic-run-mode' %}
           <a class="pr-pill {{ 'mode-live' if is_live else 'mode-debug' }} dashboard-mode-link"
              href="{{ run_mode_config_href }}"
-             title="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Automatic Run Mode settings' }}"
-             aria-label="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Automatic Run Mode settings' }}">
+             title="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Scheduler Mode settings' }}"
+             aria-label="{{ 'Open Configuration connections setup' if connection_onboarding_needed else 'Open Scheduler Mode settings' }}">
             {{ mode_labels.get(run_mode, run_mode) }}
           </a>
         </div>
@@ -615,8 +615,16 @@
     .dashboard-tip-wrap[data-hover-tip]:not([data-hover-tip=""]) {
       cursor: help;
     }
-    .dashboard-tip-wrap .dashboard-live-btn:disabled {
+    /* Ghost the Cleanup / Debug Cleanup button exactly like the Stop button beside it:
+       the same dim opacity + desaturation, and no bright warning/danger fill on tap.
+       pointer-events:none already blocks the button's own :hover/:active (the wrap keeps
+       its "why disabled" tooltip), so a press can't flash it the way an un-ghosted
+       btn-outline-warning would — matching Stop's non-reactive disabled state. */
+    .dashboard-tip-wrap .dashboard-cleanup-btn:disabled {
       pointer-events: none;
+      opacity: .34;
+      filter: grayscale(.45);
+      cursor: not-allowed;
     }
     .dashboard-run-tooltip {
       position: fixed;
@@ -849,16 +857,22 @@
   <div class="card-header d-flex align-items-center" style="gap:10px;flex-wrap:wrap;">
     Run Controls
     <div class="ms-auto d-flex gap-2 flex-wrap">
-      <span class="dashboard-tip-wrap" data-hover-tip="{{ live_state.simulate_tooltip if live_state.simulate_disabled else '' }}">
+      <span class="dashboard-tip-wrap" data-hover-tip="{{ cleanup_state.simulate_tooltip if cleanup_state.simulate_disabled else '' }}">
         <button class="btn btn-sm btn-outline-secondary" onclick="triggerRun('debug_sim')" id="btn-sim"
-                {% if live_state.simulate_disabled %}disabled{% endif %}>
+                {% if cleanup_state.simulate_disabled or run_active %}disabled{% endif %}>
           Simulate
         </button>
       </span>
-      <span class="dashboard-tip-wrap" data-hover-tip="{{ live_state.live_tooltip if live_state.live_disabled else '' }}">
-        <button class="btn btn-sm btn-danger-action dashboard-live-btn btn-morph" onclick="liveRun('headroom', 'btn-live')" id="btn-live"
-                {% if live_state.live_disabled %}disabled{% endif %}>
-          <span class="btn-morph-label">Live Run</span>
+      {# Debug mode replaces the Cleanup button with a yellow Debug Cleanup: it
+         mirrors the cleanup tick but deletes nothing. It ignores the live/safety
+         thresholds, yet still ghosts until a Simulate has built the queue it
+         replays (cleanup_state.debug_disabled). #}
+      <span class="dashboard-tip-wrap" data-hover-tip="{{ (cleanup_state.debug_tooltip if cleanup_state.debug_disabled else '') if debug_mode else (cleanup_state.cleanup_tooltip if cleanup_state.cleanup_disabled else '') }}">
+        <button class="btn btn-sm {{ 'btn-outline-warning pr-debug-btn' if debug_mode else 'btn-danger-action' }} dashboard-cleanup-btn btn-morph"
+                onclick="runCleanup('{{ 'debug_cleanup' if debug_mode else 'headroom' }}', 'btn-cleanup')" id="btn-cleanup"
+                {% if (cleanup_state.debug_disabled if debug_mode else cleanup_state.cleanup_disabled) or run_active %}disabled{% endif %}
+                {% if debug_mode %}title="Debug Cleanup — mirrors the cleanup tick from the marked queue but deletes nothing (produces a diagnostic log)"{% endif %}>
+          <span class="btn-morph-label">{{ 'Debug Cleanup (Dry Run)' if debug_mode else 'Cleanup' }}</span>
         </button>
       </span>
       <button class="btn btn-sm dashboard-stop-btn" onclick="stopRun()" id="btn-stop"
@@ -869,16 +883,11 @@
       <button class="btn btn-sm btn-icon run-help-toggle" type="button" id="btn-run-help"
               onclick="toggleRunHelp()" aria-controls="run-help" aria-expanded="false"
               title="Show run-control help">i</button>
-      {% if debug_mode %}
-      <button class="btn btn-sm btn-outline-warning pr-debug-btn" type="button" id="btn-debug-run-state"
-              onclick="prRunDebug('/api/debug/run-state', 'Run &amp; engine state', this)"
-              title="Debug: run, scheduler, storage, and connection state">Debug</button>
-      {% endif %}
     </div>
   </div>
   <div class="run-help" id="run-help">
     <strong>Simulate</strong> previews deletions without touching files.
-    <strong>Live Run</strong> deletes eligible movies to meet your thresholds immediately —
+    <strong>Cleanup</strong> deletes eligible movies to meet your thresholds immediately —
     the deletion delay and daily schedule apply to automatic runs only.
     The Storage card's <strong>↻</strong> refreshes disk and library numbers only.
   </div>
@@ -886,7 +895,7 @@
     <div class="rp-head">
       <span class="pr-pill rp-pill is-idle" id="rp-pill" onclick="jumpToLogSection('errors')">Idle</span>
       <span class="rp-trigger" id="rp-trigger"></span>
-      <span class="rp-msg" id="rp-msg">{% if live_state.space_satisfied %}No runs yet — space limits are satisfied.{% elif live_state.simulate_disabled %}No runs yet — finish setup in Configuration, then start with Simulate.{% else %}No runs yet — start with Simulate to preview a cleanup.{% endif %}</span>
+      <span class="rp-msg" id="rp-msg">{% if cleanup_state.space_satisfied %}No runs yet — space limits are satisfied.{% elif cleanup_state.simulate_disabled %}No runs yet — finish setup in Configuration, then start with Simulate.{% else %}No runs yet — start with Simulate to preview a cleanup.{% endif %}</span>
     </div>
     <div class="rp-steps" id="rp-steps">
       <div class="rp-step" data-step="checking"><span class="rp-dot">1</span><span class="rp-dot-label">Checking</span></div>
@@ -983,14 +992,21 @@
 <script>
 let _active       = {{ 'true' if run_active else 'false' }};
 const _paused     = {{ 'true' if run_mode == 'paused' else 'false' }};
-let _summaryOk = {{ 'false' if live_state.summary_disabled else 'true' }};
-let _simulateOk = {{ 'false' if live_state.simulate_disabled else 'true' }};
-let _liveOk = {{ 'false' if live_state.live_disabled else 'true' }};
-let _summaryDisabledMessage = {{ (live_state.summary_tooltip or 'Connect the selected media server first.')|tojson }};
-let _simulateDisabledMessage = {{ (live_state.simulate_tooltip or 'Fix Space Thresholds first.')|tojson }};
-let _liveDisabledMessage = {{ (live_state.live_tooltip or 'Fix Space Thresholds first.')|tojson }};
+let _summaryOk = {{ 'false' if cleanup_state.summary_disabled else 'true' }};
+let _simulateOk = {{ 'false' if cleanup_state.simulate_disabled else 'true' }};
+// In Debug mode the Live button IS the yellow Debug Cleanup. It ignores the
+// live/safety thresholds (deletes nothing) but ghosts until a Simulate has built
+// the queue it replays — that's cleanup_state.debug_disabled/debug_tooltip. Bind
+// _cleanupOk / _cleanupDisabledMessage to the debug state so the initial JS matches the
+// debug-aware server render and stays matched after status polls (_applyCleanupState).
+let _cleanupOk = {{ 'false' if (cleanup_state.debug_disabled if debug_mode else cleanup_state.cleanup_disabled) else 'true' }};
+let _summaryDisabledMessage = {{ (cleanup_state.summary_tooltip or 'Connect the selected media server first.')|tojson }};
+let _simulateDisabledMessage = {{ (cleanup_state.simulate_tooltip or 'Fix Space Thresholds first.')|tojson }};
+let _cleanupDisabledMessage = {{ ((cleanup_state.debug_tooltip if debug_mode else cleanup_state.cleanup_tooltip) or 'Fix Space Thresholds first.')|tojson }};
 let _nextRunTime  = null;
 let _autopauseReason = {{ (autopause_reason or '')|tojson }};
+// Debug mode: the Cleanup button is the yellow Debug Cleanup (no-delete).
+const _debugMode = {{ debug_mode|tojson }};
 // Storage-bar threshold markers; refreshed by status polls. Headroom/Redline
 // are free-space targets; the library cap is a library-size target.
 let _storageHeadroomGb   = {{ headroom_gb|tojson }};
@@ -1001,7 +1017,11 @@ let _storageLibraryCapGb = {{ max_library_gb|tojson }};
 let _headroomWindowUsedToday = {{ headroom_window_used_today|tojson }};
 // Live blocked because a target exceeds the safety percentage — the breach
 // note must not promise a freed amount no run can deliver.
-let _safetyBlocked = {{ live_state.space_thresholds.get('safety_blocked', false)|tojson }};
+let _safetyBlocked = {{ cleanup_state.space_thresholds.get('safety_blocked', false)|tojson }};
+// No current deletion plan (cache wiped on a code update, or settings changed
+// since the last Simulate): the app knows the live deficit but NOT what a run
+// would delete, so the breach note must ask for a Simulate, not promise a freed GB.
+let _simulateRequired = {{ cleanup_state.space_thresholds.get('simulate_required', false)|tojson }};
 // Deletion-delay state: with a delay set, a daily run may only MARK — the
 // red countdown and the breach note key off whether marks are ripe and when
 // the next marked deletion lands.
@@ -1015,7 +1035,7 @@ let _markedEvent = {
   count: {{ delete_forecast.event_count|tojson }},
   bytes: {{ delete_forecast.event_bytes|tojson }},
 };
-let _confirmLiveMode = null;
+let _confirmCleanupMode = null;
 let _summaryBusy = false;
 let _summaryPollActive = false;
 let _runStartPending = false;
@@ -1067,14 +1087,15 @@ document.addEventListener('click', (ev) => {
 
 
 
-function _resetLiveConfirm() {
-  _confirmLiveMode = null;
-  if (_runStartPending && _runStartButtonId === 'btn-live') return;
-  _morphButtonText(document.getElementById('btn-live'), 'Live Run');
+function _resetCleanupConfirm() {
+  _confirmCleanupMode = null;
+  if (_runStartPending && _runStartButtonId === 'btn-cleanup') return;
+  _morphButtonText(document.getElementById('btn-cleanup'), _debugMode ? 'Debug Cleanup (Dry Run)' : 'Cleanup');
 }
 
 function _runButtonDefaultLabel(id) {
-  return id === 'btn-live' ? 'Live Run' : (id === 'btn-sim' ? 'Simulate' : '');
+  return id === 'btn-cleanup' ? (_debugMode ? 'Debug Cleanup (Dry Run)' : 'Cleanup')
+       : (id === 'btn-sim' ? 'Simulate' : '');
 }
 
 function _setRunStartPending(on, buttonId = null) {
@@ -1108,16 +1129,16 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = '';
 });
 
-function _isLiveConfirmTarget(target) {
-  return !!target?.closest?.('#btn-live');
+function _isCleanupConfirmTarget(target) {
+  return !!target?.closest?.('#btn-cleanup');
 }
 
-// While Live Run is asking for confirmation, any click away from the Live Run
+// While Cleanup is asking for confirmation, any click away from the Cleanup
 // button backs out of the confirmation instead of activating another control.
 document.addEventListener('click', (ev) => {
-  if (!_confirmLiveMode) return;
-  if (_isLiveConfirmTarget(ev.target)) return;
-  _resetLiveConfirm();
+  if (!_confirmCleanupMode) return;
+  if (_isCleanupConfirmTarget(ev.target)) return;
+  _resetCleanupConfirm();
   ev.preventDefault();
   ev.stopPropagation();
 }, true);
@@ -1361,6 +1382,9 @@ function renderProgress(p) {
   const interrupted = !active && !success;
   const isSim = mode === 'debug_sim';
   const isInfo = mode === 'debug_info';
+  // Debug Cleanup: drives the cleanup (deleting) path but deletes nothing. It reads
+  // "Debugging" in yellow — not the red "Running" of a real Cleanup.
+  const isDebugCleanup = mode === 'debug_cleanup';
 
   if (p.started_at && p.started_at !== _rpRunKey) { _rpRunKey = p.started_at; _rpMaxIdx = 0; _rpStageKey = null; _rpScanDoneAt = 0; _rpFreeDoneAt = 0; }
 
@@ -1377,7 +1401,8 @@ function renderProgress(p) {
   // Active run: a simulation stays blue and reads "Simulating"; a Live
   // (deleting) run turns red and reads "Running". No dot or fade here.
   if (active) {
-    if (isSim) { pill.textContent = 'Simulating'; }
+    if (isDebugCleanup) { pill.textContent = 'Debugging'; pill.classList.add('is-warn'); }
+    else if (isSim) { pill.textContent = 'Simulating'; }
     else if (isInfo) { pill.textContent = 'Running'; }
     else { pill.textContent = 'Running'; pill.classList.add('is-live'); }
   }
@@ -1393,7 +1418,7 @@ function renderProgress(p) {
 
   document.getElementById('rp-trigger').textContent = (active && p.trigger) ? ('· ' + _rpTriggerLabel(p.trigger)) : '';
   document.getElementById('rp-msg').textContent = p.message || '';
-  document.getElementById('rp-step-cleanup-label').textContent = isInfo ? 'Summary' : (isSim ? 'Simulating' : 'Deleting');
+  document.getElementById('rp-step-cleanup-label').textContent = isInfo ? 'Summary' : (isDebugCleanup ? 'Debugging' : (isSim ? 'Simulating' : 'Deleting'));
 
   let activeIdx = _RP_STEP_INDEX[phase];
   if (activeIdx === undefined) activeIdx = 0;
@@ -1454,7 +1479,7 @@ function renderProgress(p) {
       }
     } else if (phase === 'deleting' || phase === 'simulating') {
       const tgt = Number(p.target_bytes) || 0, freed = Number(p.bytes_freed) || 0;
-      label = isSim ? 'Simulating cleanup' : 'Freeing space';
+      label = isDebugCleanup ? 'Freeing space (dry run)' : (isSim ? 'Simulating cleanup' : 'Freeing space');
       pctText = tgt ? (_formatReclaimedBytes(freed) + ' / ' + _formatReclaimedBytes(tgt)) : _formatReclaimedBytes(freed);
       if (tgt && freed >= tgt) {
         // Target met; the run summary + Radarr cleanup emit nothing.
@@ -1845,7 +1870,7 @@ async function loadDeletedHistory() {
   // Ghost the actions until THIS view's rows land — a click mid-load would
   // download the previous view's rows under this view's filename, and the
   // Erase button could linger from a prior deleted-history view. _dhLoading
-  // keeps the status poll's _applyLiveState from un-ghosting them mid-fetch.
+  // keeps the status poll's _applyCleanupState from un-ghosting them mid-fetch.
   _dhLoading = true;
   const dlBtn = document.getElementById('btn-download-deleted-log');
   if (dlBtn) dlBtn.disabled = true;
@@ -1865,7 +1890,7 @@ async function loadDeletedHistory() {
       summary.textContent = _dhView === 'marked'
         ? (imminentCount
             ? (_redlineOnly
-                ? `Redline is breached — ${imminentCount} marked to delete on the next Live Run, ${marked.length - imminentCount} eligible behind them.`
+                ? `Redline is breached — ${imminentCount} marked to delete on the next Cleanup, ${marked.length - imminentCount} eligible behind them.`
                 : `${imminentCount} marked for deletion · ${marked.length - imminentCount} more eligible in deletion order.`)
             : `${marked.length} ${marked.length === 1 ? 'movie is' : 'movies are'} eligible in deletion order — none currently marked.`)
         : `${count} ${count === 1 ? 'movie has' : 'movies have'} been pruned · ${reclaimed} reclaimed.`;
@@ -1962,25 +1987,34 @@ function _dashboardTooltip() {
   return _dashboardTooltipEl;
 }
 
-function _applyLiveState(liveState) {
-  if (!liveState) return;
-  _summaryOk = !liveState.summary_disabled;
-  _simulateOk = !liveState.simulate_disabled;
-  _liveOk = !liveState.live_disabled;
-  _safetyBlocked = !!(liveState.space_thresholds && liveState.space_thresholds.safety_blocked);
-  _summaryDisabledMessage = liveState.summary_tooltip || 'Connect the selected media server first.';
-  _simulateDisabledMessage = liveState.simulate_tooltip || 'Fix Space Thresholds first.';
-  _liveDisabledMessage = liveState.live_tooltip || 'Fix Space Thresholds first.';
+function _applyCleanupState(cleanupState) {
+  if (!cleanupState) return;
+  _summaryOk = !cleanupState.summary_disabled;
+  _simulateOk = !cleanupState.simulate_disabled;
+  // The Live button morphs into the yellow Debug Cleanup in Debug mode. It
+  // ignores the live/safety thresholds (deletes nothing) but ghosts until a
+  // Simulate has built the queue it replays — that's cleanupState.debug_disabled.
+  // Bind btn-cleanup to the debug state in Debug mode, else the live state. Without
+  // this the status poll would overwrite the correct server render seconds after
+  // load (re-blocking on a safety target, or un-ghosting with no queue).
+  const _cleanupButtonBlocked = _debugMode ? cleanupState.debug_disabled : cleanupState.cleanup_disabled;
+  _cleanupOk = !_cleanupButtonBlocked;
+  _safetyBlocked = !!(cleanupState.space_thresholds && cleanupState.space_thresholds.safety_blocked);
+  _simulateRequired = !!(cleanupState.space_thresholds && cleanupState.space_thresholds.simulate_required);
+  _summaryDisabledMessage = cleanupState.summary_tooltip || 'Connect the selected media server first.';
+  _simulateDisabledMessage = cleanupState.simulate_tooltip || 'Fix Space Thresholds first.';
+  _cleanupDisabledMessage = (_debugMode ? cleanupState.debug_tooltip : cleanupState.cleanup_tooltip)
+                         || 'Fix Space Thresholds first.';
 
   // The hover tooltip explains why a button is blocked, so it must be empty when
   // the button is enabled. Using the *DisabledMessage fallbacks here would show a
   // stale "Fix Space Thresholds" hint over a perfectly valid, clickable button.
   // The fallbacks are still used for the click-toast on a disabled button below.
-  const _simulateHoverTip = liveState.simulate_disabled ? _simulateDisabledMessage : '';
-  const _liveHoverTip = liveState.live_disabled ? _liveDisabledMessage : '';
+  const _simulateHoverTip = cleanupState.simulate_disabled ? _simulateDisabledMessage : '';
+  const _cleanupHoverTip = _cleanupButtonBlocked ? _cleanupDisabledMessage : '';
 
   document.getElementById('btn-sim')?.closest('[data-hover-tip]')?.setAttribute('data-hover-tip', _simulateHoverTip);
-  document.getElementById('btn-live')?.closest('[data-hover-tip]')?.setAttribute('data-hover-tip', _liveHoverTip);
+  document.getElementById('btn-cleanup')?.closest('[data-hover-tip]')?.setAttribute('data-hover-tip', _cleanupHoverTip);
   _applyButtonStates();
 }
 
@@ -1990,11 +2024,11 @@ function _applyLiveState(liveState) {
 function _applyButtonStates() {
   const busy = _active || _summaryBusy || _runStartPending;
   const sim = document.getElementById('btn-sim');
-  const live = document.getElementById('btn-live');
+  const live = document.getElementById('btn-cleanup');
   const stopBtn = document.getElementById('btn-stop');
   const refresh = document.getElementById('btn-summary-refresh');
   if (sim) sim.disabled = busy || !_simulateOk;
-  if (live) live.disabled = busy || !_liveOk;
+  if (live) live.disabled = busy || !_cleanupOk;
   if (stopBtn) stopBtn.disabled = !_active || _runStartPending;
   if (refresh) {
     refresh.disabled = busy || !_summaryOk;
@@ -2115,7 +2149,7 @@ function _updateBreachNote() {
   // and the specific crossed target's row goes red with it.
   const el = document.getElementById('breach-note');
   if (!el) return;
-  const d = _liveDeficits();
+  const d = _currentDeficits();
   [['headroom', 'target-row-headroom'], ['redline', 'target-row-redline'], ['cap', 'target-row-cap']]
     .forEach(([key, id]) => {
       document.getElementById(id)?.classList.toggle('is-breached', !!(d && d[key] > 0));
@@ -2137,7 +2171,19 @@ function _updateBreachNote() {
     const evGb = prGbAmount((ev.bytes || 0) / 1e9);
     const evN = `${ev.count} movie${ev.count === 1 ? '' : 's'}`;
     if (_safetyBlocked) {
-      text = 'Over space limits — but a target is past the safety percentage, so Live can\'t run.';
+      // Debug Cleanup ignores the safety percentage (it deletes nothing), so
+      // don't tell the user Live can't run while the yellow button is live.
+      text = _debugMode
+        ? 'Over space limits — a target is past the safety percentage (a real Cleanup is blocked), but Debug Cleanup ignores it and previews what would be removed.'
+        : 'Over space limits — but a target is past the safety percentage, so Automatic Cleanup can\'t run.';
+    } else if (_simulateRequired) {
+      // No current plan (e.g. the cache was wiped on a code update, or settings
+      // changed since the last Simulate). The deficit is known from live disk, but
+      // NOT what a run would delete — ask for a Simulate instead of claiming a
+      // freed amount the app can't know yet.
+      text = d.redline > 0
+        ? `Redline hit — ~${prGbAmount(d.redline)} GB below the floor. Run Simulate to build the deletion plan.`
+        : `Over space limits — ~${prGbAmount(d.max)} GB over. Run Simulate to build the deletion plan.`;
     } else if (d.redline > 0) {
       // Redline frees only back to its floor (never up to the headroom target),
       // ignoring the daily window and the deletion delay.
@@ -2314,10 +2360,10 @@ function _initDashboardTooltips() {
   });
 }
 
-function setRunning(on, live) {
+function setRunning(on, live, debugLive) {
   _active = on;
-  _resetLiveConfirm();
-  if (window.prSetHeaderRunning) window.prSetHeaderRunning(on, live);
+  _resetCleanupConfirm();
+  if (window.prSetHeaderRunning) window.prSetHeaderRunning(on, live, debugLive);
   const stopBtn = document.getElementById('btn-stop');
   if (stopBtn) stopBtn.title = on ? 'Stop the active run' : 'No active run to stop';
   _applyButtonStates();
@@ -2325,33 +2371,40 @@ function setRunning(on, live) {
   _updateCountdown();
 }
 
-function liveRun(mode, btnId) {
+function runCleanup(mode, btnId) {
   if (_active || _runStartPending) return;
-  if (!_liveOk) {
-    showToast(_liveDisabledMessage, 'warning');
+  if (mode === 'debug_cleanup') {
+    // No-delete diagnostic run: no "frees ~X GB" confirm (it frees nothing), and
+    // it uses the Simulate gate, so the button's own disabled state is the gate —
+    // not _cleanupOk (which reflects the live/safety thresholds it deliberately skips).
+    triggerRun('debug_cleanup');
     return;
   }
-  if (_confirmLiveMode !== mode) {
-    _resetLiveConfirm();
-    _confirmLiveMode = mode;
+  if (!_cleanupOk) {
+    showToast(_cleanupDisabledMessage, 'warning');
+    return;
+  }
+  if (_confirmCleanupMode !== mode) {
+    _resetCleanupConfirm();
+    _confirmCleanupMode = mode;
     const btn = document.getElementById(btnId);
     // Scale the question: the user should confirm a NUMBER, not a mystery.
     // Mirrors the engine's target math — max of the headroom deficit
     // (used-based), the redline deficit (restore free to the Headroom floor),
     // and the library-cap deficit.
-    const deficit = _liveDeficits()?.max ?? null;
+    const deficit = _currentDeficits()?.max ?? null;
     const label = (deficit != null && deficit > 0)
       ? `Are you sure? Frees ~${prGbAmount(deficit)} GB`
       : 'Are you sure?';
     if (btn) _morphButtonText(btn, label, { noShrink: true });
     return;
   }
-  _resetLiveConfirm();
+  _resetCleanupConfirm();
   triggerRun(mode);
 }
 
-function _liveDeficits() {
-  // What a Live run would try to free right now, per target and combined —
+function _currentDeficits() {
+  // What a Cleanup would try to free right now, per target and combined —
   // the same max() formula the engine uses to compute its target. null =
   // unknown (no disk reading yet); max 0 = limits satisfied.
   const snap = _lastStorageSnapshot;
@@ -2404,7 +2457,7 @@ async function syncStatus({refreshLog = true} = {}) {
     const wasActive = _active;
     _nextRunTime = d.next_run_time || null;
     _autopauseReason = d.run_mode_autopause_reason || '';
-    _applyLiveState(d.live_state);
+    _applyCleanupState(d.cleanup_state);
     if (!_summaryPollActive) _summaryBusy = !!d.summary_active;
     if (d.headroom_gb !== undefined) _storageHeadroomGb = d.headroom_gb;
     if (d.redline_gb !== undefined) _storageRedlineGb = d.redline_gb;
@@ -2428,10 +2481,10 @@ async function syncStatus({refreshLog = true} = {}) {
     _updateDeletedCounter(d.deleted_count || 0, d.deleted_reclaimed_bytes || 0, d.deleted_reclaimed_label || '',
                           d.marked_count !== undefined ? d.marked_count : null,
                           d.marked_imminent_count !== undefined ? d.marked_imminent_count : null);
-    if (d.run_active !== _active) setRunning(d.run_active, d.run_active && d.run_live);
-    // Keep the badge's Simulating/Running label right even when the run was
-    // already active on load (no transition to carry the live flag through).
-    else if (window.prSetHeaderRunning) window.prSetHeaderRunning(!!d.run_active, !!(d.run_active && d.run_live));
+    if (d.run_active !== _active) setRunning(d.run_active, d.run_active && d.run_cleanup, d.run_active && d.run_debug_cleanup);
+    // Keep the badge's Simulating/Running/Debugging label right even when the run
+    // was already active on load (no transition to carry the flags through).
+    else if (window.prSetHeaderRunning) window.prSetHeaderRunning(!!d.run_active, !!(d.run_active && d.run_cleanup), !!(d.run_active && d.run_debug_cleanup));
     if (d.run_active) {
       startStream(false);
       if (refreshLog) await refreshLastLog(_ACTIVE_LOG_LINES);
@@ -2464,13 +2517,16 @@ function startStream(clear = true) {
 }
 
 async function triggerRun(mode) {
-  _resetLiveConfirm();
+  _resetCleanupConfirm();
   if (_active || _runStartPending) return;
   if (mode === 'debug_sim' && !_simulateOk) {
     showToast(_simulateDisabledMessage, 'warning');
     return;
   }
-  const pendingButtonId = mode === 'debug_sim' ? 'btn-sim' : (mode === 'headroom' ? 'btn-live' : null);
+  // Debug Cleanup shares the Live button (btn-cleanup), so it ghosts and shows
+  // "Starting…" then stays ghosted for the run, exactly like a real Cleanup.
+  const pendingButtonId = mode === 'debug_sim' ? 'btn-sim'
+    : ((mode === 'headroom' || mode === 'debug_cleanup') ? 'btn-cleanup' : null);
   _setRunStartPending(true, pendingButtonId);
   _setTerm('Starting run…');
 
@@ -2497,7 +2553,7 @@ async function triggerRun(mode) {
       return;
     }
     _setRunStartPending(false, pendingButtonId);
-    setRunning(true, mode === 'headroom');
+    setRunning(true, mode === 'headroom', mode === 'debug_cleanup');
     startStream(true);
     _rpRunKey = null; _rpMaxIdx = 0;
     refreshProgress();
@@ -2545,8 +2601,8 @@ document.addEventListener('keydown', (e) => {
 });
 if (_active) { setRunning(true); startStream(false); }
 if (_paused) {
-  const liveBtn = document.getElementById('btn-live');
-  if (liveBtn && _liveOk) liveBtn.title = 'Manual one-time Live Run while paused: deletes to your thresholds now (no delay, no daily window); does not enable the scheduler.';
+  const cleanupBtn = document.getElementById('btn-cleanup');
+  if (cleanupBtn && _cleanupOk) cleanupBtn.title = 'Manual one-time Cleanup while paused: deletes to your thresholds now (no delay, no daily window); does not enable the scheduler.';
 }
 
 // Countdown updater (every second)
@@ -2559,7 +2615,7 @@ function _updateCountdown() {
   // configured daily run time. With a deletion delay set, a daily run that
   // would only MARK stays un-red: red means files are removed, so it needs
   // ripe (aged-past-the-delay) marks.
-  const d = _liveDeficits();
+  const d = _currentDeficits();
   const delayGate = (_deleteDelayDays || 0) <= 0 || (_markedRipeCount || 0) > 0;
   const nextTickPrunes = !!d && (d.redline > 0
     || ((d.headroom > 0 || d.cap > 0) && !_headroomWindowUsedToday && delayGate
@@ -2577,7 +2633,7 @@ function _updateCountdown() {
     // The server sends next_run_time=null while automatic runs are blocked
     // (connection down, bad thresholds) — that's a real state, not a pending
     // calculation, so don't promise one that will never finish.
-    el.textContent = _liveOk ? 'Next run: calculating…'
+    el.textContent = _cleanupOk ? 'Next run: calculating…'
       : 'No run scheduled — fix Connections / Space Thresholds first';
     return;
   }

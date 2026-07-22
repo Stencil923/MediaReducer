@@ -379,7 +379,7 @@
   <div class="accordion-item" id="automatic-run-mode">
     <h2 class="accordion-header">
       <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#s-mode">
-        Automatic Run Mode
+        Scheduler Mode
       </button>
     </h2>
     <div id="s-mode" class="accordion-collapse collapse show">
@@ -391,13 +391,13 @@
         {% set connection_required_ok = connection_health.critical_ok %}
         {% set connection_disabled_text = connection_health.required_tooltip or 'Connect the selected media server first.' %}
         {% set simulate_required = space_thresholds.simulate_required and config.RUN_MODE != 'headroom' %}
-        {% set live_mode_ok = space_thresholds.ok_for_live and connection_required_ok and not simulate_required %}
-        {% set saved_mode_disabled = config.RUN_MODE == 'headroom' and not live_mode_ok %}
-        {% set live_disabled_text = connection_disabled_text if not connection_required_ok else (space_thresholds.live_tooltip or (space_thresholds.simulate_required_message if simulate_required else 'Fix Space Thresholds to enable Live.')) %}
-        {% set live_desc = 'Scheduled live cleanup. Enforces the free-space rules, plus the Library Size Cap when enabled. Run Simulate first to preview what it would delete.' %}
+        {% set cleanup_mode_ok = space_thresholds.ok_for_cleanup and connection_required_ok and not simulate_required %}
+        {% set saved_mode_disabled = config.RUN_MODE == 'headroom' and not cleanup_mode_ok %}
+        {% set cleanup_disabled_text = connection_disabled_text if not connection_required_ok else (space_thresholds.cleanup_tooltip or (space_thresholds.simulate_required_message if simulate_required else 'Fix Space Thresholds to enable Automatic Cleanup.')) %}
+        {% set cleanup_desc = 'Scheduled cleanup that enforces the free-space rules, plus the Library Size Cap when enabled. Run Simulate first to preview what it would delete.' %}
 
         {% if config.get('_RUN_MODE_AUTOPAUSE_REASON') and config.RUN_MODE == 'paused' %}
-        <div class="config-inline-warning mb-3">Live was paused automatically: {{ config.get('_RUN_MODE_AUTOPAUSE_REASON') }}</div>
+        <div class="config-inline-warning mb-3">Automatic Cleanup was paused automatically: {{ config.get('_RUN_MODE_AUTOPAUSE_REASON') }}</div>
         {% endif %}
         <div class="form-check config-card run-mode-card" id="mode-card-paused" aria-disabled="false">
           <input class="form-check-input" type="radio" name="RUN_MODE" id="mode-paused"
@@ -406,21 +406,21 @@
             <div class="run-mode-title">
               <span class="run-mode-name">Paused</span>
             </div>
-            <span class="run-mode-desc">Automatic cleanup is off. You can still run Simulate or a manual one-time Live Run from the Dashboard.</span>
+            <span class="run-mode-desc">Automatic cleanup is off. You can still run Simulate or a manual one-time Cleanup from the Dashboard.</span>
           </label>
         </div>
 
-        <div class="form-check config-card run-mode-card {{ 'run-mode-disabled' if not live_mode_ok else '' }}" id="mode-card-headroom" aria-disabled="{{ 'true' if not live_mode_ok else 'false' }}">
+        <div class="form-check config-card run-mode-card {{ 'run-mode-disabled' if not cleanup_mode_ok else '' }}" id="mode-card-headroom" aria-disabled="{{ 'true' if not cleanup_mode_ok else 'false' }}">
           <input class="form-check-input" type="radio" name="RUN_MODE" id="mode-headroom"
-                 value="headroom" {{ 'checked' if (config.RUN_MODE == 'headroom' and not saved_mode_disabled) else '' }} {{ 'disabled' if not live_mode_ok else '' }}>
+                 value="headroom" {{ 'checked' if (config.RUN_MODE == 'headroom' and not saved_mode_disabled) else '' }} {{ 'disabled' if not cleanup_mode_ok else '' }}>
           <label class="form-check-label" for="mode-headroom">
             <div class="run-mode-title">
-              <span class="run-mode-name">Live</span>
-              <span id="pill-headroom" class="pr-pill pr-pill--neutral">{{ ('Headroom: ' ~ config.HEADROOM_GB|commafy ~ ' GB') if (config.HEADROOM_GB or 0)|float > 0 else ('Headroom: redline only' if config.REDLINE_ONLY_MODE else 'Headroom: off') }}</span>
+              <span class="run-mode-name">Automatic Cleanup</span>
+              <span id="pill-headroom" class="pr-pill pr-pill--neutral">{{ ('Headroom: ' ~ config.HEADROOM_GB|commafy ~ ' GB') if (config.HEADROOM_GB or 0)|float > 0 else 'Headroom: off' }}</span>
               <span id="pill-redline" class="pr-pill pr-pill--neutral" {{ '' if redline_configured else 'hidden' }}>{{ ('Redline: ' ~ (config.REDLINE_GB|commafy) ~ ' GB') if redline_configured else 'Redline: —' }}</span>
               <span id="pill-live-cap" class="pr-pill pr-pill--neutral" {{ '' if library_cap_configured else 'hidden' }}>{{ ('Library size cap: ' ~ (config.MAX_LIBRARY_GB|commafy) ~ ' GB') if library_cap_configured else 'Library size cap: —' }}</span>
             </div>
-            <span id="desc-headroom" class="run-mode-desc" data-enabled-text="{{ live_desc }}" data-disabled-text="{{ live_disabled_text }}">{{ live_desc if live_mode_ok else live_disabled_text }}</span>
+            <span id="desc-headroom" class="run-mode-desc" data-enabled-text="{{ cleanup_desc }}" data-disabled-text="{{ cleanup_disabled_text }}">{{ cleanup_desc if cleanup_mode_ok else cleanup_disabled_text }}</span>
           </label>
         </div>
 
@@ -740,7 +740,7 @@
           <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-space" onclick="resetSectionToDefault('space')" {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>Reset to Default</button>
         </div>
 
-        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic mode is on — saving a threshold change pauses it until you run Simulate and re-enable Live.</div>
+        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic Cleanup is on — saving a threshold change pauses it until you run Simulate and re-enable it.</div>
         <div id="space-threshold-api-note" class="config-inline-warning mb-3" {{ 'hidden' if selected_media_apis_ready else '' }}>{{ 'Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.') }}</div>
         <div id="space-threshold-paths-note" class="config-inline-warning mb-3" {{ 'hidden' if thresholds_have_library or not selected_media_apis_ready else '' }}>Save a monitored directory first.</div>
 
@@ -766,14 +766,14 @@
               <span class="input-group-text">GB</span>
             </div>
             <div id="headroom-error" class="field-error">Enter a Headroom target in GB (0 = daily cleanup off), or untick it.</div>
-            <div class="form-text">Free space to keep available — the daily cleanup runs when free space falls below it; 0 turns this trigger off. Untick for redline-only mode: Redline (required) becomes the only deletion trigger.</div>
+            <div class="form-text">Free space to keep available; the daily cleanup runs when free space falls below it. Set 0, or untick, to turn this trigger off — a Redline floor and/or Library Size Cap can drive cleanup instead.</div>
           </div>
           <div class="col-md-6" id="redline-field">
             <label class="input-label" for="REDLINE_GB">Redline emergency floor</label>
             <div class="input-group gb-input-group">
               <div class="input-group-text">
                 <input class="form-check-input" type="checkbox" id="redline-enabled"
-                       {{ 'checked' if (has_monitor_dirs and config.REDLINE_GB is not none) else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
+                       {{ 'checked' if (has_monitor_dirs and config.REDLINE_GB is not none) else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
               </div>
               <input type="number" class="form-control" id="REDLINE_GB" name="REDLINE_GB"
                      value="{{ config.REDLINE_GB if (has_monitor_dirs and config.REDLINE_GB is not none) else (config.get('_REDLINE_GB_LAST') or '') }}" min="1" {% if headroom_active %}max="{{ config.HEADROOM_GB if has_monitor_dirs else 0 }}"{% endif %} aria-describedby="redline-error"
@@ -782,7 +782,7 @@
             </div>
             <div id="redline-error" class="field-error">Enter a Redline value before saving, or uncheck this option.</div>
             <div class="form-text">Optional. Deletes immediately when free space falls this low (checked every ~15 min) — no daily schedule, no deletion delay.</div>
-            <div id="no-trigger-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_active and config.REDLINE_GB is none and not config.MAX_LIBRARY_GB) else 'hidden' }}>No cleanup trigger is set — Live stays off until you set a Headroom target, a Redline floor, or a Library Size Cap.</div>
+            <div id="no-trigger-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_active and config.REDLINE_GB is none and not config.MAX_LIBRARY_GB) else 'hidden' }}>No cleanup trigger is set — Automatic Cleanup stays off until you set a Headroom target, a Redline floor, or a Library Size Cap.</div>
           </div>
         </div>
 
@@ -798,7 +798,7 @@
           <div class="input-group gb-input-group mb-2" id="cap-input-group">
             <div class="input-group-text">
               <input class="form-check-input" type="checkbox" id="cap-enabled"
-                     {{ 'checked' if library_cap_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
+                     {{ 'checked' if library_cap_enabled else '' }} {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>
             </div>
             <input type="number" class="form-control" id="MAX_LIBRARY_GB" name="MAX_LIBRARY_GB"
                    value="{{ config.MAX_LIBRARY_GB if library_cap_enabled else (config.get('_MAX_LIBRARY_GB_LAST') or '') }}" placeholder="e.g. 15000" min="1" step="100"
@@ -808,7 +808,6 @@
           </div>
           <div id="cap-error" class="field-error">Enter a Library Size Cap value before saving, or uncheck this option.</div>
           <div id="cap-paths-note" class="form-text" {{ 'hidden' if thresholds_have_library else '' }}>{{ 'Save a monitored directory first.' if selected_media_apis_ready else ('Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.')) }}</div>
-          <div id="cap-redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_enabled) else 'hidden' }}>Not used in redline-only mode — re-tick Headroom to use a cap.</div>
           <div class="form-text">Measure your library first with &#8635; on the Dashboard's Storage card, then set a cap below it.</div>
         </div>
 
@@ -816,18 +815,18 @@
 
         <div>
           <h6 class="mb-2">Deletion delay</h6>
-          <p class="section-desc mb-3">A grace period before a marked movie is actually deleted — time to protect it or change the rules first.</p>
+          <p class="section-desc mb-3">A grace period before a marked movie is deleted — time to protect it or change the rules first.</p>
           <div class="input-group gb-input-group mb-2" id="delete-delay-field">
             <input type="number" class="form-control" id="DELETE_DELAY_DAYS" name="DELETE_DELAY_DAYS"
                    value="{{ config.DELETE_DELAY_DAYS or 1 }}" min="1" max="365" step="1" inputmode="numeric"
                    onkeydown="if(['.',',','e','E','-'].includes(event.key))event.preventDefault()"
                    aria-describedby="delete-delay-error"
-                   {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or not headroom_enabled else '' }}>
+                   {{ 'disabled' if space_thresholds_locked or not thresholds_have_library or (not headroom_enabled and not library_cap_enabled) else '' }}>
             <span class="input-group-text">days</span>
           </div>
           <div id="delete-delay-error" class="field-error">Must be a whole number of days, 1–365.</div>
-          <div class="form-text">Minimum 1 — the earliest deletion is the next day's run. Redline and manual Live Runs skip the delay.</div>
-          <div id="delay-redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_enabled) else 'hidden' }}>Not used in redline-only mode — Redline deletes immediately at the floor.</div>
+          <div class="form-text">Minimum 1 — the earliest deletion is the next day's run. Redline and manual Cleanups skip the delay.</div>
+          <div id="delay-redline-only-note" class="form-text redline-only-note" {{ '' if (has_monitor_dirs and not headroom_enabled and not library_cap_enabled) else 'hidden' }}>Not used in redline-only mode — Redline deletes immediately at the floor.</div>
           <div id="delay-redline-advisory" class="form-text delay-redline-advisory" hidden></div>
         </div>
       </div>
@@ -856,7 +855,7 @@
                 <input type="url" class="form-control" id="IMDB_RATINGS_URL"
                        name="IMDB_RATINGS_URL" value="{{ config.IMDB_RATINGS_URL }}"
                        placeholder="https://datasets.imdbws.com/title.ratings.tsv.gz">
-                <div class="form-text">Required for Simulate and Live scoring. Downloaded automatically when needed.</div>
+                <div class="form-text">Required for Simulate and cleanup scoring. Downloaded automatically when needed.</div>
               </div>
               <div class="col-sm-5 col-md-4">
                 <label class="input-label" for="IMDB_RATINGS_MAX_AGE_DAYS">IMDb refresh interval</label>
@@ -933,8 +932,11 @@
                   <div class="form-text">Deletes cached movie data, storage stats, and the Filtering &amp; Scoring library snapshot, then refreshes storage.</div>
                   <div class="form-text mt-2" id="cache-clear-status">Checking cache file…</div>
                 </div>
-                <div>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
                   <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-clear-cache" onclick="clearCache()" disabled>Clear cache</button>
+                  <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}" id="btn-debug-cache"
+                          onclick="prRunDebug('/api/debug/cache', 'Cache contents', this)"
+                          title="Debug: what cache.json currently holds">Debug</button>
                 </div>
               </div>
             </div>
@@ -949,7 +951,7 @@
                 <div class="field-error" id="max-headroom-pct-error">Enter a safety percentage greater than zero.</div>
               </div>
               <div class="form-text">
-                Blocks Live when Headroom is above this percent of total disk size. Simulate only warns.
+                Blocks cleanup when Headroom is above this percent of total disk size. Simulate only warns.
               </div>
               </div>
               <div class="config-card config-card-danger p-3">
@@ -1731,8 +1733,8 @@ function _configsMatch(a, b) {
   // both sides as the effective presented mode, or the page loads dirty with
   // an un-cleanable Revert loop (Revert re-checks the disabled radio, which
   // immediately snaps back to Paused and differs again).
-  const liveRadio = document.getElementById('mode-headroom');
-  if (liveRadio && liveRadio.disabled) {
+  const cleanupRadio = document.getElementById('mode-headroom');
+  if (cleanupRadio && cleanupRadio.disabled) {
     if (ca.RUN_MODE === 'headroom') ca.RUN_MODE = 'paused';
     if (cb.RUN_MODE === 'headroom') cb.RUN_MODE = 'paused';
   }
@@ -1783,7 +1785,7 @@ function _applySpaceThresholdLock() {
       note.hidden = false;
     } else if (_savedLiveModeLocked()) {
       // Not a lock — a heads-up that a threshold save pauses automatic mode.
-      note.textContent = 'Automatic mode is on — saving a threshold change pauses it until you run Simulate and re-enable Live.';
+      note.textContent = 'Automatic Cleanup is on — saving a threshold change pauses it until you run Simulate and re-enable it.';
       note.hidden = false;
     } else {
       note.hidden = true;
@@ -1806,13 +1808,14 @@ function _applySpaceThresholdLock() {
   const headroomOn = _headroomEnabled();
   _setDisabled('headroom-enabled', locked || !hasMonitorDirs);
   _setDisabled('HEADROOM_GB', locked || !hasMonitorDirs || !headroomOn);
-  // Redline is REQUIRED in redline-only mode (checkbox unticked) — its toggle
-  // locks there; re-ticking Headroom is the way out of the mode. With the
-  // checkbox ticked it toggles freely, whatever the Headroom value.
-  _setDisabled('redline-enabled', locked || !hasMonitorDirs || !headroomOn);
+  // Redline and the cap toggle freely whatever the Headroom state — with Headroom
+  // off either one (or both) can be the trigger, so neither is force-locked.
+  _setDisabled('redline-enabled', locked || !hasMonitorDirs);
   _setDisabled('REDLINE_GB', locked || !hasMonitorDirs || !redlineOn);
-  // The delay paces daily marking runs, which redline-only mode retires.
-  _setDisabled('DELETE_DELAY_DAYS', locked || !hasMonitorDirs || !headroomOn);
+  // The delay paces daily marking runs. It is retired only in TRUE redline-only mode
+  // (Headroom off AND no cap); a cap-driven daily cleanup still honors it.
+  const capOnForDelay = !!document.getElementById('cap-enabled')?.checked;
+  _setDisabled('DELETE_DELAY_DAYS', locked || !hasMonitorDirs || (!headroomOn && !capOnForDelay));
   _updateRedlineOnlyUI();
   _applySpaceThresholdAvailability();
 }
@@ -1834,9 +1837,9 @@ function _applySpaceThresholdAvailability() {
   if (capInput && !hasSavedDirs) capInput.value = '';
 
   const capOn = !!capToggle?.checked;
-  // The cap rides the daily schedule, which only redline-only mode retires —
-  // it works fine alongside a 0 Headroom (cap-only configs are valid).
-  if (capToggle) capToggle.disabled = locked || !hasMonitorDirs || !_headroomEnabled();
+  // The cap rides the daily schedule and is independent of Headroom — a cap-only
+  // config (Headroom off) is valid, so the toggle is never gated on Headroom.
+  if (capToggle) capToggle.disabled = locked || !hasMonitorDirs;
   if (capInput) capInput.disabled = locked || !hasMonitorDirs || !capOn;
   if (capNote) {
     capNote.hidden = hasMonitorDirs;
@@ -2339,11 +2342,11 @@ function _headroomSafetyExceeded() {
 function _headroomSafetyText() {
   const which = _headroomActive() ? 'Headroom' : 'Redline';
   const limit = _headroomSafetyLimitGb();
-  if (limit === null) return `${which} exceeds the safety cap. Lower ${which} or raise the safety cap to enable Live.`;
-  return `${which} exceeds the safety cap (${Math.floor(limit).toLocaleString()} GB max). Lower ${which} or raise the safety cap to enable Live.`;
+  if (limit === null) return `${which} exceeds the safety cap. Lower ${which} or raise the safety cap to enable Automatic Cleanup.`;
+  return `${which} exceeds the safety cap (${Math.floor(limit).toLocaleString()} GB max). Lower ${which} or raise the safety cap to enable Automatic Cleanup.`;
 }
 
-// The safety percentage also floors the Library Size Cap: a Live run may delete
+// The safety percentage also floors the Library Size Cap: a Cleanup may delete
 // at most that percentage of the library, so the cap can't sit below
 // (library - max_pct% of library). Simulate is exempt (mirrors Headroom).
 function _libraryCapSafetyFloorGb() {
@@ -2362,14 +2365,14 @@ function _libraryCapSafetyExceeded() {
 
 function _libraryCapSafetyText() {
   const floor = _libraryCapSafetyFloorGb();
-  if (floor === null) return 'Library Size Cap is below the safety floor. Raise the cap or the safety percentage to enable Live.';
-  return `Library Size Cap is below the safety floor (${Math.ceil(floor).toLocaleString()} GB min). Raise the cap or the safety percentage to enable Live.`;
+  if (floor === null) return 'Library Size Cap is below the safety floor. Raise the cap or the safety percentage to enable Automatic Cleanup.';
+  return `Library Size Cap is below the safety floor (${Math.ceil(floor).toLocaleString()} GB min). Raise the cap or the safety percentage to enable Automatic Cleanup.`;
 }
 
 function _spaceThresholdBlockingText() {
   if (!_selectedMediaApisReady()) return 'Connect or uncheck the selected media server first.';
-  if (!_hasSavedMonitorDirs()) return 'Save a monitored directory to enable Live.';
-  if (!_headroomHasValue()) return 'Enter a Headroom target of 1 GB or more (or disable Headroom) to enable Live.';
+  if (!_hasSavedMonitorDirs()) return 'Save a monitored directory to enable Automatic Cleanup.';
+  if (!_headroomHasValue()) return 'Enter a Headroom target of 1 GB or more (or disable Headroom) to enable Automatic Cleanup.';
   if (!_maxHeadroomPctValid()) return 'Enter a valid Headroom safety percentage.';
   const redlineOn = document.getElementById('redline-enabled')?.checked;
   if (redlineOn && !prPositiveNumber(prFieldRaw('REDLINE_GB'))) return 'Enter a Redline above 0 GB, or disable Redline.';
@@ -2378,7 +2381,7 @@ function _spaceThresholdBlockingText() {
   if (capOn && !_libraryCapConfigured()) return 'Enter a Library Size Cap, or disable it.';
   // Live needs at least one active space target; Headroom 0 with Redline and
   // the Library Size Cap both off leaves nothing to enforce.
-  if (_noEffectiveSpaceLimit()) return 'Set a Headroom target, Redline, or Library Size Cap to enable Live.';
+  if (_noEffectiveSpaceLimit()) return 'Set a Headroom target, Redline, or Library Size Cap to enable Automatic Cleanup.';
   if (_headroomSafetyExceeded()) return _headroomSafetyText();
   if (_libraryCapSafetyExceeded()) return _libraryCapSafetyText();
   return '';
@@ -2683,9 +2686,23 @@ function toggleLibraryCap() {
     return;
   }
   const enabled = document.getElementById('cap-enabled')?.checked;
+  // With Headroom off, the cap and Redline are the only triggers — don't let the
+  // last one be unticked into an invalid "nothing armed" state.
+  if (!enabled && !_headroomEnabled()) {
+    const redlineArmed = document.getElementById('redline-enabled')?.checked
+                         && prPositiveNumber(prFieldRaw('REDLINE_GB'));
+    if (!redlineArmed) {
+      const capBox = document.getElementById('cap-enabled');
+      if (capBox) capBox.checked = true;
+      showToast('With Headroom off, keep a Library Size Cap and/or a Redline floor on — '
+        + 'one of them must drive cleanup. Re-tick Headroom to turn the cap off.', 'warning');
+      return;
+    }
+  }
   const input = document.getElementById('MAX_LIBRARY_GB');
   if (input) input.disabled = !enabled;
   _capValidationArmed = false;
+  _applySpaceThresholdLock();   // the delay field/notes track the cap when Headroom is off
   validateLibraryCap();
   if (enabled && input) setTimeout(() => { input.focus(); validateLibraryCap(); }, 0);
   _updatePills();
@@ -2696,12 +2713,13 @@ function toggleLibraryCap() {
 // functions so every path (populate, toggles, saves) stays consistent.
 function _updateRedlineOnlyUI() {
   const usable = _spaceThresholdsHaveUsableLibrary();
-  // The cap/delay notes explain redline-only mode (checkbox unticked).
-  const inMode = usable && !_headroomEnabled();
-  ['cap-redline-only-note', 'delay-redline-only-note'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.hidden = !inMode;
-  });
+  // The delay note explains TRUE redline-only mode: Headroom off AND no cap, so
+  // Redline is the only trigger and the delay is retired. A cap-driven daily
+  // cleanup (Headroom off WITH a cap) still uses the delay, so the note stays hidden.
+  const capOn = !!document.getElementById('cap-enabled')?.checked;
+  const trueRedlineOnly = usable && !_headroomEnabled() && !capOn;
+  const delayNote = document.getElementById('delay-redline-only-note');
+  if (delayNote) delayNote.hidden = !trueRedlineOnly;
   // The no-trigger warning: nothing armed at all — no real Headroom target,
   // no Redline floor, no Library Size Cap.
   const noTrigger = document.getElementById('no-trigger-note');
@@ -2728,22 +2746,19 @@ function toggleHeadroom() {
   }
   const enabled = !!box?.checked;
   if (!enabled) {
-    // Unticking IS entering redline-only mode, which needs a valid Redline
-    // floor. (Turning just the headroom trigger off is the field's job: 0.)
-    const redlineOn = document.getElementById('redline-enabled')?.checked;
-    if (!redlineOn || !prPositiveNumber(prFieldRaw('REDLINE_GB'))) {
+    // Unticking turns the headroom trigger off. That is valid only if SOMETHING else
+    // drives cleanup — a valid Redline floor and/or an enabled Library Size Cap. The
+    // cap is kept (it works fine with Headroom off). (To just turn the headroom
+    // trigger off while keeping it ticked, set its value to 0.)
+    const redlineArmed = document.getElementById('redline-enabled')?.checked
+                         && prPositiveNumber(prFieldRaw('REDLINE_GB'));
+    const capArmed = document.getElementById('cap-enabled')?.checked;
+    if (!redlineArmed && !capArmed) {
       if (box) box.checked = true;
-      showToast('Set a Redline floor first — unticking Headroom switches to redline-only '
-        + 'mode, where Redline is the only deletion trigger. (To just turn the headroom '
-        + 'trigger off, set it to 0.)', 'warning');
+      showToast('Turn on a Redline floor and/or a Library Size Cap first — with Headroom '
+        + 'off, one of them must drive cleanup. (To just turn the headroom trigger off, '
+        + 'set its value to 0.)', 'warning');
       return;
-    }
-    const capBox = document.getElementById('cap-enabled');
-    if (capBox?.checked) {
-      capBox.checked = false;
-      _capValidationArmed = false;
-      showToast('Library Size Cap turned off — it is not used in redline-only mode. '
-        + 'Its value is remembered.', 'warning');
     }
   }
   _headroomValidationArmed = false;
@@ -2772,9 +2787,18 @@ function toggleRedline() {
     return;
   }
   const enabled = document.getElementById('redline-enabled')?.checked;
+  // With Headroom off, don't let unticking Redline drop the last remaining trigger.
+  if (!enabled && !_headroomEnabled() && !document.getElementById('cap-enabled')?.checked) {
+    const rlBox = document.getElementById('redline-enabled');
+    if (rlBox) rlBox.checked = true;
+    showToast('With Headroom off, keep a Redline floor and/or a Library Size Cap on — '
+      + 'one of them must drive cleanup. Re-tick Headroom to turn Redline off.', 'warning');
+    return;
+  }
   const input = document.getElementById('REDLINE_GB');
   if (input) input.disabled = !enabled;
   _redlineValidationArmed = false;
+  _applySpaceThresholdLock();   // the delay note tracks Redline when Headroom is off
   validateRedline();
   if (enabled && input) setTimeout(() => { input.focus(); validateRedline(); }, 0);
   _updatePills();
@@ -2803,7 +2827,7 @@ function _liveBlockIsSafety() {
 }
 
 function _updateRunModeAvailability() {
-  // During a run the whole Automatic Run Mode category is ghosted with a
+  // During a run the whole Scheduler Mode category is ghosted with a
   // single inline notice, consistent with the other config categories: both
   // run-mode radios and all three time settings lock until the run finishes.
   const runLocked = _configActivityLocked();
@@ -2821,10 +2845,18 @@ function _updateRunModeAvailability() {
   // server words the reason (first-scan proof, over-limits plan, or the
   // Redline preview).
   const simBlock = (_simulateRequired && !_isLiveRunMode(_savedConfig?.RUN_MODE))
-    ? (_simulateRequiredMsg || 'Run Simulate first, then enable Live.') : '';
-  const liveBlock = _currentConnectionBlockingText() || _spaceThresholdBlockingText() || simBlock;
+    ? (_simulateRequiredMsg || 'Run Simulate first, then enable Automatic Cleanup.') : '';
+  // Debug mode and Live are mutually exclusive: while Debug mode is ticked, Live is
+  // ghosted with this reason (Debug mode never runs cleanup deletions). It takes
+  // precedence over the threshold/connection reasons — Debug mode is the immediate
+  // blocker the user just toggled, and it can't be a safety-percentage alert — and
+  // it ghosts on page load, not only after a click.
+  const debugOn = !!document.getElementById('DEBUG_MODE')?.checked;
+  const debugBlock = debugOn
+    ? 'Debug mode is on — turn it off to enable Automatic Cleanup. Debug mode never runs cleanup deletions.' : '';
+  const liveBlock = debugBlock || _currentConnectionBlockingText() || _spaceThresholdBlockingText() || simBlock;
 
-  _setRunModeDisabled('headroom', runLocked || !!liveBlock, _liveBlockIsSafety());
+  _setRunModeDisabled('headroom', runLocked || !!liveBlock, !debugOn && _liveBlockIsSafety());
 
   const descHeadroom = document.getElementById('desc-headroom');
   if (descHeadroom) {
@@ -2833,8 +2865,8 @@ function _updateRunModeAvailability() {
 
   // Fall back to Paused only when Live is genuinely unavailable — never for a
   // transient run lock, which must not change the saved selection.
-  const liveMode = document.getElementById('mode-headroom');
-  if (!runLocked && liveMode?.disabled && liveMode.checked) {
+  const cleanupMode = document.getElementById('mode-headroom');
+  if (!runLocked && cleanupMode?.disabled && cleanupMode.checked) {
     _selectPaused();
   }
 }
@@ -2852,7 +2884,7 @@ function _updatePills() {
   const redlineHasInput = r !== '';
   const hTxt = _headroomEnabled()
     ? (_headroomActive() ? 'Headroom: ' + prCommaNum(h) + ' GB' : 'Headroom: off')
-    : 'Headroom: redline only';
+    : 'Headroom: off';
   const rTxt = redlineValid && r ? 'Redline: ' + prCommaNum(r) + ' GB' : 'Redline: —';
   const lTxt = capConfigured && l ? 'Library size cap: ' + prCommaNum(l) + ' GB' : 'Library size cap: —';
   const ph = document.getElementById('pill-headroom');
@@ -3737,8 +3769,8 @@ async function refreshConfigRuntimeState() {
     const d = await r.json();
     _configRunActive = !!d.run_active;
     _configSummaryActive = !!d.summary_active;
-    _simulateRequired = !!(d.live_state?.space_thresholds?.simulate_required);
-    _simulateRequiredMsg = d.live_state?.space_thresholds?.simulate_required_message || '';
+    _simulateRequired = !!(d.cleanup_state?.space_thresholds?.simulate_required);
+    _simulateRequiredMsg = d.cleanup_state?.space_thresholds?.simulate_required_message || '';
     _captureMarkedWaitingAges(d);
     updateCurrentLibrarySizeBadge(d.library_gb);
   } catch (_) {
@@ -3817,7 +3849,7 @@ _syncDirtyState();
 
 // A cap the current library already exceeds means the very next Live pass
 // prunes down to it — surface that at save time and require the second click.
-function _immediatePruneWarning(cfg, nowLive) {
+function _immediatePruneWarning(cfg, nowCleanup) {
   const warnings = [];
   // Cap-driven prune: the cap is being armed/changed below the library size.
   const capWarning = (() => {
@@ -3829,13 +3861,13 @@ function _immediatePruneWarning(cfg, nowLive) {
     // already-saved cap should not nag on every unrelated save.
     const savedCap = Number(_savedConfig?.MAX_LIBRARY_GB);
     const capChanged = !(Number.isFinite(savedCap) && savedCap === capGb);
-    const goingLive = nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom');
+    const goingLive = nowCleanup && !_savedConfig.RUN_MODE?.startsWith('headroom');
     if (!capChanged && !goingLive) return '';
     const size = Math.round(_lastKnownLibraryGb).toLocaleString();
     const cap = prCommaNum(capGb);
-    return nowLive
-      ? `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — Live will start pruning immediately. Save again to confirm.`
-      : `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — the next Live run will prune down to it. Save again to confirm.`;
+    return nowCleanup
+      ? `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — Automatic Cleanup starts pruning immediately. Save again to confirm.`
+      : `Library Size Cap (${cap} GB) is below the current library (~${size} GB) — the next Cleanup will prune down to it. Save again to confirm.`;
   })();
   if (capWarning) warnings.push(capWarning);
   // Delay-driven prune: lowering the deletion delay makes already-marked movies
@@ -3855,35 +3887,45 @@ function _immediatePruneWarning(cfg, nowLive) {
       + `and will be deleted on the next cleanup instead of waiting. Save again to confirm.`;
   })();
   if (delayWarning) warnings.push(delayWarning);
-  // Headroom/redline-driven prune: going Live while free space is ALREADY
-  // past a threshold — the first scheduler tick (within ~15 minutes) prunes.
-  // Only as a fallback when nothing more specific already warned, so arming
-  // Live under a breached headroom still gets a full sentence, not a bare
-  // "Are you sure?".
-  if (!warnings.length && nowLive && !_savedConfig.RUN_MODE?.startsWith('headroom')) {
-    const total = Number(_diskStats?.total_gb);
-    const used = Number(_diskStats?.used_gb);
-    const free = Number(_diskStats?.free_gb);
-    // Per-trigger deficits: the daily cleanup frees back to the Headroom
-    // target, but a Redline breach frees only to its own floor — and in
-    // redline-only mode HEADROOM_GB is always 0, so the redline warning must
-    // not hide behind a headroom guard.
-    const head = Number(cfg.HEADROOM_GB);
-    let headDeficit = 0;
-    if (Number.isFinite(total) && total > 0 && Number.isFinite(used)
-        && Number.isFinite(head) && head > 0) {
-      headDeficit = Math.max(0, used - (total - head));
-    }
-    const red = Number(cfg.REDLINE_GB);
-    let redDeficit = 0;
-    if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
-      redDeficit = Math.max(0, red - free);
-    }
-    if (headDeficit > 0) {
-      warnings.push(`Free space is already ${prGbAmount(headDeficit)} GB past the Headroom target — Live starts pruning within ~15 minutes. Save again to confirm.`);
-    } else if (redDeficit > 0) {
-      warnings.push(`Free space is already ${prGbAmount(redDeficit)} GB below the Redline floor — Live frees ~that much within ~15 minutes. Save again to confirm.`);
-    }
+  // Headroom/Redline-driven prune: a free-space threshold the disk is ALREADY
+  // past means the next Cleanup prunes to meet it. Like the cap, warn whenever
+  // the threshold is being ARMED or CHANGED into a breached state — in Paused
+  // mode too, not only when flipping to Live — and also when arming Automatic Cleanup over an
+  // already-breached (unchanged) threshold. Headroom's prune frees back to its
+  // target (which also clears Redline), so prefer its message when both apply.
+  const goingLive = nowCleanup && !_savedConfig.RUN_MODE?.startsWith('headroom');
+  const total = Number(_diskStats?.total_gb);
+  const used = Number(_diskStats?.used_gb);
+  const free = Number(_diskStats?.free_gb);
+
+  const head = Number(cfg.HEADROOM_GB);
+  const savedHead = Number(_savedConfig?.HEADROOM_GB);
+  const headChanged = !(Number.isFinite(savedHead) && savedHead === head);
+  let headDeficit = 0;
+  if (Number.isFinite(total) && total > 0 && Number.isFinite(used)
+      && Number.isFinite(head) && head > 0) {
+    headDeficit = Math.max(0, used - (total - head));
+  }
+
+  // Redline frees only back to its own floor — and in redline-only mode
+  // HEADROOM_GB is always 0, so the redline warning must not hide behind a
+  // headroom guard.
+  const red = Number(cfg.REDLINE_GB);
+  const savedRed = Number(_savedConfig?.REDLINE_GB);
+  const redChanged = !(Number.isFinite(savedRed) && savedRed === red);
+  let redDeficit = 0;
+  if (Number.isFinite(red) && red > 0 && Number.isFinite(free) && free <= red) {
+    redDeficit = Math.max(0, red - free);
+  }
+
+  if (headDeficit > 0 && (headChanged || goingLive)) {
+    warnings.push(goingLive
+      ? `Free space is already ${prGbAmount(headDeficit)} GB past the Headroom target — Automatic Cleanup starts pruning within ~15 minutes. Save again to confirm.`
+      : `Free space is already ${prGbAmount(headDeficit)} GB past the Headroom target — the next Cleanup will prune ~that much. Save again to confirm.`);
+  } else if (redDeficit > 0 && (redChanged || goingLive)) {
+    warnings.push(goingLive
+      ? `Free space is already ${prGbAmount(redDeficit)} GB below the Redline floor — Automatic Cleanup frees ~that much within ~15 minutes. Save again to confirm.`
+      : `Free space is already ${prGbAmount(redDeficit)} GB below the Redline floor — the next Cleanup will free ~that much. Save again to confirm.`);
   }
   return warnings.join(' ');
 }
@@ -3995,17 +4037,17 @@ async function saveConfig() {
 
   // Two-click confirm for any save that arms pruning: switching Paused → Live,
   // or saving a Library Size Cap that the current library already exceeds
-  // (which would prune down to the cap as soon as Live runs). Same in-page
+  // (which would prune down to the cap as soon as Cleanups). Same in-page
   // save-button morph as every other confirmation — no browser popups.
   // The confirmation is only good for the EXACT form it was shown for: a
   // keyboard-only edit after arming (Tab into a field, retype, Enter on Save)
   // never fires the click-away disarm, so without the snapshot check an armed
   // "Are you sure?" would silently cover values the user never saw warned.
   const wasLive = _savedConfig.RUN_MODE?.startsWith('headroom');
-  const nowLive = cfg.RUN_MODE?.startsWith('headroom');
-  const pruneWarning = _immediatePruneWarning(cfg, nowLive);
+  const nowCleanup = cfg.RUN_MODE?.startsWith('headroom');
+  const pruneWarning = _immediatePruneWarning(cfg, nowCleanup);
   const confirmStillValid = confirmedLive && _confirmSaveSnapshot === JSON.stringify(cfg);
-  if (!confirmStillValid && ((!wasLive && nowLive) || pruneWarning)) {
+  if (!confirmStillValid && ((!wasLive && nowCleanup) || pruneWarning)) {
     _setSavePending(false);
     _confirmSave = true;
     _confirmSaveSnapshot = JSON.stringify(cfg);
@@ -4080,7 +4122,7 @@ async function saveConfig() {
       }
       const health = d.connection_health || null;
       if (d.automatic_run_mode_paused) {
-        showToast('Saved. Automatic Live mode was paused: '
+        showToast('Saved. Automatic Cleanup was paused: '
           + (d.automatic_run_mode_paused_reason || 're-enable it once the connections check out.'), 'warning');
       } else if (d.radarr_cleanup_forced_disabled) {
         showToast('Saved. Radarr cleanup was disabled.', 'warning');
@@ -4315,5 +4357,32 @@ _scheduleSectionIssueUpdate();
 // Apply the backend health result once on load so saved connection state,
 // dependent-field gating, and any visible connection warnings are in sync.
 if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
+
+// Debug mode ⇔ NOT Live (a no-delete diagnostic state can't run live). Debug
+// mode is only tickable while the mode is Paused, and it can't be on while Live
+// is selected. The server validator enforces this too; this is the live UX.
+(function _debugModeRunLock() {
+  // Debug mode ⇔ NOT Live. The Live radio's ghosted look and its reason text are
+  // owned by _updateRunModeAvailability (which reads DEBUG_MODE), so the ghost and
+  // the "why" appear on page load, not just after a click. This IIFE handles only
+  // the two-way coupling: dropping a Live selection to Paused when Debug turns on,
+  // and locking the Debug checkbox out while Live is the selected run mode.
+  const dbg  = document.getElementById('DEBUG_MODE');
+  const live = document.getElementById('mode-headroom');
+  const paused = document.getElementById('mode-paused');
+  if (!dbg || !live) return;
+  const sync = () => {
+    if (dbg.checked && live.checked) {
+      live.checked = false;
+      if (paused) paused.checked = true;
+    }
+    dbg.disabled = live.checked;
+    dbg.title = live.checked ? 'Set Scheduler Mode to Paused to enable Debug mode.' : '';
+    if (typeof _updateRunModeAvailability === 'function') _updateRunModeAvailability();
+  };
+  dbg.addEventListener('change', sync);
+  document.querySelectorAll('input[name="RUN_MODE"]').forEach(r => r.addEventListener('change', sync));
+  sync();
+})();
 </script>
 {% endblock %}

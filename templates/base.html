@@ -186,12 +186,20 @@
     a.header-run-badge { text-decoration: none; }
     a.header-run-badge:hover, a.header-run-badge:focus { color: var(--text-accent); border-color: var(--border-accent); }
     /* A Live (deleting) run turns the badge red; a simulation keeps the blue accent. */
-    .site-header.is-live-run .header-run-badge {
+    .site-header.is-cleanup-run .header-run-badge {
       border-color: var(--border-danger); color: var(--text-danger);
       background: color-mix(in srgb, var(--surface-2) 82%, var(--bg-danger) 18%);
     }
-    .site-header.is-live-run a.header-run-badge:hover,
-    .site-header.is-live-run a.header-run-badge:focus { color: var(--text-danger); border-color: var(--border-danger); }
+    .site-header.is-cleanup-run a.header-run-badge:hover,
+    .site-header.is-cleanup-run a.header-run-badge:focus { color: var(--text-danger); border-color: var(--border-danger); }
+    /* A Debug Cleanup (live path, deletes nothing) turns the badge yellow —
+       matching the yellow Debug Cleanup button and the run pill's "Debugging". */
+    .site-header.is-debug-run .header-run-badge {
+      border-color: var(--border-warning); color: var(--text-warning);
+      background: color-mix(in srgb, var(--surface-2) 82%, var(--bg-warning) 18%);
+    }
+    .site-header.is-debug-run a.header-run-badge:hover,
+    .site-header.is-debug-run a.header-run-badge:focus { color: var(--text-warning); border-color: var(--border-warning); }
     @keyframes pr-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
     /* Mobile: badge sits next to the brand instead of competing with the theme toggle. */
     .run-badge-mobile { margin-left: 12px; margin-right: 56px; }
@@ -380,8 +388,7 @@
     .pr-pill--accent  { border-color: var(--border-accent);  color: var(--text-accent);    background: var(--surface-tint); }
     .pr-pill--warning { border-color: var(--border-warning); color: var(--text-warning);   background: var(--bg-warning); }
 
-    /* Run-mode badge keeps these semantic names so dashboard.html's sage "Live"
-       tint can override the accent variant. */
+    /* Run-mode badge keeps these semantic names so dashboard.html's sage cleanup       tint (Cleanup running) can override the accent variant. */
     .mode-debug { border-color: var(--border); color: var(--text-secondary); background: var(--surface-tint); }
     .mode-live  { border-color: var(--border-accent); color: var(--text-accent); background: var(--bg-accent); }
 
@@ -1506,7 +1513,7 @@
         <div class="welcome-warning welcome-warning--danger">
           <strong>This app deletes movie files — there is no recycle bin.</strong>
           Stay on <strong>Paused</strong> and use <strong>Simulate</strong> until the
-          output matches exactly what you expect before ever using Live.
+          output matches exactly what you expect before you delete anything for real.
         </div>
         <div class="welcome-warning welcome-warning--caution">
           <strong>Do not expose this app to the internet.</strong> There is no login —
@@ -1520,8 +1527,8 @@
           <li><strong>Connections</strong>: pick your servers, use <strong>Auto Detect</strong>, then <strong>Check for Errors</strong>.</li>
           <li><strong>Movie Library Paths</strong>: add the folders MediaReducer may manage and protect any collections.</li>
           <li>Set <strong>Space Thresholds</strong>, then tune scoring on the <strong>Filtering &amp; Scoring</strong> tab.</li>
-          <li>Run <strong>Simulate</strong> from the Dashboard and read the log. Enable Live only when
-              it deletes exactly what you'd delete yourself.</li>
+          <li>Run <strong>Simulate</strong> from the Dashboard and read the log. Turn on <strong>Automatic Cleanup</strong>
+              only when it deletes exactly what you'd delete yourself.</li>
         </ol>
 
         <h6 class="welcome-heading">About</h6>
@@ -1562,7 +1569,7 @@
   .welcome-about { margin: 0; font-size: .86rem; line-height: 1.6; color: var(--text-secondary); }
 </style>
 
-<!-- Manual IMDb-dataset setup steps. Pops when a Simulate/Live run fails on
+<!-- Manual IMDb-dataset setup steps. Pops when a Simulate/Cleanup fails on
      the dataset (driven by the dashboard's progress polling). -->
 <div class="modal fade pr-popup" id="imdb-help-modal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
@@ -2003,12 +2010,15 @@ function showToast(msg, type = 'success', opts = {}) {
 // badge (mobile vs desktop) is shown. The Dashboard drives it directly from its
 // own status polling; every other page runs the lightweight poller below so the
 // badge is visible no matter where you are while a run is active.
-window.prSetHeaderRunning = function (on, live) {
+window.prSetHeaderRunning = function (on, live, debugLive) {
   const h = document.querySelector('.site-header');
   if (!h) return;
   h.classList.toggle('is-running', !!on);
-  h.classList.toggle('is-live-run', !!on && !!live);
-  const label = live ? 'Running' : 'Simulating';
+  h.classList.toggle('is-cleanup-run', !!on && !!live);
+  // Debug Cleanup: yellow badge reading "Debugging" (drives the cleanup path but
+  // deletes nothing) — distinct from a real Cleanup's red "Running".
+  h.classList.toggle('is-debug-run', !!on && !!debugLive);
+  const label = debugLive ? 'Debugging' : (live ? 'Running' : 'Simulating');
   h.querySelectorAll('.run-badge-label').forEach(el => { el.textContent = label; });
 };
 // The badge links to the Dashboard's run-progress card. Already on the
@@ -2107,7 +2117,7 @@ window.prSetConfigTabError = function (on) {
       const r = await fetch('/api/status?_=' + Date.now(), { cache: 'no-store' });
       if (r.ok) {
         const d = await r.json();
-        window.prSetHeaderRunning(!!d.run_active, !!d.run_live);
+        window.prSetHeaderRunning(!!d.run_active, !!d.run_cleanup, !!d.run_debug_cleanup);
         window.prSetConfigTabError(!!d.config_attention);
         // Page hook: lets a page react to run-state changes without its own
         // /api/status poll (the explorer locks Filtering & Scoring with it).
