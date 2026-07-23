@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 os.environ.setdefault("MEDIAREDUCER_CONFIG", tempfile.mktemp())
 import engine as E
 
@@ -41,22 +43,20 @@ def _seed(td):
     E.LIBRARY_ROOT = lib
     E.MONITOR_DIRS = [str(movies)]
     E.OUTPUT_DIR = out
-    E.PENDING_FILE = out / "pending_deletions.json"
-    E.CACHE_FILE = out / "cache.json"
+    E.DB_FILE = out / "mediareducer.db"
     # Plan: A, B marked (covering count 2); C, D eligible behind them.
     entries = {}
     for i, p in enumerate(paths):
         entries[str(p)] = {"title": p.stem, "score": 1.0, "size_bytes": 1024,
                            "marked_at": (time.time() - 86400) if i < 2 else None}
     # Snapshot: every movie known unwatched (0 plays), keyed by the same path.
-    # The queue now lives under cache.json["pending"], so write it all in one file.
     snap = [E._snapshot_entry(p.stem, 2000, 6.0, 1000, 0, 0, 0, 1_500_000_000, 1024,
                               source_id=p.stem, path=str(p)) for p in paths]
-    E.CACHE_FILE.write_text(json.dumps({
+    _dbstate.seed(E.DB_FILE, {
         "code_checksum": E.code_checksum(),
         "library_snapshot": {"movies": snap, "built_at": 1},
         "pending": {"schema": 1, "entries": entries},
-    }), encoding="utf-8")
+    })
     return paths
 
 def _marked(paths):

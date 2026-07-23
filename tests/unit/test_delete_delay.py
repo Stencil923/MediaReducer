@@ -6,6 +6,8 @@ import tempfile
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 import atexit
 import shutil
 import tempfile
@@ -103,14 +105,14 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, OUTPUT_DIR=td, DELETE_DELAY_DAYS=7)
     now = time.time()
-    Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
+    _dbstate.seed(Path(td, "mediareducer.db"), {"pending": {"schema": 1, "entries": {
         "/library/movies/A/A.mkv": {"title": "Movie A", "size_bytes": 2_000_000_000,
                                     "score": 1.5, "marked_at": now - 86400},        # 1 day ago
         "/library/movies/B/B.mkv": {"title": "Movie B", "size_bytes": 1_000_000_000,
                                     "score": 2.0, "marked_at": now - 9 * 86400},    # expired
         "/library/movies/C/C.mkv": {"title": "Movie C", "size_bytes": 500_000_000,
                                     "score": 3.0, "marked_at": now},                # just now
-    }}}), encoding="utf-8")
+    }}})
     entries = A.pending_deletion_entries()
     check("queue count", A.pending_count() == 3 and len(entries) == 3)
     # Marked entries display SOONEST deletion first: B is expired (0 days), A has
@@ -147,10 +149,10 @@ A.library_stats = lambda: {"library_gb": 100.0}
 try:
     with tempfile.TemporaryDirectory() as td:
         def _write_queue():
-            Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
+            _dbstate.seed(Path(td, "mediareducer.db"), {"pending": {"schema": 1, "entries": {
                 "/library/movies/A/A.mkv": {"title": "Movie A", "marked_at": time.time()},
                 "/library/movies/B/B.mkv": {"title": "Movie B", "marked_at": time.time()},
-            }}}), encoding="utf-8")
+            }}})
 
         def _save_over(payload_over, saved_over=None):
             _state["cfg"] = dict(BASE, OUTPUT_DIR=td, **(saved_over or {}))
@@ -205,36 +207,39 @@ with tempfile.TemporaryDirectory() as td:
                          MAX_LIBRARY_GB=2000, MONITOR_DIRS=["/library/movies"],
                          GRACE_PERIOD_DAYS=30, SCORE_BALANCE=50,
                          PROTECTED_COLLECTIONS=["Keepers"])
-    p = Path(td, "cache.json")
+    p = Path(td, "mediareducer.db")
     entry = {"/library/movies/A/A.mkv": {"title": "Movie A", "marked_at": 0}}
     stamp = {k: _state["cfg"].get(k) for k in A._PLAN_CONFIG_KEYS}
-    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp,
-                             "monitor_dirs": ["/library/movies"]}}))
+    _dbstate.seed(p, {"pending": {"schema": 1, "entries": entry, "plan_config": stamp,
+                      "monitor_dirs": ["/library/movies"]}})
     check("plan current when the stamps match", A._pending_plan_current(_state["cfg"]))
     check("int/float spelling does not stale a plan",
           A._pending_plan_current(dict(_state["cfg"], HEADROOM_GB=500.0)))
     for key, value in (("HEADROOM_GB", 400), ("REDLINE_GB", 50), ("MAX_LIBRARY_GB", None),
                        ("GRACE_PERIOD_DAYS", 7), ("SCORE_BALANCE", 80),
                        ("SKIP_UNPLAYED_MOVIES", True), ("MAX_IMDB_RATING", 7.5),
-                       ("NEAR_TIE_PTS", 5), ("MAX_STALENESS_MONTHS", 12),
-                       ("PROTECTED_COLLECTIONS", ["Keepers", "Kids"])):
+                       ("NEAR_TIE_PTS", 5), ("MAX_STALENESS_MONTHS", 12)):
         check(f"changed {key} stales the plan",
               not A._pending_plan_current(dict(_state["cfg"], **{key: value})))
-    check("collection reordering does not stale a plan",
-          A._pending_plan_current(dict(_state["cfg"], PROTECTED_COLLECTIONS=["Keepers"])))
+    # Protected collections are re-verified fresh every tick + at delete time, so
+    # changing them is honored from the standing cache — NOT a plan-staling change.
+    check("changing protected collections does NOT stale a plan",
+          A._pending_plan_current(dict(_state["cfg"], PROTECTED_COLLECTIONS=["Totally", "New"])))
+    check("changing Jellyfin protected collections does NOT stale a plan",
+          A._pending_plan_current(dict(_state["cfg"], JELLYFIN_PROTECTED_COLLECTIONS=["New"])))
     check("changed monitored paths stale the plan",
           not A._pending_plan_current(dict(_state["cfg"], MONITOR_DIRS=["/library/other"])))
-    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp}}))
+    _dbstate.seed(p, {"pending": {"schema": 1, "entries": entry, "plan_config": stamp}})
     check("path-unstamped plan reads as stale", not A._pending_plan_current(_state["cfg"]))
-    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry,
-                             "thresholds": {"HEADROOM_GB": 500},
-                             "monitor_dirs": ["/library/movies"]}}))
+    _dbstate.seed(p, {"pending": {"schema": 1, "entries": entry,
+                      "thresholds": {"HEADROOM_GB": 500},
+                      "monitor_dirs": ["/library/movies"]}})
     check("old-format / partial stamp reads as stale", not A._pending_plan_current(_state["cfg"]))
     # A stamped EMPTY queue is a real plan — a completed Simulate that found
     # nothing eligible (all filtered/protected). It must read as current or the
     # user loops through "run Simulate" forever.
-    p.write_text(json.dumps({"pending": {"schema": 1, "entries": {}, "plan_config": stamp,
-                             "monitor_dirs": ["/library/movies"]}}))
+    _dbstate.seed(p, {"pending": {"schema": 1, "entries": {}, "plan_config": stamp,
+                      "monitor_dirs": ["/library/movies"]}})
     check("stamped empty plan reads as current", A._pending_plan_current(_state["cfg"]))
     # The candidate-config comparison (the save handler's view): the same stamp
     # must read stale against a cfg with different thresholds even though the
@@ -249,12 +254,12 @@ with tempfile.TemporaryDirectory() as td:
     # still match the stamp (else every fresh Simulate instantly reads stale).
     _raw_file["value"] = dict(_state["cfg"], SCORE_BALANCE=50.4)
     stamp_raw = {k: _raw_file["value"].get(k) for k in A._PLAN_CONFIG_KEYS}
-    p.write_text(json.dumps({"pending": {"schema": 1, "entries": entry, "plan_config": stamp_raw,
-                             "monitor_dirs": ["/library/movies"]}}))
+    _dbstate.seed(p, {"pending": {"schema": 1, "entries": entry, "plan_config": stamp_raw,
+                      "monitor_dirs": ["/library/movies"]}})
     check("hand-edited off-grid value matches its own stamp (raw vs raw)",
           A._pending_plan_current(dict(_state["cfg"], SCORE_BALANCE=50)))
     _raw_file["value"] = None
-    p.unlink()
+    _dbstate.reset(p)
     check("missing plan reads as stale", not A._pending_plan_current(_state["cfg"]))
 A._read_saved_config_file = _orig_rscf
 
@@ -341,16 +346,20 @@ with tempfile.TemporaryDirectory() as td:
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, OUTPUT_DIR=td)
     today = time.strftime("%Y-%m-%d")
-    # No cache at all: burn creates one with today stamped.
+    dbp = Path(td, "mediareducer.db")
+    # No store at all: burn creates one with today stamped.
     A.burn_daily_window_on_startup()
-    cache = json.loads(Path(td, "cache.json").read_text())
-    check("burn stamps today into a missing cache", cache.get("last_cleanup_date") == today)
-    # Existing cache with other keys: stamped without losing them.
-    Path(td, "cache.json").write_text(json.dumps({"movies": {"x": 1}, "last_cleanup_date": "2020-01-01"}))
+    cache = _dbstate.read(dbp)
+    check("burn stamps today into a missing store", cache.get("last_cleanup_date") == today)
+    # Existing store with other content: stamped without losing it (the metadata
+    # cache and everything else stay put — burn only touches last_cleanup_date).
+    _dbstate.seed(dbp, {"movies": {"x": {"protected": False, "tmdb_id": "t", "imdb_id": "i", "v": 2}},
+                        "last_cleanup_date": "2020-01-01"})
     A.burn_daily_window_on_startup()
-    cache = json.loads(Path(td, "cache.json").read_text())
-    check("burn re-stamps a stale date and keeps other keys",
-          cache.get("last_cleanup_date") == today and cache.get("movies") == {"x": 1})
+    cache = _dbstate.read(dbp)
+    check("burn re-stamps a stale date and keeps other content",
+          cache.get("last_cleanup_date") == today
+          and cache.get("movies", {}).get("x", {}).get("tmdb_id") == "t")
 
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

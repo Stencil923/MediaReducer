@@ -9,6 +9,7 @@ Live/Simulate gating direction. Guards the contract:
   mode=True:  headroom value must be 0, and a Redline floor and/or a Library Size
               Cap must be armed (either or both) to drive cleanup.
 """
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -17,6 +18,15 @@ import shutil
 import tempfile
 _OUT_DIR = tempfile.mkdtemp(prefix="mr-test-out.")
 atexit.register(shutil.rmtree, _OUT_DIR, True)
+# Hermetic library root: point MEDIAREDUCER_LIBRARY at a temp dir with a "movies"
+# subfolder (created BEFORE importing app/engine, which read the library root once
+# at import). The save handler validates that monitored dirs exist on disk; the
+# hardcoded DIRS "/library/movies" normalizes to <root>/movies, so the test no
+# longer depends on a real /library mount.
+_LIB_DIR = tempfile.mkdtemp(prefix="mr-test-lib.")
+atexit.register(shutil.rmtree, _LIB_DIR, True)
+(Path(_LIB_DIR) / "movies").mkdir(parents=True, exist_ok=True)
+os.environ["MEDIAREDUCER_LIBRARY"] = _LIB_DIR
 import app as A
 import engine
 

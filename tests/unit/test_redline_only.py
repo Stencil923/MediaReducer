@@ -8,6 +8,8 @@ import tempfile
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 import app as A
 import engine
 
@@ -165,10 +167,10 @@ finally:
 with tempfile.TemporaryDirectory() as td:
     _state["cfg"] = dict(BASE, **RL_CFG, OUTPUT_DIR=td)
     now = time.time()
-    Path(td, "cache.json").write_text(json.dumps({"pending": {"schema": 1, "entries": {
+    _dbstate.seed(Path(td, "mediareducer.db"), {"pending": {"schema": 1, "entries": {
         "/library/movies/A/A.mkv": {"title": "Worst", "size_bytes": 1000, "marked_at": now - 86400},
         "/library/movies/B/B.mkv": {"title": "Next", "size_bytes": 1000, "marked_at": now},
-    }}}), encoding="utf-8")
+    }}})
     # Pin the disk read: the marked/eligible split keys on real free space vs
     # the Redline floor, and the test machine's disk must not decide the case.
     _orig_ds = A.disk_stats

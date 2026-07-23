@@ -9,6 +9,8 @@ import tempfile
 import time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 import atexit
 import shutil
 import tempfile
@@ -104,7 +106,7 @@ try:
         code, cfg = save({"TIME_ZONE": "Pacific/Kiritimati"}, base_over={"OUTPUT_DIR": td})
         check("valid zone saves", code == 200 and cfg.get("TIME_ZONE") == "Pacific/Kiritimati")
         check("save re-points the process clock", time.strftime("%z") == "+1400")
-        cache = json.loads(Path(td, "cache.json").read_text())
+        cache = _dbstate.read(Path(td, "mediareducer.db"))
         check("zone change burns the daily window",
               cache.get("last_cleanup_date") == time.strftime("%Y-%m-%d"))
         code, _ = save({"TIME_ZONE": "Not/AZone"}, base_over={"OUTPUT_DIR": td})

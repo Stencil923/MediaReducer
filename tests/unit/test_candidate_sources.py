@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 _OUT = tempfile.mkdtemp(prefix="mr-cand-out.")
 os.environ["MEDIAREDUCER_CONFIG"] = str(Path(_OUT) / "config.json")
+import db
 import engine as E
 
 ok = True
@@ -73,8 +74,10 @@ def _reset(use_plex, use_jellyfin, *, protect_favorites=False):
     E._JELLYFIN_PROTECTED_TMDB_IDS = set()
     E._JELLYFIN_IDS_BY_MATCH_KEY = {}
     E.OUTPUT_DIR = Path(_OUT)
-    E.CACHE_FILE = Path(_OUT) / "cache.json"
-    E.CACHE_FILE.unlink(missing_ok=True)
+    E.DB_FILE = Path(_OUT) / "mediareducer.db"
+    for _f in db.db_files(E.DB_FILE):   # fresh store per combo
+        _f.unlink(missing_ok=True)
+    db.forget_initialized(E.DB_FILE)
     E.get_all_movies_from_tautulli = lambda: [dict(r) for r in _PLEX]
     E.get_all_movies_from_jellyfin = lambda: [dict(r) for r in _JELLY]
     E.fetch_protected_paths = lambda: _PLEX_PROT

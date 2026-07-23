@@ -2,9 +2,14 @@
 grew past the cap's safety floor) pauses Live with a reason instead of
 silently skipping ticks forever."""
 import sys
+import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import app as A
+
+# Isolate the store: the stubbed configs below carry no OUTPUT_DIR, and a couple
+# of tick paths read the snapshot — keep those off any real /config mount.
+A.output_dir = lambda: Path(tempfile.mkdtemp(prefix="mr-autopause."))
 
 calls = {"clock": 0, "run": 0, "summary": 0}
 _state = {"cfg": {}}
@@ -28,6 +33,9 @@ A._summary_active = False
 # The tick skips daily-only breaches once today's window is used; these cases
 # test the launch flow itself, so hold the window open.
 A._headroom_window_used_today = lambda: False
+# These cases exercise the cleanup/pause flow, which only runs when something is
+# monitored — the empty-library short-circuit is covered elsewhere.
+A._has_monitored_dirs = lambda cfg=None: True
 
 ok = True
 def check(name, cond):
@@ -78,6 +86,16 @@ check("used window skips the pointless engine launch", calls["run"] == 1)
 _state["cfg"] = {"RUN_MODE": "headroom", "REDLINE_GB": 600}
 A._scheduled_tick()
 check("redline breach launches despite the used window", calls["run"] == 2)
+
+# 7. No monitored paths: the scheduler is truly idle — the tick launches nothing
+#    and runs no Summary, even with limits breached (there's nothing to scan).
+A._has_monitored_dirs = lambda cfg=None: False
+_runs_before, _summaries_before = calls["run"], calls["summary"]
+_state["cfg"] = {"RUN_MODE": "headroom", "REDLINE_GB": 600}
+A._headroom_window_used_today = lambda: False
+A._scheduled_tick()
+check("no monitored paths -> tick does nothing (no run, no summary)",
+      calls["run"] == _runs_before and calls["summary"] == _summaries_before)
 
 print("RESULT:", "PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)

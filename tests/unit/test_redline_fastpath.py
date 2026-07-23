@@ -27,26 +27,26 @@ def setup(td):
         paths.append(f)
     out = Path(td, "out"); out.mkdir()
     engine.LIBRARY_ROOT = lib
+    engine.CHECK_PATH = lib   # hermetic: disk_usage() reads the temp library, not a real /library mount
     engine.MONITOR_DIRS = [str(movies)]
     engine._RESOLVED_MONITORED_ROOTS = None
     engine.OUTPUT_DIR = out
     engine.LOGFILE = out / "lastrun.log"
     engine.DELETED_LOG = out / "deleted.log"
     engine.PROGRESS_FILE = out / "progress.json"
-    engine.CACHE_FILE = out / "cache.json"     # the queue now lives under cache.json["pending"]
-    engine.PENDING_FILE = out / "pending_deletions.json"
+    engine.DB_FILE = out / "mediareducer.db"   # the queue lives in the DB's queue table
     engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
     engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,
                                     "REDLINE_ONLY_MODE": True})
     entries = {str(p): {"title": p.stem, "score": i + 1.0, "size_bytes": 2 * MB,
                         "marked_at": 1000000000 + i}
                for i, p in enumerate(paths)}
-    engine.save_pending(entries, stamp_thresholds=True)   # -> cache.json["pending"], stamped
+    engine.save_pending(entries, stamp_thresholds=True)   # -> the queue, stamped
     return paths
 
 
 def _pending():
-    """The pending doc ({entries, plan_config, monitor_dirs}) from cache.json."""
+    """The pending doc ({entries, plan_config, monitor_dirs}) from the store."""
     return engine.load_cache().get("pending", {})
 
 engine.fetch_protected_paths = lambda: ([], None, None, None)
@@ -364,13 +364,14 @@ with tempfile.TemporaryDirectory() as td:
     lib = Path(td, "library"); movies = lib / "movies"
     out = Path(td, "out"); out.mkdir(parents=True, exist_ok=True)
     engine.LIBRARY_ROOT = lib
+    engine.CHECK_PATH = lib   # hermetic: disk_usage() reads the temp library, not a real /library mount
     engine.MONITOR_DIRS = [str(movies)]
     engine._RESOLVED_MONITORED_ROOTS = None
     engine.OUTPUT_DIR = out
     engine.LOGFILE = out / "lastrun.log"
     engine.DELETED_LOG = out / "deleted.log"
     engine.PROGRESS_FILE = out / "progress.json"
-    engine.CACHE_FILE = out / "cache.json"
+    engine.DB_FILE = out / "mediareducer.db"
     engine.NEAR_TIE_PTS = 2.0
     engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
     engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,
@@ -417,13 +418,14 @@ with tempfile.TemporaryDirectory() as td:
     lib = Path(td, "library"); movies = lib / "movies"
     out = Path(td, "out"); out.mkdir(parents=True, exist_ok=True)
     engine.LIBRARY_ROOT = lib
+    engine.CHECK_PATH = lib   # hermetic: disk_usage() reads the temp library, not a real /library mount
     engine.MONITOR_DIRS = [str(movies)]
     engine._RESOLVED_MONITORED_ROOTS = None
     engine.OUTPUT_DIR = out
     engine.LOGFILE = out / "lastrun.log"
     engine.DELETED_LOG = out / "deleted.log"
     engine.PROGRESS_FILE = out / "progress.json"
-    engine.CACHE_FILE = out / "cache.json"
+    engine.DB_FILE = out / "mediareducer.db"
     engine.NEAR_TIE_PTS = 2.0
     engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
     engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200,

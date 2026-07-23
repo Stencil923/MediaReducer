@@ -19,8 +19,8 @@ def check(name, cond):
     ok = ok and cond
 
 tmp = Path(tempfile.mkdtemp())
-E.PENDING_FILE = tmp / "pending_deletions.json"
-E.CACHE_FILE = tmp / "cache.json"
+E.OUTPUT_DIR = tmp
+E.DB_FILE = tmp / "mediareducer.db"
 E.DELETE_DELAY_DAYS = 3
 E.log = lambda *a, **k: None   # silence
 

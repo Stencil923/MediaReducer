@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 import app as A
 
 ok = True
@@ -72,7 +74,7 @@ pend = {
             {"marked_at": now - 10 * 86400, "title": PRIVATE_PATH_SEG, "size_bytes": 8_200_000_000, "score": 7.0},
     },
 }
-(tmp / "cache.json").write_text(json.dumps({"pending": pend}), encoding="utf-8")
+_dbstate.seed(tmp / "mediareducer.db", {"pending": pend})
 
 # A run log with flagged lines embedding a private collection name and — the
 # regression that matters — an UNQUOTED absolute path whose folder/file names

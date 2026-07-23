@@ -3,6 +3,7 @@ memory), headroom's disable toggle stores 0 (redline-only mode — needs a
 Redline floor, no cap), and zero is rejected for the fields whose off switch
 is "disable" (Redline, Library cap, Max IMDb rating, staleness, file-size
 optimization)."""
+import os
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -13,6 +14,15 @@ import tempfile
 # state between test files and suite runs (rest of the suite uses tempdirs).
 _OUT_DIR = tempfile.mkdtemp(prefix="mr-test-out.")
 atexit.register(shutil.rmtree, _OUT_DIR, True)
+# Hermetic library root: point MEDIAREDUCER_LIBRARY at a temp dir with a "movies"
+# subfolder (created BEFORE importing app, which reads FILESYSTEM_CHECK_PATH once
+# at import). The save handler validates that monitored dirs exist on disk; a
+# hardcoded "/library/movies" normalizes to <root>/movies, so the payloads below
+# need no change and the test no longer depends on a real /library mount.
+_LIB_DIR = tempfile.mkdtemp(prefix="mr-test-lib.")
+atexit.register(shutil.rmtree, _LIB_DIR, True)
+(Path(_LIB_DIR) / "movies").mkdir(parents=True, exist_ok=True)
+os.environ["MEDIAREDUCER_LIBRARY"] = _LIB_DIR
 import app as A
 
 _state = {"cfg": {}}

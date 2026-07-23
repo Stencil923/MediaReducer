@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _dbstate
 import engine
 
 ok = True
@@ -57,26 +59,25 @@ def setup(td):
     engine.LOGFILE = out / "lastrun.log"
     engine.DELETED_LOG = out / "deleted.log"
     engine.PROGRESS_FILE = out / "progress.json"
-    engine.CACHE_FILE = out / "cache.json"     # the queue now lives under cache.json["pending"]
-    engine.PENDING_FILE = out / "pending_deletions.json"
+    engine.DB_FILE = out / "mediareducer.db"   # the queue lives in the DB's queue table
     engine._PLAN_CONFIG_RAW = {k: None for k in engine._PLAN_CONFIG_KEYS}
     engine._PLAN_CONFIG_RAW.update({"HEADROOM_GB": 0, "REDLINE_GB": 200, "REDLINE_ONLY_MODE": True})
     entries = {str(p): {"title": p.stem, "score": i + 1.0, "size_bytes": 2 * MB,
                         "marked_at": 1000000000 + i}
                for i, p in enumerate(paths)}
-    engine.save_pending(entries, stamp_thresholds=True)   # -> cache.json["pending"], stamped
+    engine.save_pending(entries, stamp_thresholds=True)   # -> the queue, stamped
     return paths
 
 # ── Preview reports the covering prefix and touches nothing ───────────────────
 with tempfile.TemporaryDirectory() as td:
     paths = setup(td)
-    before = engine.CACHE_FILE.read_text()
+    before = _dbstate.read(engine.DB_FILE)
     count, freed, covers = engine._debug_cleanup_delete_preview(5 * MB, "REDLINE")
     check("preview reports the covering prefix (3 of the 2 MB files, target 5 MB)",
           count == 3 and freed == 6 * MB and covers is True)
     check("preview deletes nothing", all(p.exists() for p in paths))
-    check("preview leaves the pending queue byte-for-byte unchanged",
-          engine.CACHE_FILE.read_text() == before)
+    check("preview leaves the pending queue unchanged",
+          _dbstate.read(engine.DB_FILE) == before)
     check("preview writes no deleted.log", not engine.DELETED_LOG.exists())
 
 # ── A movie watched since marking is spared, next in line covers ──────────────
@@ -174,7 +175,7 @@ with tempfile.TemporaryDirectory() as td:
     engine.MONITOR_DIRS = [str(movies)]
     engine._RESOLVED_MONITORED_ROOTS = None
     engine.OUTPUT_DIR = out
-    engine.CACHE_FILE = out / "cache.json"
+    engine.DB_FILE = out / "mediareducer.db"
     engine.PROGRESS_FILE = out / "progress.json"
     engine.DELETED_LOG = out / "deleted.log"
     engine.NEAR_TIE_PTS = 2.0

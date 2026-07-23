@@ -113,6 +113,28 @@ check("an early ABORT yields a synthetic RUN FAILED report",
 found, _ = A._extract_log_section(clean, "errors")
 check("a clean run reports no errors section", not found)
 
+# A Debug Cleanup works from the marked queue (no library scan), so its log has no
+# SCAN / ELIGIBLE CANDIDATES banners — but its "Marked-queue re-verify" and
+# "Delete-from-queue preview" stages map to the eligible & deletions sections, so the
+# same detailed-log jump targets work, mirroring a real Cleanup.
+dbg = L("====== DEBUG CLEANUP (no deletions) ======",
+        "── Marked-queue re-verify (same as a Cleanup) ──",
+        "Mark re-size: refreshed plays & scores for 40 movie(s).",
+        "── Delete-from-queue preview [LIBRARY CAP] — target ~2642.4 GB ──",
+        "WOULD DELETE (queue #1): Starship: Rising | score=14.3 | size=0.79 GB | path=/x",
+        "====== CLEANUP SUMMARY [DEBUG CLEANUP] ======",
+        "Debug Cleanup: the marked queue WOULD free ~308.7 GB", "done")
+found_e, elig = A._extract_log_section(dbg, "eligible")
+check("Debug Cleanup: the marked-queue re-verify is the eligible section",
+      found_e and "refreshed plays" in elig and "WOULD DELETE" not in elig)
+found_d, dele2 = A._extract_log_section(dbg, "deletions")
+check("Debug Cleanup: the delete-from-queue preview is the deletions section",
+      found_d and "WOULD DELETE (queue #1)" in dele2 and "CLEANUP SUMMARY" not in dele2)
+found_s, _ = A._extract_log_section(dbg, "summary")
+check("Debug Cleanup: the summary section is found", found_s)
+found_sc, _ = A._extract_log_section(dbg, "scan")
+check("Debug Cleanup: there is no scan section (it never scans the library)", not found_sc)
+
 # ── Hostile pending-queue input: no crash, safe reads ────────────────────────
 check("_entry_size_bytes reads garbage size as 0",
       A._entry_size_bytes({"size_bytes": "not-a-number"}) == 0
