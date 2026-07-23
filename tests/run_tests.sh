@@ -89,6 +89,9 @@ PY
   export MR_BASE_URL="http://127.0.0.1:$PORT"
   APP_PID="$(boot_app "$MEDIAREDUCER_CONFIG" "$TMP/e2e/library" "$PORT")"
   run e2e_fullrun_plex node tests/e2e/e2e_fullrun.mjs
+  # The CLI (cli.py) drives the SAME running service over HTTP — smoke it against
+  # this booted app (after the fullrun, so its config edits don't perturb the run).
+  MR_BASE_URL="http://127.0.0.1:$PORT" run cli_smoke python3 tests/e2e/cli_smoke.py
 
   python3 tests/fixtures/make_fixtures.py "$TMP/e2e-jf" jellyfin >/dev/null
   JF_PORT=$((PORT+1))
