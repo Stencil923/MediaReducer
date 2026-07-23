@@ -366,7 +366,7 @@ tr.prune td:first-child{box-shadow:inset 3px 0 0 var(--border-danger)}
 <div class="card" id="filter-score-card">
   <div class="slbl">Filtering &amp; Scoring</div>
   <div id="exp-run-lock-note" class="config-inline-warning" style="margin:0 0 .75rem" hidden>A run is active. Filtering &amp; Scoring is locked until it finishes.</div>
-  <div class="paneldesc" style="margin:.2rem 0 .6rem">The rules every scan uses to decide what can be deleted and in what order. Changes preview on this screen immediately — Save keeps them.</div>
+  <div class="paneldesc" style="margin:.2rem 0 .6rem">The rules every scan uses to decide what can be deleted and in what order. Changes preview here instantly; Save applies them to the deletion queue right away — no Simulate needed.</div>
 
   <div class="filter-score-group">
     <div class="filter-score-heading">Eligibility filters</div>
@@ -830,8 +830,13 @@ function updateCfgButtons(){
   const revertBtn=document.getElementById('btn-cfg-revert');
   if(saveBtn){
     saveBtn.disabled=cfgSaving||!dirty||expRunActive||invalid;
-    saveBtn.textContent=cfgSaving?'Saving…':'Save';
+    // "Saving" with an ANIMATED ellipsis (.pending-ellipsis ::after) — the same
+    // affordance the Config page's Save uses — so it's unmistakable that the save
+    // is still in flight (and why leaving the page is being guarded). The label
+    // text carries no dots; the animation supplies them.
+    saveBtn.textContent=cfgSaving?'Saving':'Save';
     saveBtn.classList.toggle('btn-busy',cfgSaving);
+    saveBtn.classList.toggle('pending-ellipsis',cfgSaving);
     saveBtn.title=expRunActive?'A run is active. Try again when it finishes.':(invalid?'Fix the highlighted fields first.':'');
   }
   if(revertBtn){
@@ -907,6 +912,18 @@ async function saveCfgToConfig(){
   }
   return ok;
 }
+
+// Leaving mid-save aborts the POST (the save may never commit), and navigating
+// away from a dirty form silently discards the edits — guard both, mirroring the
+// Configuration page. The animated "Saving" label makes the in-flight case
+// visible; this stops an accidental click away from throwing it out.
+window.addEventListener('beforeunload',(event)=>{
+  let dirty=false;
+  try{ dirty=!!savedCfg && !cfgEq(readCfg(),savedCfg); }catch{ dirty=false; }
+  if(!cfgSaving && !dirty) return;
+  event.preventDefault();
+  event.returnValue='';
+});
 
 function readPruneGb(){
   const v=Number(document.getElementById('over-gb').value);

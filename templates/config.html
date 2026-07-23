@@ -397,16 +397,16 @@
         {% set cleanup_desc = 'Scheduled cleanup that enforces the free-space rules, plus the Library Size Cap when enabled. Run Simulate first to preview what it would delete.' %}
 
         {% if config.get('_RUN_MODE_AUTOPAUSE_REASON') and config.RUN_MODE == 'paused' %}
-        <div class="config-inline-warning mb-3">Automatic Cleanup was paused automatically: {{ config.get('_RUN_MODE_AUTOPAUSE_REASON') }}</div>
+        <div class="config-inline-warning mb-3">Automatic Cleanup was switched to Monitor Only automatically: {{ config.get('_RUN_MODE_AUTOPAUSE_REASON') }}</div>
         {% endif %}
         <div class="form-check config-card run-mode-card" id="mode-card-paused" aria-disabled="false">
           <input class="form-check-input" type="radio" name="RUN_MODE" id="mode-paused"
                  value="paused" {{ 'checked' if (config.RUN_MODE == 'paused' or saved_mode_disabled) else '' }}>
           <label class="form-check-label" for="mode-paused">
             <div class="run-mode-title">
-              <span class="run-mode-name">Paused</span>
+              <span class="run-mode-name">Monitor Only</span>
             </div>
-            <span class="run-mode-desc">Automatic cleanup is off. You can still run Simulate or a manual one-time Cleanup from the Dashboard.</span>
+            <span class="run-mode-desc">Never deletes on its own. A ~15-minute refresh and a daily Simulate keep the queue and library size current; run Simulate or a one-time Cleanup anytime from the Dashboard.</span>
           </label>
         </div>
 
@@ -740,7 +740,7 @@
           <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-space" onclick="resetSectionToDefault('space')" {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>Reset to Default</button>
         </div>
 
-        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic Cleanup is on — saving a threshold change pauses it until you run Simulate and re-enable it.</div>
+        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic Cleanup is on — saving a threshold change pauses it until you review the rebuilt plan and re-enable it.</div>
         <div id="space-threshold-api-note" class="config-inline-warning mb-3" {{ 'hidden' if selected_media_apis_ready else '' }}>{{ 'Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.') }}</div>
         <div id="space-threshold-paths-note" class="config-inline-warning mb-3" {{ 'hidden' if thresholds_have_library or not selected_media_apis_ready else '' }}>Save a monitored directory first.</div>
 
@@ -936,7 +936,7 @@
                   <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-clear-cache" onclick="clearCache()" disabled>Clear cache</button>
                   <button type="button" class="btn btn-sm btn-outline-warning pr-debug-btn debug-mode-control{{ ' d-none' if not config.DEBUG_MODE else '' }}" id="btn-debug-cache"
                           onclick="prRunDebug('/api/debug/cache', 'Cache contents', this)"
-                          title="Debug: what cache.json currently holds">Debug</button>
+                          title="Debug: what the cache store currently holds">Debug</button>
                 </div>
               </div>
             </div>
@@ -1785,7 +1785,7 @@ function _applySpaceThresholdLock() {
       note.hidden = false;
     } else if (_savedLiveModeLocked()) {
       // Not a lock — a heads-up that a threshold save pauses automatic mode.
-      note.textContent = 'Automatic Cleanup is on — saving a threshold change pauses it until you run Simulate and re-enable it.';
+      note.textContent = 'Automatic Cleanup is on — saving a threshold change pauses it until you review the rebuilt plan and re-enable it.';
       note.hidden = false;
     } else {
       note.hidden = true;
@@ -4122,7 +4122,7 @@ async function saveConfig() {
       }
       const health = d.connection_health || null;
       if (d.automatic_run_mode_paused) {
-        showToast('Saved. Automatic Cleanup was paused: '
+        showToast('Saved. Automatic Cleanup switched to Monitor Only: '
           + (d.automatic_run_mode_paused_reason || 're-enable it once the connections check out.'), 'warning');
       } else if (d.radarr_cleanup_forced_disabled) {
         showToast('Saved. Radarr cleanup was disabled.', 'warning');
@@ -4377,7 +4377,7 @@ if (_lastConfigHealth) _applyConfigHealth(_lastConfigHealth);
       if (paused) paused.checked = true;
     }
     dbg.disabled = live.checked;
-    dbg.title = live.checked ? 'Set Scheduler Mode to Paused to enable Debug mode.' : '';
+    dbg.title = live.checked ? 'Set Scheduler Mode to Monitor Only to enable Debug mode.' : '';
     if (typeof _updateRunModeAvailability === 'function') _updateRunModeAvailability();
   };
   dbg.addEventListener('change', sync);

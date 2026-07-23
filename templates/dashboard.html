@@ -415,11 +415,19 @@
      force mid-word breaks — step everything down one notch instead. */
   @media (max-width: 355px) {
     .metric-main .value,
-    .dashboard-target-row .value,
     .dashboard-last-run .value { font-size: 1.3rem; }
     .dashboard-history-segment { padding: 10px 8px; }
     .dashboard-history-segment .dashboard-mini-label,
     .dashboard-target-row .dashboard-mini-label { font-size: .7rem; letter-spacing: .05em; }
+  }
+  /* The Cleanup Targets values are WORDS as well as numbers ("Disabled",
+     "Redline only", "Off"). In their half-width grid column, "Disabled" (the
+     longest) is a few px too wide at every common phone width up to ~389px and
+     overflow-wrap snaps it mid-word ("Disable d"). Step just these values down
+     one notch so the whole word fits down to 320px; the numeric values stay
+     plenty readable and the hero storage number keeps its size at 360/375. */
+  @media (max-width: 389.98px) {
+    .dashboard-target-row .value { font-size: 1.2rem; }
   }
   @media (prefers-reduced-motion: reduce) {
     .dashboard-history-btn:hover, .dashboard-history-btn:focus { transform: none; }
@@ -445,12 +453,12 @@
            populate them without a page reload. #}
           <div class="metric-main">
             <div class="value"><span id="storage-free">{{ disk.free_gb|commafy if disk else '—' }}</span> <span class="unit">GB free</span></div>
-            <div class="sub dashboard-metric-sub" id="storage-sub">{% if disk %}{{ disk.used_gb|commafy }} / {{ disk.total_gb|commafy }} GB &nbsp;({{ disk.pct_used }}% USED){% else %}Could not read {{ library_root }} — fix the mount, then press ↻{% endif %}</div>
+            <div class="sub dashboard-metric-sub" id="storage-sub">{% if not thresholds_configured %}— / —&nbsp;(—% USED){% elif disk %}{{ disk.used_gb|commafy }} / {{ disk.total_gb|commafy }} GB &nbsp;({{ disk.pct_used }}% USED){% else %}Could not read {{ library_root }} — fix the mount, then press ↻{% endif %}</div>
           </div>
           <div class="dashboard-library-line">
             <span class="dashboard-mini-value">
               <span id="library-size-value">{% if library_gb is not none %}{{ '{:,.0f}'.format(library_gb) }}{% else %}—{% endif %}</span>
-              <span class="unit" id="library-size-unit"{% if library_gb is none %} hidden{% endif %}>GB</span>
+              <span class="unit" id="library-size-unit">GB</span>
             </span>
             <span class="dashboard-mini-label">Media library</span>
           </div>
@@ -516,7 +524,7 @@
       <div class="stat-card">
         {% set is_live = run_mode == 'headroom' %}
         {% set mode_labels = {
-          'paused': 'Paused', 'headroom': 'Automatic Cleanup',
+          'paused': 'Monitor Only', 'headroom': 'Automatic Cleanup',
         } %}
         <div class="metric-topline">
           <div class="label">Last Run</div>
@@ -530,7 +538,7 @@
         </div>
         <div class="dashboard-last-run metric-main">
           <span class="value" id="last-run-value" data-last-run-ts="{{ last_run_ts or '' }}">{{ last_run or '—' }}</span>
-          <div class="sub" id="next-run-sub">{% if run_mode == 'paused' %}Scheduler paused{% else %}Next run: calculating…{% endif %}</div>
+          <div class="sub" id="next-run-sub">{% if not thresholds_configured %}Scheduler paused{% elif run_mode == 'paused' %}Monitor Only — next check…{% else %}Next run: calculating…{% endif %}</div>
         </div>
         <div class="dashboard-history-row metric-bottom">
           <button type="button" class="dashboard-history-btn dashboard-marked-btn"
@@ -693,34 +701,64 @@
     .rp-pill.is-warn  { border-color:var(--border-warning); background:var(--bg-warning);  color:var(--text-warning); }
     .rp-trigger { font-size:.78rem; color:var(--text-muted); }
     .rp-msg { font-size:.78rem; color:var(--text-secondary); margin-left:auto; text-align:right; }
-    .rp-steps { display:flex; align-items:flex-start; margin-bottom:16px; }
-    .rp-step { flex:1; display:flex; flex-direction:column; align-items:center; gap:6px;
+    .rp-steps { display:flex; align-items:flex-start; margin-bottom:16px; --rp-done:#7e9b84; --rp-fail:#b3696e; }
+    .rp-step { flex:1; display:flex; flex-direction:column; align-items:center; gap:7px;
                position:relative; text-align:center; min-width:0; }
-    .rp-step:not(:first-child)::before { content:""; position:absolute; top:11px; left:-50%;
-               width:100%; height:1.5px; background:var(--border); z-index:0; }
-    .rp-step.is-done:not(:first-child)::before { background:var(--accent); }
+    .rp-step:not(:first-child)::before { content:""; position:absolute; top:12px; left:-50%;
+               width:100%; height:2px; border-radius:2px; background:var(--border); z-index:0;
+               transition:background-color .3s ease; }
+    .rp-step.is-done:not(:first-child)::before { background:var(--rp-done); }
     .rp-step.is-active:not(:first-child)::before { background:var(--accent); }
-    .rp-step.is-failed:not(:first-child)::before { background:var(--text-danger); }
-    .rp-step.is-failed-line:not(:first-child)::before { background:var(--text-danger); }
-    .rp-step.is-success-line:not(:first-child)::before { background:#7e9b84; }
+    .rp-step.is-failed:not(:first-child)::before { background:var(--rp-fail); }
+    .rp-step.is-failed-line:not(:first-child)::before { background:var(--rp-fail); }
+    .rp-step.is-success-line:not(:first-child)::before { background:var(--rp-done); }
     .rp-step.is-warn-line:not(:first-child)::before { background:var(--text-warning); }
-    .rp-dot { position:relative; z-index:1; width:23px; height:23px; border-radius:50%;
+    .rp-dot { position:relative; z-index:1; width:25px; height:25px; border-radius:50%;
               border:1.5px solid var(--border-strong); background:var(--surface-1);
-              display:flex; align-items:center; justify-content:center; font-size:.72rem; color:var(--text-muted); }
+              display:flex; align-items:center; justify-content:center; font-size:.74rem;
+              color:var(--text-muted); font-variant-numeric:tabular-nums;
+              transition:background-color .3s ease, border-color .3s ease, box-shadow .3s ease; }
     .rp-step.is-active .rp-dot { background:var(--accent); border-color:var(--accent); color:var(--page-bg);
-              animation:rp-dot-pulse var(--pr-pulse-period) ease-in-out infinite; }
+              font-weight:600; animation:rp-dot-pulse var(--pr-pulse-period) ease-in-out infinite; }
     @keyframes rp-dot-pulse {
       0%   { opacity:1;   box-shadow:0 0 0 0   color-mix(in srgb, var(--accent) 55%, transparent); }
       70%  { opacity:.55; box-shadow:0 0 0 7px color-mix(in srgb, var(--accent) 0%, transparent); }
       100% { opacity:1;   box-shadow:0 0 0 0   color-mix(in srgb, var(--accent) 0%, transparent); }
     }
-    .rp-step.is-done .rp-dot { background:var(--bg-sage); border-color:transparent; color:var(--text-secondary); }
-    .rp-step.is-failed .rp-dot { background:var(--bg-danger); border-color:var(--text-danger); color:var(--text-danger); font-weight:700; }
-    .rp-step.is-success-end .rp-dot { background:#7e9b84; border-color:#7e9b84; color:var(--page-bg); box-shadow:0 0 0 3px color-mix(in srgb, #7e9b84 22%, transparent); }
-    .rp-step.is-warn-end .rp-dot { background:var(--text-warning); border-color:var(--text-warning); color:var(--page-bg); box-shadow:0 0 0 3px color-mix(in srgb, var(--text-warning) 24%, transparent); }
+    /* Completed steps: a solid disc with a CRISP CSS checkmark. The engine's ✓ glyph
+       is hidden (color:transparent) so the mark renders identically on every font
+       instead of a thin, off-centre text tick — the check is "cut out" of the disc
+       in the page colour, matching the app's success accent. */
+    .rp-step.is-done .rp-dot,
+    .rp-step.is-success-end .rp-dot,
+    .rp-step.is-warn-end .rp-dot { color:transparent; border-color:transparent; }
+    .rp-step.is-done .rp-dot,
+    .rp-step.is-success-end .rp-dot { background:var(--rp-done); }
+    .rp-step.is-success-end .rp-dot { box-shadow:0 0 0 3px color-mix(in srgb, var(--rp-done) 26%, transparent); }
+    .rp-step.is-warn-end .rp-dot { background:var(--text-warning);
+              box-shadow:0 0 0 3px color-mix(in srgb, var(--text-warning) 28%, transparent); }
+    .rp-step.is-done .rp-dot::after,
+    .rp-step.is-success-end .rp-dot::after,
+    .rp-step.is-warn-end .rp-dot::after {
+      content:""; position:absolute; left:50%; top:50%; width:6px; height:10px;
+      border:solid var(--page-bg); border-width:0 2px 2px 0; border-radius:1px;
+      transform:translate(-50%,-58%) rotate(45deg); }
+    /* Failed / stopped phase: a solid danger disc with a CRISP CSS-drawn ✕ cut
+       out in the page colour — the same treatment as the completed checkmarks,
+       so the interrupted step reads as a matched "bad" counterpart instead of a
+       thin text glyph on a faint tint. The engine's × text is hidden. */
+    .rp-step.is-failed .rp-dot { background:var(--rp-fail); border-color:transparent; color:transparent;
+              box-shadow:0 0 0 3px color-mix(in srgb, var(--rp-fail) 24%, transparent); }
+    .rp-step.is-failed .rp-dot::before,
+    .rp-step.is-failed .rp-dot::after {
+      content:""; position:absolute; left:50%; top:50%; width:11px; height:2px;
+      border-radius:1px; background:var(--page-bg); }
+    .rp-step.is-failed .rp-dot::before { transform:translate(-50%,-50%) rotate(45deg); }
+    .rp-step.is-failed .rp-dot::after  { transform:translate(-50%,-50%) rotate(-45deg); }
     .rp-dot-label { font-size:.7rem; color:var(--text-muted); line-height:1.2; }
-    .rp-step.is-active .rp-dot-label { color:var(--text-primary); }
-    .rp-step.is-done .rp-dot-label { color:var(--text-secondary); }
+    .rp-step.is-active .rp-dot-label { color:var(--text-primary); font-weight:600; }
+    .rp-step.is-done .rp-dot-label,
+    .rp-step.is-success-end .rp-dot-label { color:var(--text-secondary); }
     .rp-step.is-failed .rp-dot-label { color:var(--text-danger); }
     .rp-barrow { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px; }
     .rp-bar-label { font-size:.82rem; font-weight:600; color:var(--text-primary); }
@@ -992,6 +1030,10 @@
 <script>
 let _active       = {{ 'true' if run_active else 'false' }};
 const _paused     = {{ 'true' if run_mode == 'paused' else 'false' }};
+// At least one monitored library path exists. When false the scheduler is truly
+// idle (nothing to scan/size/clean), so the storage card dashes out and the Last
+// Run line reads "Scheduler paused". Refreshed by every status poll.
+let _monitoringActive = {{ 'true' if thresholds_configured else 'false' }};
 let _summaryOk = {{ 'false' if cleanup_state.summary_disabled else 'true' }};
 let _simulateOk = {{ 'false' if cleanup_state.simulate_disabled else 'true' }};
 // In Debug mode the Live button IS the yellow Debug Cleanup. It ignores the
@@ -1004,6 +1046,7 @@ let _summaryDisabledMessage = {{ (cleanup_state.summary_tooltip or 'Connect the 
 let _simulateDisabledMessage = {{ (cleanup_state.simulate_tooltip or 'Fix Space Thresholds first.')|tojson }};
 let _cleanupDisabledMessage = {{ ((cleanup_state.debug_tooltip if debug_mode else cleanup_state.cleanup_tooltip) or 'Fix Space Thresholds first.')|tojson }};
 let _nextRunTime  = null;
+let _nextTickTime = null;   // the raw ~15-min scheduler tick, any mode (Monitor Only countdown)
 let _autopauseReason = {{ (autopause_reason or '')|tojson }};
 // Debug mode: the Cleanup button is the yellow Debug Cleanup (no-delete).
 const _debugMode = {{ debug_mode|tojson }};
@@ -1151,6 +1194,7 @@ document.addEventListener('click', (ev) => {
 // (long wrapped lines make scroll-position math unreliable); "Show full log"
 // returns to the complete log.
 let _logSections = {};            // kind -> bool, from the last /api/logs/last poll
+let _rpStatCounts = { scan: 0, eligible: 0, deletions: 0 };  // last frame's box counts
 let _rpErrorsClickable = false;   // pill is a jump target only in error/warn states
 let _logViewMode = 'tail';        // 'tail' = full/live log, 'section' = one section
 let _logViewKind = null;
@@ -1171,6 +1215,16 @@ function _logSectionComplete(kind) {
   if (i === -1) return true;
   return _LOG_SECTION_ORDER.slice(i + 1).some(k => _logSections[k]);
 }
+// A stat box jumps to its log section only when that section is complete AND the
+// box has something to show: a 0 count (Scanned / Eligible / Would-delete) would
+// land on an empty or just-opened banner, so it stays inert. The Summary box is
+// exempt — a run always writes a summary, even one that would free nothing
+// ("Would free 0" is still worth reading).
+function _logBoxJumpable(kind) {
+  if (!_logSectionComplete(kind)) return false;
+  if (kind === 'summary') return true;
+  return (_rpStatCounts[kind] || 0) > 0;
+}
 
 function _applyLogJumpAffordance() {
   const targets = {
@@ -1186,7 +1240,7 @@ function _applyLogJumpAffordance() {
   for (const [kind, id] of Object.entries(targets)) {
     const el = document.getElementById(id);
     if (!el) continue;
-    const on = _logSectionComplete(kind);
+    const on = _logBoxJumpable(kind);
     el.classList.toggle('log-jumpable', on);
     if (on) { el.setAttribute('role', 'button'); el.setAttribute('tabindex', '0'); el.title = titles[kind]; }
     else { el.removeAttribute('role'); el.removeAttribute('tabindex'); el.removeAttribute('title'); }
@@ -1213,7 +1267,7 @@ function _setLogViewUI() {
 
 async function jumpToLogSection(kind) {
   if (kind === 'errors' && !_rpErrorsClickable) return;
-  if (kind !== 'errors' && !_logSectionComplete(kind)) return;   // still being written — stat isn't clickable
+  if (kind !== 'errors' && !_logBoxJumpable(kind)) return;   // still writing, or a 0-count box — inert
   if (!_logSections[kind]) return;   // not written yet
   const win = document.getElementById('log-window');
   const term = document.getElementById('log-term');
@@ -1414,6 +1468,11 @@ function renderProgress(p) {
   else if (stopped) { pill.textContent = 'Stopped'; pill.classList.add('is-error'); }
   else { pill.textContent = 'Done'; pill.classList.add('is-done'); }
   _rpErrorsClickable = !active && (failed || stopped || withErrors);
+  // Stash this frame's raw box counts so the jump affordance can keep a 0-count
+  // box (Scanned / Eligible / Would-delete) inert. Summary is exempt — see
+  // _logBoxJumpable — so its count isn't tracked here.
+  _rpStatCounts = { scan: Number(p.scanned) || 0, eligible: Number(p.eligible) || 0,
+                    deletions: Number(p.deleted) || 0 };
   _applyLogJumpAffordance();
 
   document.getElementById('rp-trigger').textContent = (active && p.trigger) ? ('· ' + _rpTriggerLabel(p.trigger)) : '';
@@ -2066,13 +2125,11 @@ function _updateStorageCard(disk, libraryGb) {
   const libVal = document.getElementById('library-size-value');
   const libUnit = document.getElementById('library-size-unit');
   if (libVal) {
-    if (libraryGb !== null && libraryGb !== undefined && libraryGb !== '') {
-      libVal.textContent = Number(libraryGb).toLocaleString(undefined, { maximumFractionDigits: 0 });
-      if (libUnit) libUnit.hidden = false;
-    } else {
-      libVal.textContent = '—';
-      if (libUnit) libUnit.hidden = true;
-    }
+    // Keep the "GB" unit visible either way, so an unknown size reads "— GB".
+    if (libUnit) libUnit.hidden = false;
+    libVal.textContent = (libraryGb !== null && libraryGb !== undefined && libraryGb !== '')
+      ? Number(libraryGb).toLocaleString(undefined, { maximumFractionDigits: 0 })
+      : '—';
   }
   if (disk) {
     const free = document.getElementById('storage-free');
@@ -2085,6 +2142,18 @@ function _updateStorageCard(disk, libraryGb) {
     if (bar && disk.pct_used !== undefined) {
       bar.style.width = `${disk.pct_used}%`;
     }
+  } else if (!_monitoringActive) {
+    // Nothing monitored: dash the whole card and empty the bar. (A disk read that
+    // simply FAILED while monitoring keeps its "Could not read… press ↻" hint, so
+    // only dash when there are genuinely no monitored paths.)
+    const free = document.getElementById('storage-free');
+    const sub = document.getElementById('storage-sub');
+    const bar = document.getElementById('storage-bar');
+    const libFill = document.getElementById('storage-bar-library');
+    if (free) free.textContent = '—';                     // "— GB free" (unit span stays)
+    if (sub) sub.innerHTML = '— / —&nbsp;(—% USED)';       // structure kept, numbers dashed
+    if (bar) bar.style.width = '0%';
+    if (libFill) libFill.style.width = '0%';
   }
   _positionStorageBar(disk, libraryGb);
 }
@@ -2149,6 +2218,14 @@ function _updateBreachNote() {
   // and the specific crossed target's row goes red with it.
   const el = document.getElementById('breach-note');
   if (!el) return;
+  if (!_monitoringActive) {
+    // Nothing monitored — no thresholds to breach. Hide the note and clear any
+    // red target rows left from when dirs were still configured.
+    el.hidden = true;
+    ['target-row-headroom', 'target-row-redline', 'target-row-cap']
+      .forEach(id => document.getElementById(id)?.classList.remove('is-breached'));
+    return;
+  }
   const d = _currentDeficits();
   [['headroom', 'target-row-headroom'], ['redline', 'target-row-redline'], ['cap', 'target-row-cap']]
     .forEach(([key, id]) => {
@@ -2215,6 +2292,18 @@ function _updateBreachNote() {
 function _positionStorageBar(disk, libraryGb) {
   if (disk) _lastStorageSnapshot = { disk, libraryGb };
   _updateBreachNote();
+  if (!_monitoringActive) {
+    // Nothing monitored: drop the last reading and clear the bar's library
+    // segment, threshold markers, and legend so none linger from before the
+    // dirs were removed.
+    _lastStorageSnapshot = null;
+    const libEl = document.getElementById('storage-bar-library');
+    if (libEl) libEl.style.width = '0%';
+    ['storage-mark-headroom', 'storage-mark-redline', 'storage-mark-cap',
+     'dbl-library', 'dbl-cap', 'dbl-headroom', 'dbl-redline']
+      .forEach(id => { const e = document.getElementById(id); if (e) e.hidden = true; });
+    return;
+  }
   const track = document.getElementById('storage-bar-track');
   if (!track) return;
   const total = disk ? _finiteNum(disk.total_gb) : null;
@@ -2456,6 +2545,8 @@ async function syncStatus({refreshLog = true} = {}) {
     const d = await _fetchJson(`/api/status?${prTimeQuery()}&_=${Date.now()}`, { cache: 'no-store' }, 5000);
     const wasActive = _active;
     _nextRunTime = d.next_run_time || null;
+    _nextTickTime = d.next_tick_time || null;
+    if (d.thresholds_configured !== undefined) _monitoringActive = !!d.thresholds_configured;
     _autopauseReason = d.run_mode_autopause_reason || '';
     _applyCleanupState(d.cleanup_state);
     if (!_summaryPollActive) _summaryBusy = !!d.summary_active;
@@ -2578,6 +2669,14 @@ async function stopRun() {
     showToast(d.message, d.ok ? 'success' : 'info');
     if (d.ok) {
       setRunning(false);
+      // The stop handler already wrote the terminal "stopped" frame (with the
+      // interrupted phase preserved) before responding, so fetch it NOW to draw
+      // the failed × immediately. Without this the stepper stays frozen on the
+      // last mid-run frame: setRunning(false) clears _active, which then makes
+      // syncStatus's trailing-fetch guard (run_active || wasActive) skip the
+      // progress refresh — the terminal frame only landed on a later
+      // visibility/pageshow refresh.
+      refreshProgress();
       await refreshLastLog(_FINAL_LOG_LINES);
     }
   } catch (err) {
@@ -2602,7 +2701,7 @@ document.addEventListener('keydown', (e) => {
 if (_active) { setRunning(true); startStream(false); }
 if (_paused) {
   const cleanupBtn = document.getElementById('btn-cleanup');
-  if (cleanupBtn && _cleanupOk) cleanupBtn.title = 'Manual one-time Cleanup while paused: deletes to your thresholds now (no delay, no daily window); does not enable the scheduler.';
+  if (cleanupBtn && _cleanupOk) cleanupBtn.title = 'Manual one-time Cleanup: deletes to your thresholds now (no delay, no daily window); does not enable Automatic Cleanup.';
 }
 
 // Countdown updater (every second)
@@ -2622,10 +2721,31 @@ function _updateCountdown() {
         && _nextTickAfterRunTime()));
   const willPrune = !_active && !_paused && !!_nextRunTime && nextTickPrunes;
   el.classList.toggle('will-prune', willPrune);
-  if (_active) { el.textContent = 'Run in progress — scheduler paused'; el.title = ''; return; }
-  if (_paused) {
+  if (_active) { el.textContent = 'Run in progress'; el.title = ''; return; }
+  if (!_monitoringActive) {
+    // Nothing monitored → the scheduler genuinely does nothing (_scheduled_tick
+    // no-ops), so say so plainly rather than counting down to a tick that idles.
     el.textContent = 'Scheduler paused';
-    el.title = _autopauseReason || '';   // the why, on hover; Config shows it too
+    el.title = 'No monitored library paths — add one in Configuration to start monitoring.';
+    return;
+  }
+  if (_paused) {
+    // Monitor Only isn't idle: every ~15 min the scheduler refreshes the
+    // marked/eligible queue and re-checks the library, and once a day it runs a
+    // Simulate to keep the deletion plan current — it just never deletes on its
+    // own. Surface that ~15-min timer as a neutral countdown (never red).
+    el.title = _autopauseReason
+      ? ('Automatic Cleanup was switched to Monitor Only: ' + _autopauseReason)
+      : 'Monitor Only: a ~15-minute queue/library refresh and a daily Simulate keep the plan current — it never deletes on its own.';
+    if (_nextTickTime) {
+      const diff = Math.max(0, new Date(_nextTickTime).getTime() - Date.now());
+      const m = Math.floor(diff / 60000);
+      const s = Math.floor((diff % 60000) / 1000);
+      el.textContent = diff === 0 ? 'Checking now…'
+        : `Next library check in ${m}:${s.toString().padStart(2, '0')}`;
+    } else {
+      el.textContent = 'Monitor Only — checks every ~15 min';
+    }
     return;
   }
   el.title = willPrune ? 'Over space limits — this run will prune.' : '';
