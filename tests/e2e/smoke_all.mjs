@@ -23,6 +23,48 @@ for (const path of ['/', '/config', '/explorer']) {
   }
   await p.close();
 }
+
+// ── Phone-width sanity: no page may scroll horizontally at common smartphone
+// widths, and the dashboard's Cleanup Targets word-values (e.g. "Disabled")
+// must not break mid-word into a second line. 320 = smallest common (SE-class),
+// 360 = most common Android, 390 = iPhone 12-15.
+for (const w of [320, 360, 390]) {
+  const ctx = await b.newContext({ viewport: { width: w, height: 780 } });
+  for (const path of ['/', '/config', '/explorer']) {
+    const p = await ctx.newPage();
+    try {
+      await p.goto(BASE + path, { waitUntil: 'load', timeout: 20000 });
+      await p.waitForTimeout(700);
+      const overflow = await p.evaluate(() =>
+        Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth);
+      const ok = overflow <= 1;
+      console.log(`${ok ? 'PASS' : 'FAIL'} ${path}@${w} horizontal-overflow=${overflow}px`);
+      pass = pass && ok;
+      if (path === '/') {
+        // Each Cleanup Targets value must sit on ONE line (a mid-word break
+        // like "Disable d" doubles the element's height past one line-box).
+        const wrapped = await p.evaluate(() => {
+          const bad = [];
+          for (const id of ['target-row-headroom', 'target-row-redline']) {
+            const v = document.querySelector('#' + id + ' .value');
+            if (!v) continue;
+            const lh = parseFloat(getComputedStyle(v).lineHeight) || 24;
+            if (v.clientHeight > lh * 1.6) bad.push(id + ':' + v.textContent.trim());
+          }
+          return bad;
+        });
+        const vok = wrapped.length === 0;
+        console.log(`${vok ? 'PASS' : 'FAIL'} cleanup-target values single-line@${w}${vok ? '' : ' — ' + wrapped.join(', ')}`);
+        pass = pass && vok;
+      }
+    } catch (e) {
+      console.log(`FAIL ${path}@${w}: ${e.message}`);
+      pass = false;
+    }
+    await p.close();
+  }
+  await ctx.close();
+}
 await b.close();
 console.log('RESULT:', pass ? 'PASS' : 'FAIL');
 process.exit(pass ? 0 : 1);
