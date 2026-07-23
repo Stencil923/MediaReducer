@@ -30,8 +30,11 @@ run() {
 }
 
 # ── Unit tests (each is a standalone script; hermetic via a temp config) ──
+# The config carries OUTPUT_DIR so a test that imports app (whose startup stamps
+# the daily-run window) writes into the temp dir, never a real /config mount.
 export MEDIAREDUCER_CONFIG="$TMP/unit-config/config.json"
 mkdir -p "$TMP/unit-config"
+printf '{"OUTPUT_DIR": "%s"}\n' "$TMP/unit-config" > "$MEDIAREDUCER_CONFIG"
 for t in tests/unit/test_*.py; do
   run "$(basename "$t" .py)" python3 "$t"
 done
