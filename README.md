@@ -426,6 +426,38 @@ MediaReducer is intentionally conservative:
   deletions already made are permanent and always recorded in `deleted.log`,
   but nothing is ever left half-done.
 
+## Command Line
+
+Everything the web UI does is also available from a terminal through `cli.py`, a
+thin client for the running MediaReducer service — no browser needed. It calls the
+same API the GUI uses, so every command goes through the identical validation, safety
+gates, and run state; the CLI and the browser can be used interchangeably.
+
+```bash
+python3 cli.py status                      # dashboard summary
+python3 cli.py simulate                     # preview deletions (streams progress live)
+python3 cli.py cleanup --yes                # delete to your thresholds now
+python3 cli.py config get                   # print the whole config (or one KEY)
+python3 cli.py config set HEADROOM_GB=500 RUN_MODE=paused
+python3 cli.py scoring set SCORE_BALANCE=80 SKIP_UNPLAYED_MOVIES=true
+python3 cli.py queue                        # the marked & eligible deletion plan
+python3 cli.py history                      # deletion history
+python3 cli.py connections check            # probe every selected API
+python3 cli.py logs --section summary       # print a run-log section
+```
+
+The service URL defaults to `http://127.0.0.1:7474`; override with `--url` or the
+`MEDIAREDUCER_URL` environment variable (handy from another machine on your LAN).
+Add `--json` to any command for machine-readable output. `simulate`, `cleanup`, and
+`debug-cleanup` stream progress until the run finishes (Ctrl-C detaches — the run
+keeps going in the background). `cleanup` asks for confirmation unless you pass
+`--yes`. Run `python3 cli.py --help`, or `python3 cli.py <command> --help`, for the
+full command list.
+
+The CLI needs the service running (the container, or `python3 app.py`) — it drives
+that service rather than doing the work itself, so the scheduler and every gate stay
+the single source of truth.
+
 ## Debug Mode
 
 **Debug mode** (Advanced) adds Debug buttons around the app that dump raw

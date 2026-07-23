@@ -5745,13 +5745,22 @@ def api_reset_config():
         files.extend(out_dir.glob("debug_report_*.txt"))
     except OSError:
         pass
+    # Close the check→unlink window under _run_lock (see api_clear_cache): a run /
+    # summary / reconcile starting between the checks above and the wipe would write
+    # into the just-unlinked store. Hold the lock across a final re-check + the wipe.
     errors = []
-    for p in files:
-        try:
-            p.unlink(missing_ok=True)
-        except OSError as e:
-            errors.append(f"{p.name}: {e}")
-    db.reset_store(out_dir / "mediareducer.db")  # SQLite store + sidecars, under the init lock
+    with _run_lock:
+        if _run_active or _summary_active:
+            return jsonify({
+                "ok": False,
+                "error": "A run started — try the reset again in a moment.",
+            }), 409
+        for p in files:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError as e:
+                errors.append(f"{p.name}: {e}")
+        db.reset_store(out_dir / "mediareducer.db")  # SQLite store + sidecars, under the init lock
 
     # lastrun.log drives the Last Run timestamp, the detailed-log window, and the
     # run-stat jump targets — after a reset those must read as "no runs yet". It is
@@ -5784,6 +5793,11 @@ def api_reset_invalid_config():
     """Reset ONLY the hand-edited invalid values in config.json to their defaults,
     leaving valid settings untouched; an unparseable file is replaced wholesale. The
     targeted way out of the invalid-config lockout (Reset MediaReducer is the full one)."""
+    if _run_active:
+        # Consistency with every other config-mutating endpoint: never rewrite the
+        # config (and re-apply the startup safeties) out from under an active run.
+        return jsonify({"ok": False,
+                        "error": "A run is active. Try again when it finishes."}), 409
     with _config_io_lock:
         defaults = _CONFIG_DEFAULTS
         saved = _read_saved_config_file()
@@ -6498,7 +6512,19 @@ def api_clear_cache():
     # table stays empty until the next Simulate or Cleanup rewrites it. reset_store
     # deletes the .db and its WAL/SHM sidecars under the init lock, so a concurrent
     # status-poll read never lands on a table-less DB.
-    db.reset_store(p)
+    #
+    # Close the check→unlink window under _run_lock: run_script / run_summary /
+    # run_reconcile all take it to set their active flag, so holding it across a
+    # final re-check + the wipe stops one from starting mid-reset and writing into
+    # the just-unlinked store (its engine subprocess would then hit a table-less DB).
+    with _run_lock:
+        if _run_active or _summary_active:
+            return jsonify({
+                "ok": False,
+                "message": "A run started — try clearing the cache again in a moment.",
+                "status": _cache_clear_state(),
+            }), 409
+        db.reset_store(p)
 
     # The wipe also lost the once-per-day window — re-stamp it so clearing the cache
     # never grants the scheduler a free immediate daily run.

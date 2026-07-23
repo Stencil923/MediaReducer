@@ -1298,6 +1298,49 @@ def monitored_roots():
     return roots
 
 
+def _monitored_storage_present() -> bool:
+    """True when the library root AND at least one configured monitored subtree are
+    actually on disk right now. False means the storage volume (or every monitored
+    branch) is unmounted/offline.
+
+    This is the difference between "the user deleted these movies" and "the NAS/array
+    is offline": a scan or the marked-queue upkeep must NOT read a mass file
+    disappearance as deletions and wipe the library snapshot / deletion queue when a
+    mount transiently drops. With no MONITOR_DIRS configured there is nothing to be
+    present, so this is False (that state is a separate, app-gated no-op)."""
+    try:
+        if not LIBRARY_ROOT.exists():
+            return False
+    except OSError:
+        return False
+    for r in monitored_roots():
+        try:
+            if r.exists():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _monitored_root_present(path_str) -> bool:
+    """True if the monitored subtree that WOULD contain `path_str` is on disk. Lets
+    the upkeep tell a genuinely-deleted file (its root present, the file gone) from
+    one that only looks gone because its branch is unmounted (root itself absent)."""
+    try:
+        p = Path(path_str)
+    except Exception:
+        return False
+    for root in monitored_roots():
+        try:
+            if not root.exists():
+                continue
+        except OSError:
+            continue
+        if p == root or root in p.parents:
+            return True
+    return False
+
+
 def compute_config_hash():
     """Hash only the config that can change a movie's CACHED metadata, so a change
     forces a full re-fetch. Narrow by design: EXCLUDES thresholds, scoring,
@@ -3171,6 +3214,46 @@ def _match_keys(raw_path):
     return keys
 
 
+def _make_protection_check(plex_paths, plex_keys, plex_tmdb,
+                           jf_ids, jf_paths, jf_tmdb, favorite_paths):
+    """Build a robust protected(key, entry, snap) -> bool test for the no-rescan
+    delete/upkeep paths.
+
+    The full scan matches protection on a SET of keys (the as-built /library path,
+    its symlink-resolved form, and a lowercased relative key — see _match_keys)
+    PLUS the Plex rating_key, Jellyfin item id, and TMDB id. The incremental paths
+    used to match a single EXACT path string, which misses the SAME physical file
+    reached through a different mount, symlink, or case — the normal dual-server /
+    Unraid-user-share case — and could delete a protected or favorited movie whose
+    queue-key path form differed from the freshly-fetched protection path. Mirror
+    the full scan here: any shared _match_keys key, or a matching rating_key /
+    Jellyfin id / TMDB id carried on the queue entry + snapshot row, is protected.
+    Over-matching only ever spares a movie, so it errs toward NOT deleting."""
+    match_keys = set()
+    for p in set(plex_paths or ()) | set(jf_paths or ()) | set(favorite_paths or ()):
+        match_keys |= _match_keys(p)
+    rating_keys = {str(k).strip() for k in (plex_keys or ()) if str(k).strip()}
+    jf_item_ids = {str(k).strip() for k in (jf_ids or ()) if str(k).strip()}
+    tmdb_ids = {str(t).strip() for t in (set(plex_tmdb or ()) | set(jf_tmdb or ())) if str(t).strip()}
+
+    def protected(key, entry=None, snap=None) -> bool:
+        if _match_keys(key) & match_keys:
+            return True
+        snap = snap or {}
+        entry = entry or {}
+        rk = str(snap.get("source_id") or "").strip()
+        if rk and rk in rating_keys:
+            return True
+        jk = str(snap.get("jf_source_id") or "").strip()
+        if jk and jk in jf_item_ids:
+            return True
+        tmdb = str(entry.get("tmdb_id") or snap.get("tmdb_id") or "").strip()
+        if tmdb and tmdb in tmdb_ids:
+            return True
+        return False
+    return protected
+
+
 def _merge_added_at(a, b):
     """Oldest (smallest positive) added timestamp wins; 0/unknown is ignored."""
     vals = [v for v in (parse_int(a, 0), parse_int(b, 0)) if v > 0]
@@ -3835,6 +3918,13 @@ def _write_library_snapshot(movies: list) -> None:
     meta), disturbing nothing else in the store. One transaction, run only after
     a scan completes, so a run interrupted at any point never loses the last good
     snapshot."""
+    # Belt-and-suspenders against a storage outage wiping the snapshot: an EMPTY
+    # result while nothing is mounted is an outage, not a genuinely-empty library —
+    # keep the last good snapshot. A truly-empty but MOUNTED library still writes [].
+    if not movies and not _monitored_storage_present():
+        log("WARNING: library snapshot NOT rewritten — no monitored path is mounted "
+            "(storage offline?); keeping the last good snapshot.")
+        return
     with db.transaction(DB_FILE) as conn:
         db.ensure_code_current(conn, code_checksum())
         db.replace_movies(conn, movies)
@@ -4035,6 +4125,18 @@ def build_candidates():
         save_cache(cache)
         log("No monitored library paths configured — skipping movie scan. Add at least one path under Config → Movie Libraries.")
         return [], stats, 0
+
+    if not _monitored_storage_present():
+        # The library volume (or every monitored branch) is not mounted: every file
+        # would stat as missing and the scan would rewrite an EMPTY snapshot + queue
+        # as if the whole library had been deleted. Abort instead (fail closed) —
+        # no store write has happened yet, so the last good snapshot and deletion
+        # plan are preserved for when storage comes back.
+        _abort_api_failure(
+            "No monitored library path is mounted under /library — the storage volume "
+            "may be offline. Aborting so the saved library snapshot and deletion plan "
+            "are not wiped as if every movie were deleted. Check the /library mount, "
+            "then re-run.", phase="scanning")
 
     # Pre-populate the in-memory metadata cache from the persistent cache so
     # fetch_movie_metadata() returns immediately for already-known movies.
@@ -4803,25 +4905,30 @@ def _refresh_snapshot_protection(rows) -> None:
     `protected` / `favorite` fact in place, then persist them. Called only when a
     protected-collection or Jellyfin-favorites change triggered the reconcile.
 
-    Matches by resolved /library path — the same authoritative key deletion and the
-    15-minute upkeep use. Fails closed: fetch_protected_paths / _jellyfin_* raise if
-    a needed server is unreachable, so the caller flags the connection rather than
-    reconciling against stale protection."""
-    protected_paths: set = set()
+    Matches the ROBUST way deletion does (_make_protection_check: the _match_keys
+    set + rating_key/jf-id/tmdb), NOT an exact path string — the snapshot stores the
+    symlink-RESOLVED path while the fetched protection paths are as-built, so an exact
+    compare wrongly clears a genuinely-protected movie's flag on a symlinked library
+    and re-admits it to the eligible queue. Fails closed: fetch_protected_paths /
+    _jellyfin_* raise if a needed server is unreachable, so the caller flags the
+    connection rather than reconciling against stale protection."""
+    p_paths, p_keys, p_tmdb = set(), set(), set()
     if USE_PLEX:
-        p_paths, _k, _i, _t = fetch_protected_paths()
-        protected_paths |= (p_paths or set())
+        p_paths, p_keys, _p_imdb, p_tmdb = fetch_protected_paths()
+    jf_ids, jf_paths, jf_tmdb = set(), set(), set()
     if USE_JELLYFIN:
-        _ids, jf_paths, _ji, _jt = _jellyfin_protected_items()
-        protected_paths |= (jf_paths or set())
+        jf_ids, jf_paths, _jf_imdb, jf_tmdb = _jellyfin_protected_items()
     favorite_paths = _jellyfin_favorite_paths()   # {} unless Jellyfin + favorites protection
+    is_protected = _make_protection_check(p_paths, p_keys, p_tmdb,
+                                          jf_ids, jf_paths, jf_tmdb, set())
+    is_favorite = _make_protection_check(set(), set(), set(), set(), set(), set(), favorite_paths)
 
     for r in rows:
         p = r.get("path")
         if not p:
             continue
-        r["protected"] = p in protected_paths
-        r["favorite"] = p in favorite_paths
+        r["protected"] = is_protected(p, r, r)
+        r["favorite"] = is_favorite(p)
     try:
         with db.transaction(DB_FILE) as conn:
             db.ensure_code_current(conn, code_checksum())
@@ -4948,6 +5055,16 @@ def reconcile_from_snapshot(trigger="config change", *, refetch_protection=False
     for row in rows:
         if row.get("excluded"):
             continue
+        # Honor the CURRENT eligible-extensions set. The snapshot may hold rows
+        # scanned under a different MOVIE_EXTENSIONS (e.g. one removed by a config
+        # edit). Since the reconcile re-stamps the plan as current WITHOUT a rescan,
+        # it must drop a now-ineligible extension here — otherwise a Cleanup would
+        # delete files the new config excludes, which a full Simulate skips as
+        # bad_extension. (Newly-ADDED extensions still need a Simulate to be scanned
+        # in; the snapshot has no rows for them yet, so this only ever excludes.)
+        _rpath = row.get("path") or ""
+        if _rpath and Path(_rpath).suffix.lower() not in MOVIE_EXTENSIONS:
+            continue
         if _hard_filter_reason(
                 protected=bool(row.get("protected")), favorite=bool(row.get("favorite")),
                 imdb_rating=row.get("rating"), imdb_votes=row.get("votes"),
@@ -4989,9 +5106,15 @@ def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
     changed = False
     gone_paths: set = set()   # files confirmed physically gone — pruned from the snapshot too
     for key in list(store):
-        try:
-            missing = not Path(key).exists()
-        except OSError:
+        # Only treat a file as gone when its monitored branch is actually mounted.
+        # Otherwise a storage outage (every file ENOENT) would drop the whole queue
+        # AND prune every snapshot row as if the library had been deleted.
+        if _monitored_root_present(key):
+            try:
+                missing = not Path(key).exists()
+            except OSError:
+                missing = False
+        else:
             missing = False
         if missing:
             entry = store[key]
@@ -5000,11 +5123,15 @@ def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
             gone_paths.add(key)
             changed = True
     try:
-        plex_paths, _k, _i, _t = fetch_protected_paths()
-        _jids, jf_paths, _ji, _jt = _jellyfin_protected_items()
-        protected = {str(p) for p in set(plex_paths) | set(jf_paths)}
+        plex_paths, plex_keys, _plex_imdb, plex_tmdb = fetch_protected_paths()
+        jf_ids, jf_paths, _jf_imdb, jf_tmdb = _jellyfin_protected_items()
+        # Robust match (path SET + tmdb), not an exact path string — else a
+        # newly-protected movie whose queue path differs by symlink/mount/case is
+        # never dropped from the queue (the same gap the fast path had).
+        is_protected = _make_protection_check(plex_paths, plex_keys, plex_tmdb,
+                                              jf_ids, jf_paths, jf_tmdb, set())
         for key in list(store):
-            if key in protected:
+            if is_protected(key, store[key] if isinstance(store[key], dict) else None):
                 entry = store[key]
                 log(f"Unmarked (protected now): {(entry.get('title') if isinstance(entry, dict) else None) or key}")
                 store.pop(key)
@@ -5123,6 +5250,13 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
     if RUN_MODE.startswith("debug_"):
         log("Fast path skipped (debug mode) — the full-scan preview shows the emergency instead.")
         return False
+    if not _monitored_storage_present():
+        # Storage offline — every queued file would look "already gone" and the fast
+        # path would drop the whole queue + prune the snapshot. Route to the full
+        # scan, which aborts on an unmounted library instead of wiping state.
+        log("Fast path unavailable: no monitored path is mounted (storage offline?) — "
+            "running the full scan.")
+        return False
     store = load_pending()
     if not store:
         log("Fast path unavailable: no marked queue — running the full scan.")
@@ -5132,8 +5266,8 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
             "since Simulate) — running the full scan.")
         return False
     try:
-        plex_paths, _k, _i, _t = fetch_protected_paths()
-        _jids, jf_paths, _ji, _jt = _jellyfin_protected_items()
+        plex_paths, plex_keys, _plex_imdb, plex_tmdb = fetch_protected_paths()
+        jf_ids, jf_paths, _jf_imdb, jf_tmdb = _jellyfin_protected_items()
         jf_favorites = _jellyfin_favorite_paths()
     except SystemExit:
         raise   # a Stop (SIGTERM) mid-fetch ends the run — it must never reroute into the full scan
@@ -5141,7 +5275,11 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
         log(f"Fast path unavailable: protection could not be verified ({e}) — "
             f"running the full scan.")
         return False
-    protected = {str(p) for p in set(plex_paths) | set(jf_paths) | set(jf_favorites)}
+    # Robust protection match (path SET + rating_key/jf-id/tmdb), NOT an exact path
+    # string — the queue key and the fresh protection path can differ by mount /
+    # symlink / case for the same physical file (dual-server, Unraid user-shares).
+    is_protected = _make_protection_check(plex_paths, plex_keys, plex_tmdb,
+                                          jf_ids, jf_paths, jf_tmdb, jf_favorites)
 
     # Fresh watch re-check: an emergency must never delete a movie watched since
     # it was marked. Fetch fresh watch data for the LEADING covering set (bounded
@@ -5162,7 +5300,7 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
     lead = []
     lead_bytes = 0
     for key, entry in ordered:
-        if str(Path(key)) in protected:
+        if is_protected(key, entry, join.get(key)):
             continue
         lead.append(key)
         try:
@@ -5196,7 +5334,7 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
     spared_watched = 0
     for key, entry in ordered:
         p = Path(key)
-        if str(p) in protected:
+        if is_protected(key, entry, join.get(key)):
             log(f"Fast path: skipping (protected since marked): {entry.get('title') or key}")
             continue
         if not p.exists():
@@ -5375,15 +5513,18 @@ def _debug_cleanup_delete_preview(to_free_bytes, trigger):
             "the queue, then Debug Cleanup again.")
         return 0, 0, False
     try:
-        plex_paths, _k, _i, _t = fetch_protected_paths()
-        _jids, jf_paths, _ji, _jt = _jellyfin_protected_items()
+        plex_paths, plex_keys, _plex_imdb, plex_tmdb = fetch_protected_paths()
+        jf_ids, jf_paths, _jf_imdb, jf_tmdb = _jellyfin_protected_items()
         jf_favorites = _jellyfin_favorite_paths()
     except SystemExit:
         raise
     except Exception as e:
         log(f"Protection could not be verified ({e}) — a real Cleanup would fall back to a full scan.")
         return 0, 0, False
-    protected = {str(p) for p in set(plex_paths) | set(jf_paths) | set(jf_favorites)}
+    # Same robust match the real fast path uses (see _make_protection_check) so the
+    # preview spares exactly what a real Cleanup would, not just exact-path matches.
+    is_protected = _make_protection_check(plex_paths, plex_keys, plex_tmdb,
+                                          jf_ids, jf_paths, jf_tmdb, jf_favorites)
 
     # Fresh watch re-check on the leading covering set (bounded, ~1.5x the target),
     # exactly like the real fast path — only movies CONFIRMED unwatched on fresh
@@ -5396,7 +5537,7 @@ def _debug_cleanup_delete_preview(to_free_bytes, trigger):
         key=lambda kv: (float(kv[1].get("score") or 0.0), str(kv[0])))
     lead, lead_bytes = [], 0
     for key, entry in ordered:
-        if str(Path(key)) in protected:
+        if is_protected(key, entry, join.get(key)):
             continue
         lead.append(key)
         try:
@@ -5426,7 +5567,7 @@ def _debug_cleanup_delete_preview(to_free_bytes, trigger):
     pend, spared_watched, spared_protected = [], 0, 0
     for key, entry in ordered:
         p = Path(key)
-        if str(p) in protected:
+        if is_protected(key, entry, join.get(key)):
             spared_protected += 1
             log(f"Would spare (protected since marked): {entry.get('title') or key}")
             continue
