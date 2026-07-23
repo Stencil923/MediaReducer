@@ -25,7 +25,7 @@ control over what leaves your library and when, you probably want
 It is a normal Docker Compose app and runs anywhere the container can see your
 movie files at `/library`.
 
-> **This app deletes movie files — there is no recycle bin.** Stay on Paused
+> **This app deletes movie files — there is no recycle bin.** Stay on Monitor Only
 > and lean on Simulate until the output matches exactly what you expect before
 > you ever run a real Cleanup.
 
@@ -184,9 +184,12 @@ Work through the Configuration tab from top to bottom.
 
 ### 1. Scheduler Mode
 
-Leave this on **Paused** while setting up — you can still run everything
-manually from the Dashboard. Automatic Cleanup stays locked until setup is
-complete and the health check passes.
+Leave this on **Monitor Only** while setting up — you can still run everything
+manually from the Dashboard. Monitor Only never deletes on its own; it keeps the
+dashboard current, refreshing the marked & eligible queue and re-checking your
+library every ~15 minutes and running a daily Simulate to keep the deletion plan
+fresh. Automatic Cleanup stays locked until setup is complete and the health
+check passes.
 
 ### 2. Connections
 
@@ -381,35 +384,44 @@ Once armed, the scheduler checks every 15 minutes:
   actually needs freeing: it drops movies whose files are gone, that you've
   since protected, or that a recent watch pulled out of the running, and marks
   more or fewer as the library grows or shrinks.
-- **The plan must match your config.** Change any setting that affects what
-  gets deleted and Automatic Cleanup locks until a fresh Simulate rebuilds the
-  plan.
+- **The plan stays matched to your config.** Change a scoring, filter, or
+  threshold setting — or a protected collection or Jellyfin favorites — and
+  MediaReducer rebuilds the deletion plan in place from the last scan, no Simulate
+  needed (a collections/favorites change re-checks that server first; if it's
+  unreachable, fix the connection or turn the server off). Changing your *monitored
+  paths* still needs a Simulate — the saved scan only knows the old folders.
 - **Time zone** is the clock all of this runs on. Auto follows the container
   clock — often UTC in Docker — so set your zone if you care when daily runs
   fire.
 
-After a container restart the app always starts Paused — re-enable Automatic
-Cleanup when you're ready. Stopping or restarting mid-run is safe: the engine
-finishes the file it's on, records it, and shuts down cleanly; the next run
-just starts fresh. And if your thresholds stop being safe while Automatic
+After a container restart the app always starts in Monitor Only — re-enable
+Automatic Cleanup when you're ready. Stopping or restarting mid-run is safe: the
+engine finishes the file it's on, records it, and shuts down cleanly; the next
+run just starts fresh. And if your thresholds stop being safe while Automatic
 Cleanup is armed — say a bulk copy pushes the cap past the safety percentage —
-the scheduler pauses it with the reason instead of running.
+the scheduler switches it back to Monitor Only with the reason instead of running.
 
 ## Safety Rules
 
 MediaReducer is intentionally conservative:
 
-- No monitored paths means no scan and no deletion.
+- No monitored paths means no scan and no deletion — the scheduler stays fully
+  idle (no 15-minute refresh, no maintenance Simulate), the dashboard reads
+  "Scheduler paused", and the storage/library figures dash out. Adding a path
+  resumes monitoring.
 - Every deletion must resolve inside `/library` *and* inside a monitored path.
-- Any API failure during a run aborts the run.
+- A required media API (Tautulli for Plex, or Jellyfin) failing during a run
+  aborts it — and a run won't even start until every selected server is healthy;
+  fix it or uncheck that server. Radarr is optional: it blocks a real Cleanup (so
+  it can forget what you delete) but never a Simulate, and removing its key skips it.
 - Protections fail closed: a protected collection that no longer matches
   anything on the server aborts the run rather than running unprotected.
 - Plex/Jellyfin identity mismatches are skipped, never deleted.
 - Protected collections and filtered movies are hard exclusions, not score
   penalties.
 - Editing connection, monitoring, or threshold settings while Automatic Cleanup
-  is on drops it back to Paused — review with Simulate, then re-enable. Settings
-  are locked only while a run is actually active.
+  is on drops it back to Monitor Only — review the rebuilt plan, then re-enable.
+  Settings are locked only while a run is actually active.
 - Every run does a fresh safety pre-check before acting. Stop is always safe:
   deletions already made are permanent and always recorded in `deleted.log`,
   but nothing is ever left half-done.
@@ -429,11 +441,11 @@ These live in the `/config` mount (`MEDIAREDUCER_DATA` on the host).
 | File or folder | Purpose |
 | --- | --- |
 | `config.json` | Saved configuration. |
-| `lastrun.log` | Most recent run log — archived into `logs/` on startup so the run panel starts clean against the freshly-cleared plan. |
+| `lastrun.log` | Most recent run log — overwritten each run; the prior one is archived into `logs/` when a run performs cleanup. |
 | `deleted.log` | Deletion history (erasable from the Dashboard). |
 | `logs/` | Archived logs from runs that performed cleanup. |
-| `cache.json` | All cached state in one file: movie metadata, schedule state, storage stats, the Filtering & Scoring library snapshot, and (under `pending`) the marked & eligible deletion plan the last Simulate built. Cleared on startup so a restart requires a fresh Simulate. |
-| `progress.json` | Cleanup progress for the web UI — reset to "no runs yet" on startup alongside the cache. |
+| `mediareducer.db` | All cached state in one SQLite file: movie metadata, schedule state, storage stats, the Filtering & Scoring library snapshot, and the marked & eligible deletion plan the last Simulate built. Preserved across restarts — MediaReducer asks for a fresh Simulate before Cleanup or automatic mode only when a plan-affecting setting or your monitored paths changed, or a full library scan hasn't run in over two days (a daily scan keeps that current — the automatic Cleanup when armed, or a maintenance Simulate while in Monitor Only). |
+| `progress.json` | Cleanup progress for the web UI — carried across restarts; reset by an explicit Clear cache / Reset. |
 | `title.ratings.tsv` | IMDb ratings dataset. |
 
 **Reset MediaReducer** (Advanced) removes the configuration and state files

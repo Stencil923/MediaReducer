@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY engine.py app.py entrypoint.py scoring_constants.py default_config.json ./
+COPY engine.py app.py db.py entrypoint.py scoring_constants.py default_config.json ./
 COPY templates/ templates/
 
 RUN mkdir -p /config

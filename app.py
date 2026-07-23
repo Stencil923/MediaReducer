@@ -39,6 +39,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from scoring_constants import SCORING
 from flask import Flask, jsonify, render_template, request, send_from_directory, has_request_context
 
+import db  # shared SQLite persistence (metadata cache, library snapshot, queue, meta)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 APP_DIR          = Path(__file__).parent
@@ -870,50 +872,25 @@ def output_dir() -> Path:
     return Path(load_config().get("OUTPUT_DIR", "/config"))
 
 
-@contextmanager
-def _cache_write_lock():
-    """Serialize cache.json read-modify-writes with EVERY other writer — the
-    engine subprocess takes the same flock (engine._cache_write_lock, same
-    cache.json.lock file) around its stats writes, and Flask request threads
-    each open their own fd so the flock serializes them too. Without it, a
-    window burn/reopen interleaving with another burn/reopen or an engine
-    stats write is last-writer-wins on the whole file."""
-    if fcntl is None:
-        yield
-        return
-    p = cache_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p.with_name(p.name + ".lock"), "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+def db_path() -> Path:
+    """The SQLite store shared with the engine (metadata cache, library
+    snapshot, marked/eligible queue, kv meta)."""
+    return output_dir() / "mediareducer.db"
 
 
 def burn_daily_window_on_startup(reason: str = "startup") -> None:
     """Safety reset: stamp today as the last daily-cleanup date.
 
-    The once-per-day window lives in cache.json, so a restart or cache wipe loses it,
+    The once-per-day window lives in the store, so a restart or cache wipe loses it,
     and a lost window would hand the scheduler a free immediate daily run when Live is
     re-armed. Burning it makes the first daily cleanup after a restart/clear TOMORROW's.
     Redline emergencies ignore the window and still fire."""
-    p = cache_path()
     today = time.strftime("%Y-%m-%d")
     try:
-        with _cache_write_lock():
-            cache = {}
-            if p.exists():
-                try:
-                    data = json.loads(p.read_text(encoding="utf-8"))
-                    if isinstance(data, dict):
-                        cache = data
-                except Exception:
-                    cache = {}
-            if cache.get("last_cleanup_date") == today:
+        with db.transaction(db_path()) as conn:
+            if db.get_meta(conn, "last_cleanup_date") == today:
                 return
-            cache["last_cleanup_date"] = today
-            _atomic_write_json(p, cache)
+            db.set_meta(conn, "last_cleanup_date", today)
         print(f"Startup safety: daily-run window marked used for today ({reason}).", flush=True)
     except Exception as e:
         print(f"WARNING: could not stamp the daily-run window ({e})", flush=True)
@@ -926,17 +903,12 @@ def reopen_daily_window(reason: str = "daily run time moved later") -> None:
     (see engine _mark_age_days), so a second run on the same day only re-marks
     candidates — no mark ages into eligibility between two runs on one day, so
     nothing extra is deleted."""
-    p = cache_path()
     today = time.strftime("%Y-%m-%d")
     try:
-        with _cache_write_lock():
-            if not p.exists():
+        with db.transaction(db_path()) as conn:
+            if db.get_meta(conn, "last_cleanup_date") != today:
                 return
-            data = json.loads(p.read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or data.get("last_cleanup_date") != today:
-                return
-            data.pop("last_cleanup_date", None)
-            _atomic_write_json(p, data)
+            db.del_meta(conn, "last_cleanup_date")
         print(f"Daily-run window reopened for today ({reason}).", flush=True)
     except Exception as e:
         print(f"WARNING: could not reopen the daily-run window ({e})", flush=True)
@@ -992,22 +964,19 @@ _cache_file_memo = {"key": None, "data": {}}
 
 
 def _cache_file_data() -> dict:
-    """cache.json parsed, memoized by (path, mtime, size). One /api/status poll
-    consults this file several times (library stats, Live gating, the daily
-    window) and every open page polls every ~3s, while the file itself only
-    changes when a run, Summary, or window burn writes it — so parse once per
-    version, not once per consult."""
-    p = cache_path()
-    try:
-        st = p.stat()
-        key = (str(p), st.st_mtime_ns, st.st_size)
-    except OSError:
-        return {}
+    """The whole store composed as one dict, memoized by a data
+    fingerprint. One /api/status poll consults it several times (library stats,
+    Live gating, the daily window) and every open page polls every ~3s, while the
+    contents only change when a run, Summary, or window burn writes — so compose
+    once per version, not once per consult. The fingerprint tracks the .db and
+    its WAL sidecar, so a commit from the engine or an app write is picked up."""
+    p = db_path()
+    key = (str(p), db.data_fingerprint(p))
     with _cache_file_memo_lock:
         if _cache_file_memo["key"] == key:
             return _cache_file_memo["data"]
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        data = db.read_cache_dict(p)
     except Exception:
         return {}
     if not isinstance(data, dict):
@@ -1019,7 +988,7 @@ def _cache_file_data() -> dict:
 
 
 def library_stats() -> dict:
-    """Last-known dashboard storage stats (cache.json → dashboard_stats), written by
+    """Last-known dashboard storage stats (the store's dashboard_stats), written by
     Summary/run refreshes so the dashboard's frequent status poll reads cached values
     instead of touching the filesystem."""
     stats = _cache_file_data().get("dashboard_stats")
@@ -1028,7 +997,7 @@ def library_stats() -> dict:
 def cached_disk_stats(stats: dict | None = None) -> dict | None:
     """Last-known filesystem capacity, cache-only by design: /api/status polls often
     and must not call disk_usage() every few seconds. Fresh values are written to
-    cache.json by the scheduler tick, config-triggered and manual Summary refreshes,
+    the store by the scheduler tick, config-triggered and manual Summary refreshes,
     and real runs."""
     stats = stats if isinstance(stats, dict) else library_stats()
     disk = stats.get("disk") if isinstance(stats, dict) else None
@@ -1041,13 +1010,12 @@ def cached_disk_stats(stats: dict | None = None) -> dict | None:
         except (KeyError, TypeError, ValueError):
             return None
     return out
-def cache_path()   -> Path: return output_dir() / "cache.json"
 def imdb_ratings_path() -> Path: return output_dir() / "title.ratings.tsv"
 
 
 def _headroom_window_used_today() -> bool:
     """True when today's once-per-day daily cleanup (headroom or cap trigger)
-    already ran. Mirrors the engine's check (local-time date vs cache.json
+    already ran. Mirrors the engine's check (local-time date vs the store's
     last_cleanup_date); only a Redline breach ignores the window."""
     try:
         return _cache_file_data().get("last_cleanup_date") == time.strftime("%Y-%m-%d")
@@ -1316,6 +1284,10 @@ _run_stop_requested = threading.Event()
 _shutting_down = False         # a container/app shutdown signal is being handled
 _summary_active = False        # background Summary (debug_info) stats refresh in progress
 _summary_queued = False        # coalesced follow-up Summary requested while one is active
+# Today's daily-run epoch we last spun a paused-mode maintenance Simulate for, so a
+# scan that fails past the connection probe (leaving the snapshot stale) isn't respun
+# every ~15-min tick — it retries next window / on restart / on a manual Simulate.
+_last_paused_scan_epoch = None
 
 def _pause_scheduler_for_run():
     """Freeze the single background clock while a run or Summary is active."""
@@ -1603,7 +1575,7 @@ def _run_summary_subprocess(config_path: Path, timeout: int = 600) -> tuple[bool
 
 
 def run_summary() -> tuple[bool, str]:
-    """Run a quiet Summary (debug_info) in the background to refresh cache.json
+    """Run a quiet Summary (debug_info) in the background to refresh the store
     dashboard stats.
 
     Same unified-clock rules as run_script (pauses the clock while working, restarts
@@ -1672,6 +1644,144 @@ def run_summary_sync(timeout: int = 600) -> tuple[bool, str, dict]:
         _restart_schedule_clock()
         if queued:
             run_summary()
+        _maybe_launch_queued_reconcile()
+
+
+# ── Config-save reconcile launcher ────────────────────────────────────────────
+# A saved filtering / scoring / threshold / collections / favorites change rebuilds
+# the marked & eligible queue in place from the stored snapshot (the engine's quiet
+# `reconcile` mode) instead of leaving it stale until the next Simulate. It's a
+# Summary-class background job: it shares _summary_active so it can never overlap a
+# real run or a Summary, and it queues behind one that's already in flight.
+_reconcile_queued = None   # (refetch: bool, trigger: str) waiting for the active job
+_reconcile_held = None      # a refetch reconcile held because a needed server was down
+
+def _run_reconcile_subprocess(config_path: Path, *, refetch: bool,
+                              trigger: str, timeout: int = 600) -> bool:
+    """Run engine.py in the quiet `reconcile` mode against config_path."""
+    env = os.environ.copy()
+    env["MEDIAREDUCER_CONFIG"] = str(config_path)
+    env["MEDIAREDUCER_MODE_OVERRIDE"] = "reconcile"
+    env["MEDIAREDUCER_RECONCILE_REFETCH"] = "1" if refetch else "0"
+    env["MEDIAREDUCER_RECONCILE_TRIGGER"] = trigger
+    proc = subprocess.run(
+        ["python3", "-u", str(SCRIPT_PATH)], env=env,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout)
+    return proc.returncode == 0
+
+
+def _maybe_launch_queued_reconcile() -> None:
+    """Fire a reconcile that was queued while a Summary/run held _summary_active."""
+    global _reconcile_queued
+    with _run_lock:
+        nxt = _reconcile_queued
+        _reconcile_queued = None
+    if nxt and not _run_active:
+        run_reconcile(refetch=nxt[0], trigger=nxt[1])
+
+
+def _reconcile_worker(refetch: bool, trigger: str) -> None:
+    global _summary_active
+    try:
+        _run_reconcile_subprocess(CONFIG_PATH, refetch=refetch, trigger=trigger)
+    except Exception:
+        pass
+    with _run_lock:
+        _summary_active = False
+    _restart_schedule_clock()
+    _maybe_launch_queued_reconcile()   # a reconcile requested while this one ran
+
+
+def run_reconcile(*, refetch: bool, trigger: str) -> None:
+    """Launch a background queue reconcile. If a run/Summary is in flight, queue it
+    to fire on completion (the refetch flag is sticky — if either the queued or the
+    new request needs a server lookup, the coalesced one does)."""
+    global _summary_active, _reconcile_queued
+    with _run_lock:
+        if _run_active or _summary_active:
+            prev = _reconcile_queued
+            _reconcile_queued = ((prev[0] if prev else False) or refetch, trigger)
+            return
+        _summary_active = True
+    _pause_scheduler_for_run()
+    threading.Thread(target=_reconcile_worker, args=(refetch, trigger),
+                     daemon=True, name="engine-reconcile").start()
+
+
+# Plan-affecting settings that reconcile in place on save. PURE keys recompute from
+# the snapshot with no server call; REFETCH keys change a protection SOURCE, so the
+# reconcile re-fetches the live protected/favorite sets first.
+_RECONCILE_PURE_KEYS = (
+    "SCORE_BALANCE", "GRACE_PERIOD_DAYS", "MAX_IMDB_RATING", "NEAR_TIE_PTS",
+    "MAX_STALENESS_MONTHS", "SKIP_UNPLAYED_MOVIES",
+    "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
+)
+_RECONCILE_REFETCH_KEYS = (
+    "PROTECTED_COLLECTIONS", "JELLYFIN_PROTECTED_COLLECTIONS", "PROTECT_JELLYFIN_FAVORITES",
+)
+
+
+def _plan_value_changed(a, b) -> bool:
+    """Compare two config values the way the plan cares about — order-insensitive
+    for the collection lists, direct for scalars."""
+    def _norm(v):
+        if isinstance(v, (list, tuple)):
+            return sorted(str(x) for x in v)
+        return v
+    return _norm(a) != _norm(b)
+
+
+def _reconcile_after_save(old_cfg: dict, new_cfg: dict, *, source: str) -> str:
+    """After a plan-affecting save, rebuild the marked & eligible queue in place from
+    the stored snapshot (no rescan) instead of leaving it stale until the next
+    Simulate. Returns "started", "held_connection", or "none".
+
+    Pure filter/scoring/threshold changes reconcile with no server call. A
+    protected-collection or Jellyfin-favorites change re-fetches the live sets; if
+    the server it needs is unreachable, the reconcile is HELD and the Connections
+    check flags that server (fix it, or disable the server — a disabled server has
+    no collections/favorites to honor), with Cleanup/arming blocked meanwhile."""
+    global _reconcile_held
+    pure = any(_plan_value_changed(old_cfg.get(k), new_cfg.get(k)) for k in _RECONCILE_PURE_KEYS)
+    refetch = any(_plan_value_changed(old_cfg.get(k), new_cfg.get(k)) for k in _RECONCILE_REFETCH_KEYS)
+    if not (pure or refetch) or not _has_monitored_dirs(new_cfg):
+        return "none"
+    if refetch and not _refresh_connection_health_cache(new_cfg, probe=True).get("critical_ok", False):
+        # Hold it: the Connections check (just refreshed) flags the down server, and
+        # _retry_held_reconcile fires this once the connection recovers or the server
+        # is disabled. Coalesce with any earlier held request (either wanting a
+        # refetch keeps it).
+        prev = _reconcile_held
+        _reconcile_held = ((prev[0] if prev else False) or refetch, source)
+        return "held_connection"
+    _reconcile_held = None            # a change that reconciled supersedes a held one
+    run_reconcile(refetch=refetch, trigger=source)
+    return "started"
+
+
+def _retry_held_reconcile(cfg: dict | None = None) -> bool:
+    """Fire a reconcile that was held because a needed server was down, once the
+    connection is healthy again (the user fixed it) or the server was disabled (a
+    disabled server has no collections/favorites, so a pure recompute is enough).
+    Called from the scheduler tick, so recovery is automatic within ~15 minutes; a
+    re-save or a passing Connections check applies it sooner. Returns True if it
+    launched a reconcile."""
+    global _reconcile_held
+    if not _reconcile_held:
+        return False
+    cfg = cfg or load_config()
+    if not _has_monitored_dirs(cfg):
+        _reconcile_held = None
+        return False
+    refetch, trigger = _reconcile_held
+    # If both servers are off there's nothing to re-fetch — a pure recompute applies
+    # the change; otherwise require the connection to be healthy before re-fetching.
+    needs_server = refetch and (cfg.get("USE_PLEX") or cfg.get("USE_JELLYFIN"))
+    if needs_server and not _refresh_connection_health_cache(cfg, probe=True).get("critical_ok", False):
+        return False
+    _reconcile_held = None
+    run_reconcile(refetch=needs_server, trigger=trigger)
+    return True
 
 
 # ── IMDb dataset helpers ──────────────────────────────────────────────────────
@@ -1696,11 +1806,11 @@ def _download_imdb_gz(url: str) -> bytes:
 
 def _read_library_snapshot():
     """The full-library snapshot the last completed scan stored under
-    cache.json's "library_snapshot" key — the Filtering & Scoring page's
+    the store's library_snapshot — the Filtering & Scoring page's
     table. Returns (payload, None) or (None, "missing"). Reads through the
     memoized cache parse — the arming gate consults this on the status-poll
-    path, and cache.json (all movie metadata + the snapshot) is far too big
-    to re-parse every 3 seconds."""
+    path, and composing the whole store (all movie metadata + the snapshot) is
+    far too big to redo every 3 seconds."""
     snap = _cache_file_data().get("library_snapshot")
     if not isinstance(snap, dict):
         return None, "missing"
@@ -1720,6 +1830,73 @@ def _simulate_evidence(cfg: dict) -> bool:
     dirs = snap.get("monitor_dirs")
     return (isinstance(dirs, list)
             and sorted(str(d) for d in dirs) == _normalized_monitor_dirs(cfg))
+
+
+# ── "A full scan is required every 48 hours" ──────────────────────────────────
+# The store is PRESERVED across a restart, so an unchanged, recent plan stays
+# usable with no re-scan. But a full library scan (a Simulate, or the automatic
+# daily Cleanup / paused daily maintenance Simulate, which rebuild the whole
+# snapshot) must have run within the last two days — otherwise the plan is treated
+# as too old to trust and Cleanup + arming ghost until a fresh Simulate. A daily
+# full scan normally keeps this satisfied with a full day of slack (so moving the
+# daily run time later never trips it); if scans stop for two days (e.g. the APIs
+# are unreachable) the plan ages out and the user runs Simulate manually.
+# Evaluated live off the snapshot's built_at — no persistent flag: a completed
+# scan refreshes built_at and clears it automatically.
+_FULL_SCAN_MAX_AGE_SECONDS = 48 * 3600
+
+_SCAN_OVERDUE_MESSAGE = (
+    "It's been over two days since MediaReducer last scanned your whole library, so "
+    "the saved deletion plan may be out of date — run Simulate to refresh it "
+    "before running a Cleanup or enabling automatic mode. (A daily scan normally "
+    "does this for you.)")
+
+
+def _full_scan_overdue() -> bool:
+    """True when a full library scan exists but completed over
+    _FULL_SCAN_MAX_AGE_SECONDS ago. False when there's no snapshot at all — the
+    first-time 'run a Simulate' case is handled by the plan/evidence logic with
+    its own message. Cheap: reads the snapshot's built_at through the memoized
+    store parse."""
+    snap, err = _read_library_snapshot()
+    if err is not None:
+        return False
+    built_at = snap.get("built_at")
+    if not isinstance(built_at, (int, float)):
+        return False
+    return (time.time() - float(built_at)) > _FULL_SCAN_MAX_AGE_SECONDS
+
+
+def _todays_daily_run_epoch(cfg: dict | None = None):
+    """Epoch of today's configured daily run time (DAILY_RUN_TIME) in the app's
+    local/configured timezone, or None if unparseable."""
+    try:
+        hh, mm = (int(x) for x in _daily_run_time(cfg).split(":"))
+        now = time.localtime()
+        return time.mktime((now.tm_year, now.tm_mon, now.tm_mday, hh, mm, 0,
+                            now.tm_wday, now.tm_yday, -1))
+    except (ValueError, AttributeError, OverflowError):
+        return None
+
+
+def _paused_daily_scan_due(cfg: dict) -> bool:
+    """True when a PAUSED schedule should run its once-a-day maintenance Simulate:
+    the configured daily run time has passed and no full library scan has completed
+    since then (the snapshot's built_at predates today's run time). This keeps the
+    store current — refreshing the plan and the 'full scan within 48h' clock —
+    even when no automatic Cleanup is armed to do it. Requires an existing snapshot
+    (a prior Simulate); a fresh, never-scanned install keeps its manual-Simulate
+    onboarding instead of auto-scanning."""
+    snap, err = _read_library_snapshot()
+    if err is not None:
+        return False   # nothing scanned yet — leave onboarding's manual Simulate to the user
+    run_epoch = _todays_daily_run_epoch(cfg)
+    if run_epoch is None or time.time() < run_epoch:
+        return False   # before today's scheduled time
+    built_at = snap.get("built_at")
+    if not isinstance(built_at, (int, float)):
+        return True
+    return float(built_at) < run_epoch   # no full scan since today's run time
 
 
 # ── Disk / status helpers ─────────────────────────────────────────────────────
@@ -1798,10 +1975,13 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
         if not redline_ok or redline_gb is None or redline_gb <= 0:
             hard_errors.append("Redline must be greater than zero, or disabled.")
             redline_ok = False
-        elif (headroom_ok and not _redline_only_mode_cfg(cfg)
+        elif (headroom_ok and not _coerce_bool(cfg.get("REDLINE_ONLY_MODE"))
               and redline_gb >= headroom_gb):
-            # STRICT ceiling while Headroom is ticked, at ANY value including
-            # 0 — a tie or above is what redline-only mode (unticked) is for.
+            # Only while Headroom is TICKED (REDLINE_ONLY_MODE off) must Redline sit
+            # strictly below it. Unticked, there is no ceiling — even with a Library
+            # Size Cap also armed (that's redline+cap, NOT a ticked-Headroom config,
+            # so _redline_only_mode_cfg's no-cap requirement must not gate this).
+            # Matches the save validator and the client-side check.
             hard_errors.append("Redline must be lower than Headroom — untick "
                                "Headroom for redline-only mode.")
             redline_ok = False
@@ -1889,21 +2069,32 @@ def _space_threshold_state(cfg: dict | None = None, disk: dict | None = None,
     # plan every run and must not auto-pause an armed Live over this.
     simulate_required = False
     simulate_first_time = False
+    # A full library scan must have run within the last two days (see
+    # _full_scan_overdue) — an older plan is ghosted no matter what its stamp
+    # says. The snapshot is kept for display; only Cleanup + arming lock until a
+    # fresh scan. Skipped when there's no snapshot yet (the plan/evidence logic
+    # below owns the first-time "run a Simulate" case).
+    scan_overdue = _full_scan_overdue()
     if not headroom_errors:
-        try:
-            _plan_current = _pending_plan_current(cfg, use_saved_file=not candidate_cfg)
-            if _redline_only_mode_cfg(cfg):
-                simulate_required = not _plan_current
-            elif _deletion_limits_exceeded(cfg, disk, library_gb_val):
-                simulate_required = not _plan_current
-            else:
-                simulate_required = not (_plan_current or _simulate_evidence(cfg))
-                simulate_first_time = simulate_required
-        except Exception:
-            simulate_required = False
+        if scan_overdue:
+            simulate_required = True
+        else:
+            try:
+                _plan_current = _pending_plan_current(cfg, use_saved_file=not candidate_cfg)
+                if _redline_only_mode_cfg(cfg):
+                    simulate_required = not _plan_current
+                elif _deletion_limits_exceeded(cfg, disk, library_gb_val):
+                    simulate_required = not _plan_current
+                else:
+                    simulate_required = not (_plan_current or _simulate_evidence(cfg))
+                    simulate_first_time = simulate_required
+            except Exception:
+                simulate_required = False
 
     if not simulate_required:
         simulate_required_message = ""
+    elif scan_overdue:
+        simulate_required_message = _SCAN_OVERDUE_MESSAGE
     elif _redline_only_mode_cfg(cfg):
         simulate_required_message = ("Run Simulate to build the Redline deletion-order "
                                      "preview before enabling Automatic Cleanup.")
@@ -3101,7 +3292,7 @@ def api_debug_library_snapshot():
     lines.append("")
     data, pool_err = _read_library_snapshot()
     if pool_err:
-        lines.append(f"library snapshot (cache.json): ({'missing — run a Simulate to build it' if pool_err == 'missing' else 'unreadable'})")
+        lines.append(f"library snapshot: ({'missing — run a Simulate to build it' if pool_err == 'missing' else 'unreadable'})")
         return jsonify({"ok": True, "text": "\n".join(lines)})
     movies = data.get("movies") or []
     rated = sum(1 for m in movies if m.get("rating") is not None)
@@ -3129,22 +3320,22 @@ def api_debug_library_snapshot():
 
 @app.route("/api/debug/cache", methods=["POST"])
 def api_debug_cache():
-    """Advanced/Cache debug: a readable dump of what cache.json currently holds — the
+    """Advanced/Cache debug: a readable dump of what the store currently holds — the
     library-snapshot summary, the marked & eligible deletion queue + its plan stamp,
     dashboard storage stats, and the top-level bookkeeping keys. Mirrors the other
     /api/debug/* popups (returns {ok, text} for prRunDebug)."""
-    p = cache_path()
+    p = db_path()
     lines = ["Cache contents debug", ""]
     try:
         st = p.stat()
-        lines.append(f"cache.json: {p} | {st.st_size:,} bytes | modified {_fmt_epoch(st.st_mtime)}")
+        lines.append(f"store: {p} | {st.st_size:,} bytes | modified {_fmt_epoch(st.st_mtime)}")
     except OSError:
-        lines.append(f"cache.json: {p} | not present (cleared on startup — run a Simulate to rebuild)")
+        lines.append(f"store: {p} | not present (cleared on startup — run a Simulate to rebuild)")
         return jsonify({"ok": True, "text": "\n".join(lines)})
     try:
-        cache = json.loads(p.read_text(encoding="utf-8"))
+        cache = db.read_cache_dict(p)
         if not isinstance(cache, dict):
-            raise ValueError("top-level JSON is not an object")
+            raise ValueError("store did not compose to an object")
     except Exception as e:
         lines.append(f"  (unreadable — {e})")
         return jsonify({"ok": True, "text": "\n".join(lines)})
@@ -3165,7 +3356,7 @@ def api_debug_cache():
     else:
         lines.append("library_snapshot: (none — run a Simulate to build it)")
 
-    # Deletion queue + plan-currency stamp (cache.json["pending"]).
+    # Deletion queue + plan-currency stamp (the store's queue table + pending meta).
     lines.append("")
     pend = cache.get("pending")
     if isinstance(pend, dict):
@@ -3202,8 +3393,15 @@ def api_debug_cache():
     else:
         lines.append(f"dashboard_stats: {ds!r}")
 
-    # Any top-level keys not covered above, so nothing in the cache is hidden.
-    _known = {"code_checksum", "last_cleanup_date", "library_snapshot", "pending", "dashboard_stats"}
+    # Metadata cache (summary only — it can be thousands of rows).
+    meta_cache = cache.get("movies")
+    if isinstance(meta_cache, dict):
+        lines.append("")
+        lines.append(f"metadata_cache: {len(meta_cache)} movie(s) | config_hash={cache.get('config_hash')!r}")
+
+    # Any top-level keys not covered above, so nothing in the store is hidden.
+    _known = {"code_checksum", "last_cleanup_date", "library_snapshot", "pending",
+              "dashboard_stats", "movies", "config_hash"}
     other = sorted(k for k in cache.keys() if k not in _known)
     if other:
         lines.append("")
@@ -3560,14 +3758,12 @@ def _build_debug_report() -> str:
     add("ENGINE STATE FILES")
     add("=" * 60)
     try:
-        cache = json.loads(cache_path().read_text(encoding="utf-8"))
+        cache = db.read_cache_dict(db_path())
         movies = cache.get("movies") or {}
-        add(f"  cache.json: {len(movies)} cached movie entries | last_cleanup_date={cache.get('last_cleanup_date')!r} | "
+        add(f"  store: {len(movies)} cached movie entries | last_cleanup_date={cache.get('last_cleanup_date')!r} | "
             f"dashboard_stats={'yes' if isinstance(cache.get('dashboard_stats'), dict) else 'no'}")
-    except FileNotFoundError:
-        add("  cache.json: (missing)")
     except Exception as e:
-        add(f"  cache.json: unreadable — {s.redact(str(e))}")
+        add(f"  store: unreadable — {s.redact(str(e))}")
     pool, pool_err = _read_library_snapshot()
     if pool_err:
         add(f"  library snapshot: ({pool_err})")
@@ -4146,17 +4342,20 @@ def _refresh_connection_health_cache(cfg: dict | None = None, *, probe: bool = T
 def _kick_startup_health_check_and_summary(cfg: dict | None = None):
     """On startup, probe connections first, then refresh library stats.
 
-    The dashboard Storage card shows a cached library size from cache.json that can be
+    The dashboard Storage card shows a cached library size from the store that can be
     stale if MediaReducer was stopped while the library changed. This worker runs the
     same health check the UI uses; when connections are good it immediately runs a quiet
-    Summary/debug_info refresh so cache.json catches up rather than waiting for the
+    Summary/debug_info refresh so the store catches up rather than waiting for the
     first scheduled tick. That Summary also restarts the clock, so startup is a fresh
     interval reset."""
     cfg = dict(cfg or load_config())
 
     def _worker():
+        # Probe connections either way (onboarding shows their status), but only
+        # refresh the library Summary when there's something monitored — no paths
+        # means nothing to size, matching the idle scheduler.
         health = _refresh_connection_health_cache(cfg, probe=True)
-        if health.get("critical_ok", False):
+        if health.get("critical_ok", False) and _has_monitored_dirs(cfg):
             run_summary()
 
     threading.Thread(target=_worker, daemon=True, name="engine-startup-summary").start()
@@ -4434,8 +4633,8 @@ def _cleanup_button_state(cfg: dict | None = None, disk: dict | None = None) -> 
 
 
 def _cache_clear_state() -> dict:
-    """Return whether the cache file exists and can be cleared from the UI."""
-    p = cache_path()
+    """Return whether the cache store exists and can be cleared from the UI."""
+    p = db_path()
     state = {
         "exists": False,
         "can_clear": False,
@@ -4651,15 +4850,11 @@ def deleted_entries(limit: int | None = None) -> list[dict]:
     return entries
 
 
-def pending_path() -> Path:
-    return output_dir() / "pending_deletions.json"
-
-
 def _pending_file_data() -> dict | None:
     """The marked & eligible queue document ({schema, entries, plan_config,
-    monitor_dirs}), now stored UNDER cache.json's "pending" key — one file for all
-    persisted state. Read through the memoized _cache_file_data(), so the frequent
-    /api/status consults reuse the same once-per-version cache parse."""
+    monitor_dirs}), from the store's queue table + pending meta. Read through the
+    memoized _cache_file_data(), so the frequent /api/status consults reuse the
+    same once-per-version compose."""
     doc = _cache_file_data().get("pending")
     return doc if isinstance(doc, dict) else None
 
@@ -4682,31 +4877,14 @@ def _unschedule_pending_marks() -> int:
     (_revalidate_pending_marks). Returns how many marks were unscheduled.
     Callers must ensure no run is active (the engine owns the queue during a
     run); the config-save path guards that by re-checking
-    _run_active/_summary_active under _run_lock right at the write. The queue
-    lives under cache.json's "pending" key, so the read-modify-write takes the
-    shared cache flock and rewrites cache.json — preserving every other section."""
-    p = cache_path()
+    _run_active/_summary_active under _run_lock right at the write. One targeted
+    UPDATE inside the WAL write transaction — every other table is untouched."""
     try:
-        with _cache_write_lock():
-            try:
-                cache = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-            except Exception:
-                cache = {}
-            if not isinstance(cache, dict):
-                return 0
-            doc = cache.get("pending")
-            entries = doc.get("entries") if isinstance(doc, dict) else None
-            if not isinstance(entries, dict):
-                return 0
-            unscheduled = 0
-            for e in entries.values():
-                if isinstance(e, dict) and e.get("marked_at") is not None:
-                    e["marked_at"] = None
-                    unscheduled += 1
-            if unscheduled:
-                _atomic_write_json(p, cache, indent=2)
-            return unscheduled
-    except OSError:
+        with db.transaction(db_path()) as conn:
+            cur = conn.execute(
+                "UPDATE queue SET marked_at=NULL WHERE marked_at IS NOT NULL")
+            return cur.rowcount
+    except Exception:
         return 0
 
 
@@ -4719,16 +4897,25 @@ def _normalized_monitor_dirs(cfg: dict) -> list[str]:
     return sorted(out)
 
 
-# Everything that changes WHAT a run would mark or delete. A completed Simulate
-# stamps the raw values of these keys (plus the monitored paths) into the plan;
-# changing ANY of them ghosts both Live actions — arming automatic mode and the
-# manual Cleanup button — until a fresh Simulate rebuilds the plan. Mirrored in
-# engine.py (_PLAN_CONFIG_KEYS); keep the two lists identical.
+# Everything that changes WHAT a run would mark or delete AND can't be reconciled
+# from the existing cache. A completed Simulate stamps the raw values of these
+# keys (plus the monitored paths) into the plan; changing ANY of them ghosts both
+# Live actions — arming automatic mode and the manual Cleanup button — until a
+# fresh Simulate rebuilds the plan. Mirrored in engine.py (_PLAN_CONFIG_KEYS);
+# keep the two lists identical.
+#
+# Deliberately EXCLUDED so they DON'T force a Simulate: PROTECTED_COLLECTIONS /
+# JELLYFIN_PROTECTED_COLLECTIONS (the engine's 15-minute upkeep re-fetches the
+# current protected set and drops newly-protected marks, and every real deletion
+# re-verifies protection fresh — so a change is honored from the standing cache),
+# and Radarr cleanup on/off (the queue carries the tmdb_id/section_id a delete
+# needs). Monitored-path changes still force a Simulate — they're compared
+# separately, via the plan's stamped monitor_dirs (see below).
 _PLAN_CONFIG_KEYS = (
     "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
     "GRACE_PERIOD_DAYS", "SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES",
     "MAX_IMDB_RATING", "SCORE_BALANCE", "NEAR_TIE_PTS", "MAX_STALENESS_MONTHS",
-    "PROTECTED_COLLECTIONS", "JELLYFIN_PROTECTED_COLLECTIONS", "MOVIE_EXTENSIONS",
+    "MOVIE_EXTENSIONS",
 )
 
 
@@ -5028,6 +5215,7 @@ def pending_delete_forecast(cfg: dict | None = None) -> dict:
 @app.route("/")
 def dashboard():
     cfg  = load_config()
+    monitoring = _has_monitored_dirs(cfg)
     disk = disk_stats()
     cleanup_state = _cleanup_button_state(cfg, disk)
     deleted = deleted_stats()
@@ -5042,8 +5230,8 @@ def dashboard():
                            redline_only=_redline_only_mode_cfg(cfg),
                            max_library_gb=cfg.get("MAX_LIBRARY_GB"),
                            headroom_window_used_today=_headroom_window_used_today(),
-                           disk=disk,
-                           library_gb=stats.get("library_gb"),
+                           disk=(disk if monitoring else None),
+                           library_gb=(stats.get("library_gb") if monitoring else None),
                            cleanup_state=cleanup_state,
                            run_active=_run_active,
                            last_run=last_run_time(),
@@ -5122,7 +5310,7 @@ def _score_page_config(cfg: dict) -> dict:
 
 @app.route("/api/library-snapshot")
 def api_library_snapshot():
-    """The full-library snapshot from the last completed scan (cache.json
+    """The full-library snapshot from the last completed scan (the store's
     "library_snapshot"): every monitored-path movie with merged Plex+Jellyfin
     data. Built by Simulate and full-scan Cleanups; the Filtering & Scoring
     page paginates and scores it client-side."""
@@ -5160,6 +5348,10 @@ def api_library_snapshot():
 @app.route("/api/status")
 def api_status():
     cfg = load_config()
+    # With nothing monitored the scheduler is truly idle (see _scheduled_tick), so
+    # there are no meaningful filesystem/library numbers or a next tick to show —
+    # the dashboard dashes the storage card and reads "Scheduler paused".
+    monitoring = _has_monitored_dirs(cfg)
     stats = library_stats()
     disk = cached_disk_stats(stats)
     cleanup_state = _cleanup_button_state(cfg, disk)
@@ -5172,6 +5364,12 @@ def api_status():
         and cleanup_state["space_thresholds"].get("ok_for_cleanup", False)
     ):
         next_run = job.next_run_time.isoformat()
+    # The raw next scheduler tick, ANY mode (unlike next_run_time, which is gated to
+    # a run that will actually delete). Monitor Only surfaces this as its ~15-minute
+    # library-check / queue-refresh countdown; None while a run holds the clock or
+    # nothing is monitored (the tick then no-ops — see _scheduled_tick).
+    next_tick = (job.next_run_time.isoformat()
+                 if job and job.next_run_time and not _run_active and monitoring else None)
     deleted = deleted_stats()
     _forecast = pending_delete_forecast(cfg)
     _delay_days = _delete_delay_days(cfg)
@@ -5206,12 +5404,15 @@ def api_status():
         # dashboard breach-note wording and red-countdown gating.
         "daily_run_time":          _daily_run_time(cfg),
         "next_run_time":           next_run,
+        "next_tick_time":          next_tick,
         # Why automatic Live is paused, when the app (not the user) paused it — startup
         # safety, forced pause on save, etc.
         "run_mode_autopause_reason": (str(cfg.get("_RUN_MODE_AUTOPAUSE_REASON") or "")
                                       if cfg.get("RUN_MODE") == "paused" else ""),
-        "disk":                    disk,
-        "library_gb":              stats.get("library_gb"),
+        # Dashed out when nothing is monitored — no paths means no filesystem/media
+        # size worth showing (the storage card and bar go to "—").
+        "disk":                    (disk if monitoring else None),
+        "library_gb":              (stats.get("library_gb") if monitoring else None),
         # Storage-bar threshold markers: Headroom/Redline are free-space targets;
         # the library cap is a library-size target, drawn against the library.
         "headroom_gb":             _threshold_gb_or_none(cfg.get("HEADROOM_GB")),
@@ -5455,6 +5656,7 @@ def api_save_score_config():
             updates["MAX_STALENESS_MONTHS"] = _clamp_staleness_months(stale_val)
 
         cfg = load_config()
+        _old_cfg = dict(cfg)   # pre-save values, for the reconcile's changed-key check
         if "SKIP_UNPLAYED_MOVIES" in payload:
             updates["SKIP_UNPLAYED_MOVIES"] = _coerce_bool(payload.get("SKIP_UNPLAYED_MOVIES"))
         if "PROTECT_JELLYFIN_FAVORITES" in payload:
@@ -5484,7 +5686,11 @@ def api_save_score_config():
             return _invalid_config_response() or (jsonify({
                 "ok": False, "error": "Save was refused — config.json changed on disk. Reload the page.",
             }), 409)
-        return jsonify({"ok": True, "config": _score_page_config(cfg)})
+        # Rebuild the marked/eligible queue in place from the snapshot under the new
+        # scoring/filter settings — no Simulate needed (favorites re-fetch from
+        # Jellyfin; everything else is a pure recompute).
+        reconcile = _reconcile_after_save(_old_cfg, cfg, source="filtering & scoring")
+        return jsonify({"ok": True, "config": _score_page_config(cfg), "reconcile": reconcile})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
 
@@ -5512,7 +5718,7 @@ def api_reset_config():
             if not _run_active:
                 break
             time.sleep(0.1)
-    # A storage summary in flight would recreate cache.json with pre-reset stats
+    # A storage summary in flight would recreate the store with pre-reset stats
     # moments after this wipe (its engine subprocess merges into the cache on
     # exit), resurrecting stale numbers on the "first-time" dashboard — and the
     # summary worker's clock restart would resume the schedule the reset just
@@ -5531,7 +5737,6 @@ def api_reset_config():
     out_dir = output_dir()
     files = [
         CONFIG_PATH,
-        out_dir / "cache.json",
         out_dir / "progress.json",
         out_dir / "progress.json.tmp",
     ]
@@ -5546,6 +5751,7 @@ def api_reset_config():
             p.unlink(missing_ok=True)
         except OSError as e:
             errors.append(f"{p.name}: {e}")
+    db.reset_store(out_dir / "mediareducer.db")  # SQLite store + sidecars, under the init lock
 
     # lastrun.log drives the Last Run timestamp, the detailed-log window, and the
     # run-stat jump targets — after a reset those must read as "no runs yet". It is
@@ -5924,8 +6130,8 @@ def api_save_config():
         if threshold_change_while_cleanup and _is_cleanup_mode(cfg.get("RUN_MODE")):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_threshold_change = True
-            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed — run Simulate to review "
-                                                 "the new plan, then re-enable Automatic Cleanup.")
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed — review the rebuilt "
+                                                 "deletion plan, then re-enable Automatic Cleanup.")
         if _is_cleanup_mode(cfg.get("RUN_MODE")) and not save_health.get("critical_ok", True):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_tautulli = True
@@ -6145,6 +6351,12 @@ def api_save_config():
         if _should_refresh_summary_after_config_save(saved_cfg, cfg):
             summary_started, summary_message = run_summary()
 
+        # Rebuild the marked/eligible queue in place from the snapshot when this save
+        # changed a threshold, protected collection, or favorites setting — no Simulate.
+        # A collections/favorites change re-fetches the live sets; if the server it
+        # needs is unreachable, the reconcile is held and the Connections check flags it.
+        reconcile_status = _reconcile_after_save(saved_cfg, cfg, source="configuration")
+
         return jsonify({
             "ok": True,
             "config": cfg,
@@ -6152,6 +6364,7 @@ def api_save_config():
             "api_config_changed": api_config_changed,
             "server_software_auto_disabled": server_software_auto_disabled,
             "radarr_section_detection": radarr_section_detection,
+            "reconcile": reconcile_status,
             "automatic_run_mode_paused": (forced_pause_for_api_change or forced_pause_for_tautulli
                                           or forced_pause_for_monitor_change
                                           or forced_pause_for_threshold_change),
@@ -6160,7 +6373,7 @@ def api_save_config():
                 if forced_pause_for_api_change else
                 "monitored paths changed — run Simulate under the new paths, then re-enable Automatic Cleanup."
                 if forced_pause_for_monitor_change else
-                "space thresholds changed — run Simulate to review the new plan, then re-enable Automatic Cleanup."
+                "space thresholds changed — review the rebuilt deletion plan, then re-enable Automatic Cleanup."
                 if forced_pause_for_threshold_change else
                 (save_health.get("required_tooltip") if save_health else "")
                 or "the media server connection is not healthy."
@@ -6239,7 +6452,7 @@ def api_cache_status():
 
 @app.route("/api/cache/clear", methods=["POST"])
 def api_clear_cache():
-    """Delete the entire cache file, including daily cleanup and dashboard stats."""
+    """Delete the entire cache store, including daily cleanup and dashboard stats."""
     blocked = _filesystem_write_block_response(_cache_clear_state())
     if blocked:
         return blocked
@@ -6249,9 +6462,9 @@ def api_clear_cache():
             "message": "A run is active. Try again when it finishes.",
             "status": _cache_clear_state(),
         }), 409
-    # A storage summary in flight merges its stats back into cache.json on exit —
-    # an unlink racing that write gets silently resurrected with the whole
-    # pre-clear cache. Same wait-then-refuse as the full reset.
+    # A storage summary in flight merges its stats back into the store on exit —
+    # a wipe racing that write gets silently resurrected. Same wait-then-refuse as
+    # the full reset. (No run/summary is writing, so nothing else holds the DB.)
     for _ in range(100):  # up to ~10s
         if not _summary_active:
             break
@@ -6264,35 +6477,28 @@ def api_clear_cache():
             "status": _cache_clear_state(),
         }), 409
 
-    p = cache_path()
+    p = db_path()
     if not p.exists():
         return jsonify({
             "ok": False,
-            "message": "No cache file exists yet.",
+            "message": "No cache store exists yet.",
             "status": _cache_clear_state(),
         }), 404
 
     removed_movies = 0
-
     try:
-        existing = json.loads(p.read_text(encoding="utf-8"))
-        if isinstance(existing, dict):
-            movies = existing.get("movies")
-            if isinstance(movies, dict):
-                removed_movies = len(movies)
+        with db.connect(p) as conn:
+            removed_movies = conn.execute(
+                "SELECT COUNT(*) FROM metadata_cache").fetchone()[0]
     except Exception:
-        # Corrupt/unreadable cache still gets deleted below.
+        # Corrupt/unreadable store still gets deleted below.
         pass
 
     # Full wipe — the library snapshot goes with it, so the Filtering & Scoring
-    # table stays empty until the next Simulate or Cleanup rewrites it. The
-    # unlink takes the shared cache flock like every other cache.json writer, so
-    # it can't land inside an engine read-modify-write cycle.
-    try:
-        with _cache_write_lock():
-            p.unlink()
-    except FileNotFoundError:
-        pass  # a concurrent clear/reset already removed it — same outcome
+    # table stays empty until the next Simulate or Cleanup rewrites it. reset_store
+    # deletes the .db and its WAL/SHM sidecars under the init lock, so a concurrent
+    # status-poll read never lands on a table-less DB.
+    db.reset_store(p)
 
     # The wipe also lost the once-per-day window — re-stamp it so clearing the cache
     # never grants the scheduler a free immediate daily run.
@@ -6509,8 +6715,12 @@ def api_run_progress():
 # are fallbacks in case a banner is ever missing from a partial log.
 _LOG_SECTION_RES = {
     "scan":      re.compile(r"={3,} SCAN ={3,}|Processing [\d,]+ unique movie entries\."),
-    "eligible":  re.compile(r"={3,} ELIGIBLE CANDIDATES ={3,}|Candidate stats:|candidates sorted by deletion priority"),
-    "deletions": re.compile(r"={3,} (SIMULATION|DELETIONS) ={3,}|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: "),
+    # "Marked-queue re-verify" is the Debug Cleanup / fast-path analog of the full
+    # scan's ELIGIBLE CANDIDATES stage — the eligible & marked queue, re-scored.
+    "eligible":  re.compile(r"={3,} ELIGIBLE CANDIDATES ={3,}|Candidate stats:|candidates sorted by deletion priority|Marked-queue re-verify"),
+    # A Debug Cleanup previews the deletions ("Delete-from-queue preview" banner →
+    # the WOULD DELETE list); a real Cleanup logs "Deleted file:".
+    "deletions": re.compile(r"={3,} (SIMULATION|DELETIONS) ={3,}|Simulating deletions — target:|DRY RUN DELETE #1:|Deleted file: |Delete-from-queue preview"),
     "summary":   re.compile(r"SUMMARY {1,2}\["),
     "errors":    re.compile(r"ERROR|ABORT|WARN(ING)?[ :]|SKIP identity_mismatch|COMPLETED WITH ERRORS"),
 }
@@ -6850,7 +7060,7 @@ def _deletion_limits_exceeded(cfg: dict, disk: dict | None, library_gb) -> bool:
     Mirrors engine.py's trigger formula: over_limit (used ≥ total − Headroom),
     redline_hit (free ≤ Redline), library_cap_hit (library size > Library Size Cap).
     Disk figures are live; the library size is the last value the engine wrote to
-    cache.json (kept fresh by the Summary after every Cleanup, on save, on startup, and
+    the store (kept fresh by the Summary after every Cleanup, on save, on startup, and
     on paused/idle ticks).
 
     ONLY an optimization to avoid spinning up a run that would delete nothing (e.g. the
@@ -6904,6 +7114,18 @@ def _scheduled_tick():
         return
 
     cfg = load_config()
+    # A reconcile held because a needed server was down: retry it now that the tick
+    # is here — if the connection recovered (or the server was disabled) it fires and
+    # IS this tick's work; otherwise it stays held for the next tick.
+    if _retry_held_reconcile(cfg):
+        return
+    # No monitored library paths (onboarding, or the user removed them all): there
+    # is nothing to scan, size, or clean up, so the scheduler stays truly idle —
+    # no Summary, no maintenance Simulate. The dashboard shows "Scheduler paused"
+    # and dashes the storage numbers. Adding a path resumes the ticks.
+    if not _has_monitored_dirs(cfg):
+        return
+
     if _is_cleanup_mode(cfg.get("RUN_MODE")):
         # Only launch a deletion pass when it's actually safe. If connections aren't
         # ready, fall back to a Summary so stats still refresh. Otherwise refresh storage
@@ -6955,44 +7177,55 @@ def _scheduled_tick():
         # run_script() owns the lock and rejects overlaps.
         run_script()
     else:
-        # Paused (or any non-Live mode): keep dashboard stats fresh without deleting,
-        # touching lastrun.log, or updating the progress panel.
-        run_summary()
+        # Paused (or any non-Live mode). Once a day, after the configured daily run
+        # time, run a maintenance Simulate (a full scan, no deletions) so the plan
+        # and the "full scan within 48h" clock stay current even with no automatic
+        # Cleanup armed to refresh them — but only when connections are healthy, so
+        # a down API just falls back to the quiet Summary instead of spinning the
+        # engine every tick. Every other tick is the quiet Summary (dashboard
+        # disk/library numbers stay fresh without touching lastrun.log/progress).
+        global _last_paused_scan_epoch
+        run_epoch = _todays_daily_run_epoch(cfg)
+        if (_paused_daily_scan_due(cfg)
+                and _last_paused_scan_epoch != run_epoch
+                and _refresh_connection_health_cache(cfg, probe=True).get("critical_ok", False)):
+            # Stamp the attempt BEFORE launching: a successful Simulate refreshes the
+            # snapshot (clearing _paused_daily_scan_due on its own), but one that fails
+            # past the probe would otherwise respin every tick — this holds it to one
+            # attempt per daily window (a new day, a run-time change, a restart, or a
+            # manual Simulate re-arms it).
+            _last_paused_scan_epoch = run_epoch
+            print("Scheduled tick: paused — running a daily maintenance Simulate to "
+                  "keep the deletion plan current.", flush=True)
+            run_script(mode_override="debug_sim")   # Simulate: full scan, never deletes
+        else:
+            run_summary()
 
-def invalidate_cache_on_startup() -> None:
-    """Every startup begins with a clean slate: drop cache.json — which now holds the
-    library snapshot/metadata AND the marked & eligible queue (under its "pending"
-    key) — plus any legacy pending_deletions.json left by an older version.
-
-    Files can be added, removed, or replaced while the app is down, which would leave
-    the plan describing a library that no longer matches disk. Rather than trust a
-    possibly-stale cache, we delete it so a fresh Simulate must rebuild it. That also
-    correctly ghosts the manual and Debug Cleanup buttons (both replay the cached
-    queue) until that Simulate runs — matching the startup Live-mode pause. Runs
-    BEFORE burn_daily_window_on_startup so the re-stamped daily window survives.
-
-    The wiped plan no longer describes what's on disk, so the last run's progress panel
-    (Scanning/Simulating/Done + the stat tiles) is stale too. Archive its log into logs/
-    (never lost) and clear progress.json so the Dashboard reads "no runs yet" until the
-    rebuilding Simulate runs. Keeps deleted.log (deletion history) and the logs/ archive."""
-    for label, p in (("cache + queue", cache_path()), ("legacy queue file", pending_path())):
-        try:
-            if p.exists():
-                p.unlink()
-                print(f"Startup: cleared the {label} ({p.name}) — a fresh Simulate will "
-                      f"rebuild it (the queue-based runs stay ghosted until then).", flush=True)
-        except OSError as e:
-            print(f"WARNING: could not clear the {label} on startup: {e}", flush=True)
-    out = output_dir()
-    _archive_lastrun_log(out)   # last run's log → logs/<timestamp>.log (preserved)
-    _clear_progress_state(out)  # progress panel → stock "no runs yet"
+def validate_store_on_startup() -> None:
+    """PRESERVE the store across a restart — an unchanged, recent plan stays
+    usable with no re-scan. Nothing is invalidated here; whether the saved plan
+    can still be trusted is decided LIVE:
+      • monitored-path or scoring/threshold changes → the plan's stamp no longer
+        matches (_pending_plan_current / _simulate_evidence), so Cleanup + arming
+        ghost until a fresh Simulate;
+      • a full scan older than two days → _full_scan_overdue() ghosts them the
+        same way (a daily scan — the armed Cleanup, or the paused-mode maintenance
+        Simulate — normally refreshes it);
+      • vanished files / newly-protected movies → the 15-minute upkeep drops those
+        marks, and every deletion re-verifies protection fresh.
+    deleted.log and the logs/ archive are kept, and the progress panel + last-run
+    log carry over."""
+    print("Startup: cache store preserved — its saved plan stays usable unless the "
+          "config changed or its last full scan is over two days old (then run Simulate).",
+          flush=True)
 
 
-# Always start safe: clear a possibly-stale cache/plan first, adopt the configured time
-# zone before anything reads the clock, never resume a saved Live mode after a restart,
-# never leave an undersized Library Size Cap armed, and burn today's daily-run window so
-# a restart can't grant an immediate run.
-invalidate_cache_on_startup()
+# Always start safe: preserve the store but re-validate its plan (locking Cleanup +
+# arming if it went stale or the library changed), adopt the configured time zone
+# before anything reads the clock, never resume a saved Live mode after a restart,
+# never leave an undersized Library Size Cap armed, and burn today's daily-run window
+# so a restart can't grant an immediate run.
+validate_store_on_startup()
 _apply_configured_time_zone()
 force_paused_run_mode_on_startup()
 disable_undersized_library_cap_on_startup()

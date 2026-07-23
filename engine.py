@@ -98,7 +98,7 @@ OUTPUT FILES (all under OUTPUT_DIR)
   lastrun.log     — most recent run (overwritten each time)
   deleted.log     — permanent append-only record of every real deletion
   logs/           — archived logs from every run that performed cleanup
-  cache.json      — metadata cache, daily schedule state, dashboard storage snapshot, library snapshot
+  mediareducer.db — SQLite store: metadata cache, daily schedule state, dashboard storage snapshot, library snapshot, marked/eligible queue
   progress.json   — structured live progress for the web UI
   title.ratings.tsv — IMDb ratings dataset (refreshed past IMDB_RATINGS_MAX_AGE_DAYS)
 """
@@ -128,6 +128,8 @@ from scoring_constants import SCORING
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+import db  # shared SQLite persistence (metadata cache, library snapshot, queue, meta)
 
 # =========================
 # CONFIG
@@ -172,9 +174,8 @@ LOGFILE           = OUTPUT_DIR / "lastrun.log"     # overwritten each run
 LOGS_DIR          = OUTPUT_DIR / "logs"            # archived cleanup run logs
 DELETED_LOG       = OUTPUT_DIR / "deleted.log"     # permanent deletion history
 IMDB_RATINGS_PATH = OUTPUT_DIR / "title.ratings.tsv"
-CACHE_FILE        = OUTPUT_DIR / "cache.json"
+DB_FILE           = OUTPUT_DIR / "mediareducer.db"  # SQLite store: metadata cache, library snapshot, marked/eligible queue, kv meta
 PROGRESS_FILE     = OUTPUT_DIR / "progress.json"   # structured run progress for the web UI
-PENDING_FILE      = OUTPUT_DIR / "pending_deletions.json"  # LEGACY: the queue now lives under cache.json["pending"]; kept only so a stale old file is recognizable/cleaned
 CONFIG_ERRORS     = []  # populated while loading config.json; live/sim runs abort on these
 RADARR_SECTION_METHOD_LABELS = {
     "path-prefix": "path prefix",
@@ -203,7 +204,7 @@ RUN_MODE = "debug_info"
 # "debug_cleanup" runs the cleanup orchestration for diagnostics but deletes nothing
 # (its "debug_" prefix forces every deletion path to dry-run) and skips the
 # headroom safety cap, so it can produce a full cleanup log on demand.
-EXECUTABLE_RUN_MODES = ("debug_info", "debug_sim", "headroom", "debug_cleanup")
+EXECUTABLE_RUN_MODES = ("debug_info", "debug_sim", "headroom", "debug_cleanup", "reconcile")
 
 # ── Space thresholds ───────────────────────────────────────────────────────────
 HEADROOM_GB = 1000  # free space to maintain (once-per-day cleanup trigger). ~1 TB
@@ -247,7 +248,7 @@ def _redline_only_mode() -> bool:
 MAX_LIBRARY_GB = None  # maximum on-disk library size in GB. None = disabled.
 
 # Deletion delay in whole calendar days, minimum 1. A daily cleanup first MARKS
-# candidates (pending_deletions.json) and deletes a mark only once it is N+
+# candidates (into the queue) and deletes a mark only once it is N+
 # calendar days old — so a movie is never deleted the same day it is marked; the
 # earliest deletion is the next day's daily run (N=1). Larger N widens the grace
 # window to protect a movie or change the rules. Redline emergencies and manual
@@ -738,7 +739,13 @@ def verify_runtime_api_health():
         except Exception as e:
             _abort_api_failure(f"Jellyfin API check failed during run startup: {e}")
 
-    if RADARR_OVERSEERR_SECTION_ID and RADARR_URL and RADARR_API_KEY:
+    # Radarr's forget only happens when a REAL Cleanup deletes a movie. A Simulate
+    # or Debug Cleanup never touches Radarr, so an unreachable Radarr must not block
+    # a dry-run preview. A real Cleanup (RUN_MODE "headroom") still fails closed:
+    # deleting a movie while Radarr is down would let Radarr re-download it. Remove
+    # Radarr's API key to skip it entirely (optional integration).
+    if (RUN_MODE == "headroom" and RADARR_OVERSEERR_SECTION_ID
+            and RADARR_URL and RADARR_API_KEY):
         try:
             _radarr_json("/api/v3/system/status", timeout=6)
         except Exception as e:
@@ -1036,22 +1043,21 @@ def emit_progress(**fields):
 
 
 def emit_stats(**fields):
-    """Merge dashboard storage stats into cache.json.
+    """Merge dashboard storage stats into the store's dashboard_stats meta.
 
     Written on every run regardless of mode, including the quiet Summary refresh.
     Merges with the existing cache so a transient library-size failure (library_gb
     not supplied) preserves the last-known value instead of blanking it.
     """
     try:
-        with _cache_write_lock():
-            data = _cache_base_for_merge()
-            dashboard_stats = data.get("dashboard_stats")
+        with db.transaction(DB_FILE) as conn:
+            db.ensure_code_current(conn, code_checksum())
+            dashboard_stats = db.get_meta(conn, "dashboard_stats")
             if not isinstance(dashboard_stats, dict):
                 dashboard_stats = {}
             dashboard_stats.update(fields)
             dashboard_stats["updated_at"] = time.time()
-            data["dashboard_stats"] = dashboard_stats
-            _replace_cache_file(data)
+            db.set_meta(conn, "dashboard_stats", dashboard_stats)
     except Exception:
         pass
 
@@ -1324,13 +1330,16 @@ _CODE_CHECKSUM = None
 def code_checksum():
     """SHA-256 of this engine source file, computed once per process.
 
-    Replaces manual cache versioning: all code that reads/writes/derives cache
-    content lives here, so a file change changes the checksum and flushes the
-    cache automatically — the cache can never be read by code other than the code
-    that wrote it, with no version number to bump. engine.py ONLY: the cache holds
-    raw API facts whose shape lives entirely in this file. scoring_constants.py is
-    excluded because scores are recomputed every run and never cached — including
-    it would force a full API refetch on every scoring tweak for no benefit.
+    Replaces manual cache versioning: all engine code that reads/writes/derives
+    cache VALUES lives here, so a file change changes the checksum and flushes the
+    code-derived rows automatically (on the next engine write) — the cache can
+    never be trusted across an engine code change, with no version number to bump.
+    engine.py ONLY: the SCHEMA and row<->dict mapping live in db.py, which carries
+    its OWN fingerprint (db._schema_fingerprint) and rebuilds the tables at connect
+    when it changes — a column change needs a DROP+recreate, more than the row
+    wipe this guard does. scoring_constants.py is excluded because scores are
+    recomputed every run and never cached — including it would force a full API
+    refetch on every scoring tweak for no benefit.
     """
     global _CODE_CHECKSUM
     if _CODE_CHECKSUM is None:
@@ -1530,7 +1539,7 @@ def _load_config_from_file():
     global RADARR_URL, RADARR_API_KEY
     global USE_PLEX, USE_JELLYFIN, JELLYFIN_URL, JELLYFIN_API_KEY, JELLYFIN_PROTECTED_COLLECTIONS
     global OUTPUT_DIR, CHECK_PATH, LIBRARY_ROOT, LOGFILE, LOGS_DIR, DELETED_LOG
-    global IMDB_RATINGS_PATH, CACHE_FILE, PROGRESS_FILE, PENDING_FILE
+    global IMDB_RATINGS_PATH, DB_FILE, PROGRESS_FILE
 
     CONFIG_ERRORS = []
 
@@ -1629,111 +1638,65 @@ def _load_config_from_file():
         LOGS_DIR          = OUTPUT_DIR / "logs"
         DELETED_LOG       = OUTPUT_DIR / "deleted.log"
         IMDB_RATINGS_PATH = OUTPUT_DIR / "title.ratings.tsv"
-        CACHE_FILE        = OUTPUT_DIR / "cache.json"
+        DB_FILE           = OUTPUT_DIR / "mediareducer.db"
         PROGRESS_FILE     = OUTPUT_DIR / "progress.json"
-        PENDING_FILE      = OUTPUT_DIR / "pending_deletions.json"
 
     _resolve_auto_radarr_overseerr_section_id()
 
 
-@contextmanager
-def _cache_write_lock():
-    """Serialize cache.json read-modify-writes ACROSS PROCESSES: the app burns
-    or reopens the daily window while an engine scan or summary may be
-    mid-write. Every writer takes this flock and writes through a
-    pid-unique tmp file; readers need nothing — a replace() is atomic, so they
-    always see a complete file."""
-    if fcntl is None:
-        yield
-        return
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_FILE.with_name(CACHE_FILE.name + ".lock"), "w") as lf:
-        fcntl.flock(lf, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
-
-
-def _replace_cache_file(data: dict) -> None:
-    """Atomic cache.json write via a pid-unique tmp (two engine processes must
-    never share a tmp path — interleaved writes to one tmp can tear the file).
-    Every write stamps the current code checksum, so the file always identifies
-    the code version that produced it."""
-    data["code_checksum"] = code_checksum()
-    tmp = CACHE_FILE.with_name(f"{CACHE_FILE.name}.{_os.getpid()}.tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(CACHE_FILE)
-    finally:
-        tmp.unlink(missing_ok=True)
-
-
-def _cache_base_for_merge() -> dict:
-    """Read cache.json as the base for a read-modify-write. When the on-disk
-    checksum doesn't match this code, its code-derived sections (movie metadata,
-    library_snapshot, dashboard_stats) were written by a different version and must be
-    rebuilt, not carried forward — so drop them, keeping only the daily-schedule
-    date. Every writer starts from this base so no stale section survives a code
-    change through the back door."""
-    try:
-        existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        if not isinstance(existing, dict):
-            return {}
-    except Exception:
-        return {}
-    if existing.get("code_checksum") != code_checksum():
-        return {"last_cleanup_date": existing.get("last_cleanup_date")}
-    return existing
-
-
 def load_cache():
-    """
-    Load the JSON cache file. If the file is missing, corrupt, or was written by
-    a different version of the engine code (checksum mismatch), returns a fresh
-    dict (preserving last_cleanup_date so the daily schedule is unaffected).
-    """
-    try:
-        cache = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-        if not isinstance(cache, dict):
-            raise ValueError(f"cache holds {type(cache).__name__}, not an object")
-    except FileNotFoundError:
-        return {"code_checksum": code_checksum()}
-    except Exception as e:
-        log(f"WARN cache unreadable ({e}), starting fresh.")
-        return {"code_checksum": code_checksum()}
+    """The whole persisted store as one dict — its metadata cache ("movies"),
+    library_snapshot, marked/eligible queue ("pending"), and the kv fields
+    (code_checksum, config_hash, last_cleanup_date, dashboard_stats). Sections
+    never written are simply absent.
 
-    if cache.get("code_checksum") != code_checksum():
+    Applies the code-change guard: if the store was written by a different
+    engine version, its code-derived sections are dropped (only last_cleanup_date
+    survives) and the new checksum stamped, so a code change forces a fresh
+    rebuild."""
+    with db.connect(DB_FILE) as conn:
+        if db.get_meta(conn, "code_checksum") == code_checksum():
+            return db._compose(conn)
+    # Missing or stale checksum: guard-wipe then compose (now empty of code-
+    # derived data, last_cleanup_date preserved).
+    if _cache_code_stale():
         log(
             "Engine code changed since the cache was written — clearing the "
             "movie metadata, library sample, and stored stats for a fresh "
             "rebuild (daily schedule preserved)."
         )
-        # Everything code-derived (metadata, library_snapshot, dashboard_stats) is
-        # rebuilt; only the schedule date survives.
-        return {
-            "code_checksum":     code_checksum(),
-            "last_cleanup_date": cache.get("last_cleanup_date"),
-        }
+    with db.transaction(DB_FILE) as conn:
+        db.ensure_code_current(conn, code_checksum())
+        return db._compose(conn)
 
-    return cache
+
+def _cache_code_stale() -> bool:
+    """True when the store carries a DIFFERENT (non-empty) code checksum — a real
+    code change, worth logging. A fresh/empty store (no checksum yet) is not a
+    change, so it stays quiet."""
+    try:
+        with db.connect(DB_FILE) as conn:
+            stored = db.get_meta(conn, "code_checksum")
+    except Exception:
+        return False
+    return bool(stored) and stored != code_checksum()
 
 
 def save_cache(cache):
-    """Persist the cache dict to disk (the current code checksum is stamped by
-    _replace_cache_file)."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    with _cache_write_lock():
-        # dashboard_stats and library_snapshot are only ever written straight to
-        # disk (emit_stats / _write_library_snapshot); re-read them under the lock so a
-        # scan's stale in-memory dict cannot clobber a value updated mid-scan.
-        # _cache_base_for_merge drops them when the on-disk cache is from older
-        # code, so a code change flushes them rather than merging stale copies.
-        existing = _cache_base_for_merge()
-        for key in ("dashboard_stats", "library_snapshot"):
-            if isinstance(existing.get(key), dict):
-                cache[key] = existing[key]
-        _replace_cache_file(cache)
+    """Persist the metadata-cache subset of the store: the "movies" dict, plus
+    config_hash / last_cleanup_date when present. The library_snapshot,
+    dashboard_stats and queue are written by their own targeted writers
+    (_write_library_snapshot / emit_stats / save_pending) into their own tables,
+    so save_cache leaves them untouched — the DB equivalent of the old
+    re-read-to-avoid-clobber. The code checksum is stamped by the write guard."""
+    with db.transaction(DB_FILE) as conn:
+        db.ensure_code_current(conn, code_checksum())
+        if "movies" in cache:
+            db.replace_metadata_cache(conn, cache.get("movies") or {})
+        if "config_hash" in cache:
+            db.set_meta(conn, "config_hash", cache["config_hash"])
+        if "last_cleanup_date" in cache:
+            db.set_meta(conn, "last_cleanup_date", cache["last_cleanup_date"])
 
 
 def _mark_age_days(marked_at, now_ts) -> int:
@@ -1761,11 +1724,12 @@ def _mark_delete_on(marked_at) -> str:
 
 def _pending_doc() -> dict:
     """The marked & eligible queue document — {schema, entries, plan_config,
-    monitor_dirs} — now stored UNDER cache.json's "pending" key (one file for all
-    persisted state). load_cache() drops it on a code-version mismatch, so a code
-    change invalidates the plan for free. {} when absent/unreadable."""
-    doc = load_cache().get("pending")
-    return doc if isinstance(doc, dict) else {}
+    monitor_dirs} — from the queue table + pending meta. Targeted read (no movie
+    snapshot), {} when no plan has been written. A run calls emit_stats() early in
+    main() — before any queue-acting path — which runs the code-change guard
+    (db.ensure_code_current), so a queue written by a different engine version is
+    dropped before it's read here."""
+    return db.read_pending_doc(DB_FILE)
 
 
 def load_pending() -> dict:
@@ -1777,17 +1741,26 @@ def load_pending() -> dict:
     return dict(entries) if isinstance(entries, dict) else {}
 
 
-# Everything that changes WHAT a run would mark or delete. A completed
-# Simulate stamps the raw config values of these keys (plus the monitored
-# paths) into the plan; the web app ghosts BOTH Live actions — arming
-# automatic mode and the manual Cleanup button — whenever any of them no
-# longer matches, forcing a fresh Simulate. Mirrored in app.py
+# Everything that changes WHAT a run would mark or delete AND can't be reconciled
+# from the existing cache. A completed Simulate stamps the raw config values of
+# these keys (plus the monitored paths) into the plan; the web app ghosts BOTH
+# Live actions — arming automatic mode and the manual Cleanup button — whenever
+# any of them no longer matches, forcing a fresh Simulate. Mirrored in app.py
 # (_PLAN_CONFIG_KEYS); keep the two lists identical.
+#
+# Deliberately EXCLUDED (safe to change against the standing cache, so they don't
+# force a Simulate): the PROTECTED_COLLECTIONS / JELLYFIN_PROTECTED_COLLECTIONS
+# lists — the 15-minute upkeep re-fetches the current protected set every tick and
+# drops any newly-protected mark (_revalidate_pending_marks), and every real
+# deletion re-verifies protection fresh (full scan, or the fast path's own
+# collections/favorites re-fetch), so a stale mark can never delete a
+# now-protected movie. Radarr cleanup on/off likewise isn't here (the queue
+# stores the tmdb_id + section_id an incremental delete needs).
 _PLAN_CONFIG_KEYS = (
     "HEADROOM_GB", "REDLINE_GB", "REDLINE_ONLY_MODE", "MAX_LIBRARY_GB",
     "GRACE_PERIOD_DAYS", "SKIP_UNPLAYED_MOVIES", "PROTECT_JELLYFIN_FAVORITES",
     "MAX_IMDB_RATING", "SCORE_BALANCE", "NEAR_TIE_PTS", "MAX_STALENESS_MONTHS",
-    "PROTECTED_COLLECTIONS", "JELLYFIN_PROTECTED_COLLECTIONS", "MOVIE_EXTENSIONS",
+    "MOVIE_EXTENSIONS",
 )
 # Raw config values for those keys, captured verbatim at config load so the
 # stamp and the app compare like with like (both sides read config.json).
@@ -1795,7 +1768,8 @@ _PLAN_CONFIG_RAW: dict = {}
 
 
 def save_pending(entries: dict, *, stamp_thresholds: bool = False,
-                 snapshot_watch_updates: dict | None = None) -> None:
+                 snapshot_watch_updates: dict | None = None,
+                 snapshot_delete_paths=None) -> None:
     """Atomically persist the marked-for-deletion queue.
 
     A plan-defining write (Simulate, or a daily run marking candidates) stamps
@@ -1805,56 +1779,39 @@ def save_pending(entries: dict, *, stamp_thresholds: bool = False,
     they can't accidentally freshen a plan made under different rules.
 
     snapshot_watch_updates (path -> {plays, last_played, favorite}) is applied to
-    the library snapshot's matching movie rows IN THE SAME locked write, so the
+    the library snapshot's matching movie rows IN THE SAME transaction, so the
     queue's refreshed scores and the snapshot's refreshed plays commit together —
     a re-verify can never leave the two out of sync by half-failing. built_at is
     preserved (a watch refresh, not a fresh scan).
 
-    Stored under cache.json's "pending" key: one file for all persisted state.
-    The whole read-modify-write runs under the shared cache flock so it never
-    clobbers a concurrent stats/snapshot write from the app or another engine."""
+    snapshot_delete_paths (iterable of paths confirmed physically gone this run)
+    are removed from the library snapshot in the SAME transaction — a light path
+    that drops a dead queue entry also sheds its snapshot row instead of leaving a
+    phantom until the next full scan. built_at is preserved (no rescan happened).
+
+    One multi-table transaction (queue + optional snapshot rows + pending meta);
+    the WAL write lock serializes it against any concurrent stats/snapshot write
+    from the app or another engine, so it never clobbers them."""
     try:
-        with _cache_write_lock():
-            cache = _cache_base_for_merge()
-            old = cache.get("pending") if isinstance(cache.get("pending"), dict) else {}
+        with db.transaction(DB_FILE) as conn:
+            db.ensure_code_current(conn, code_checksum())
+            db.set_meta(conn, "pending_schema", 1)
             if stamp_thresholds:
-                plan_config = dict(_PLAN_CONFIG_RAW)
+                db.set_meta(conn, "pending_plan_config", dict(_PLAN_CONFIG_RAW))
                 # Which paths the plan was scanned from: a monitored-path change
                 # invalidates it outright (only a real Simulate can rebuild it).
-                monitor_dirs = sorted(str(d) for d in (MONITOR_DIRS or []))
-            else:
-                plan_config = old.get("plan_config")
-                monitor_dirs = old.get("monitor_dirs")
-            payload = {"schema": 1, "entries": entries}
-            if isinstance(plan_config, dict):
-                payload["plan_config"] = plan_config
-            if isinstance(monitor_dirs, list):
-                payload["monitor_dirs"] = monitor_dirs
-            cache["pending"] = payload
+                db.set_meta(conn, "pending_monitor_dirs",
+                            sorted(str(d) for d in (MONITOR_DIRS or [])))
+            # Trim-only writes leave the existing plan_config / monitor_dirs meta
+            # in place, so they can't accidentally freshen a plan made under
+            # different rules.
+            db.replace_queue(conn, entries)
+            if snapshot_delete_paths:
+                db.delete_movies(conn, snapshot_delete_paths)
             if snapshot_watch_updates:
-                _merge_snapshot_watch_updates(cache, snapshot_watch_updates)
-            _replace_cache_file(cache)
+                db.update_movie_watch(conn, snapshot_watch_updates)
     except Exception as e:
-        log(f"WARN: could not write the pending queue into cache.json ({e}).")
-
-
-def _merge_snapshot_watch_updates(cache: dict, updates: dict) -> None:
-    """Apply incremental fresh watch values (plays / last_played / favorite) onto
-    the library snapshot rows of an already-loaded cache dict, keyed by path. In
-    place; built_at and monitor_dirs are left untouched (a watch refresh, not a
-    scan). Used inside save_pending so the queue and snapshot commit in one write."""
-    snap = cache.get("library_snapshot")
-    if not isinstance(snap, dict) or not isinstance(snap.get("movies"), list):
-        return
-    for m in snap["movies"]:
-        if not isinstance(m, dict):
-            continue
-        u = updates.get(m.get("path"))
-        if not u:
-            continue
-        for field in ("plays", "last_played", "favorite"):
-            if field in u:
-                m[field] = u[field]
+        log(f"WARN: could not write the pending queue into the database ({e}).")
 
 
 def write_plan_to_queue(planned, trigger, scheduled_count=0) -> tuple[dict, int, int]:
@@ -1919,15 +1876,17 @@ def write_plan_to_queue(planned, trigger, scheduled_count=0) -> tuple[dict, int,
 
 def read_last_cleanup_date():
     """Return date string (YYYY-MM-DD) of the last scheduled cleanup, or None."""
-    return load_cache().get("last_cleanup_date")
+    with db.connect(DB_FILE) as conn:
+        return db.get_meta(conn, "last_cleanup_date")
 
 
 def write_last_cleanup_date():
-    """Record today as the last scheduled cleanup date inside the cache file."""
-    cache = load_cache()
-    cache["last_cleanup_date"] = time.strftime("%Y-%m-%d")
-    save_cache(cache)
-    log(f"Daily cleanup state saved: {time.strftime('%Y-%m-%d')} -> {CACHE_FILE}")
+    """Record today as the last scheduled cleanup date in the store."""
+    today = time.strftime("%Y-%m-%d")
+    with db.transaction(DB_FILE) as conn:
+        db.ensure_code_current(conn, code_checksum())
+        db.set_meta(conn, "last_cleanup_date", today)
+    log(f"Daily cleanup state saved: {today} -> {DB_FILE}")
 
 
 def debug_startup():
@@ -1985,7 +1944,7 @@ def debug_startup():
     _tok = ('*' * 8 + PLEX_TOKEN[-4:]) if PLEX_TOKEN else 'NOT SET'
     log(f"Tautulli: {TAUTULLI_URL}")
     log(f"Plex: {PLEX_URL} | token={_tok}")
-    log(f"Last scheduled cleanup: {read_last_cleanup_date() or 'never'} | Cache: {CACHE_FILE}")
+    log(f"Last scheduled cleanup: {read_last_cleanup_date() or 'never'} | Store: {DB_FILE}")
     if RADARR_OVERSEERR_SECTION_ID:
         log(f"Radarr: {RADARR_URL}")
         _section_note = " (auto-detected)" if RADARR_OVERSEERR_SECTION_ID_SOURCE == "auto" else ""
@@ -3818,15 +3777,16 @@ def compute_retention_score(rec, now=None):
 
 
 # ── Library snapshot (Filtering & Scoring table) ─────────────────────────────
-# cache.json's "library_snapshot" key backs the Filtering & Scoring page's
+# The library snapshot backs the Filtering & Scoring page's
 # library table: EVERY monitored-path movie from the last completed scan with
 # its merged Plex+Jellyfin data plus eligibility facts. Written only at the
 # END of a successful build_candidates() pass (Simulate or any full-scan Live
 # run), so an interrupted run always leaves the previous snapshot intact.
 def _snapshot_entry(title, year, rating, votes, plays, users,
                     last_played, added_at, size_bytes,
-                    protected=False, favorite=False, source_id=None,
-                    jf_source_id=None, path=None) -> dict:
+                    protected=False, favorite=False, excluded=False,
+                    source_id=None, jf_source_id=None,
+                    tmdb_id=None, section_id=None, path=None) -> dict:
     return {
         # Resolved /library path — the join key the incremental re-verify uses to
         # look up a marked movie's scoring inputs. Internal only: stripped from
@@ -3851,30 +3811,41 @@ def _snapshot_entry(title, year, rating, votes, plays, users,
         # too (a Jellyfin-side watch must count, or it could be wrongly deleted).
         "jf_source_id": str(jf_source_id) if jf_source_id else None,
         "size_gb": round(parse_int(size_bytes, 0) / 1e9, 2),
-        # Eligibility facts, not verdicts: the Score Explorer applies the
-        # (possibly previewed) filter settings to these client-side.
+        # Exact bytes too: the config-save reconcile sizes its deletion plan from
+        # these (size_gb is 2-dp display precision).
+        "size_bytes": parse_int(size_bytes, 0),
+        # Eligibility facts, not verdicts: the Score Explorer and the config-save
+        # reconcile apply the filter settings to these.
         "protected": bool(protected),
         "favorite": bool(favorite),
+        # Set when the scan hard-excluded this movie for a reason the reconcile
+        # can't recompute (a Plex/Jellyfin identity mismatch), so the reconcile
+        # keeps it out of the eligible set.
+        "excluded": bool(excluded),
+        # Radarr identity, so a queue the reconcile rebuilds from the snapshot can
+        # forget the movie in Radarr without a rescan (untyped in the DB → the
+        # exact int-or-str the API returned round-trips).
+        "tmdb_id": tmdb_id,
+        "section_id": section_id,
     }
 
 
 def _write_library_snapshot(movies: list) -> None:
-    """Merge the library snapshot into cache.json (same read-modify-write shape
-    as emit_stats, so nothing else in the cache is disturbed). The write is
-    atomic and happens only after a scan completes, so a run interrupted at any
-    point never loses the last good snapshot."""
-    payload = {
-        "built_at": int(time.time()),
+    """Replace the library snapshot (movies table + its built_at/monitor_dirs
+    meta), disturbing nothing else in the store. One transaction, run only after
+    a scan completes, so a run interrupted at any point never loses the last good
+    snapshot."""
+    with db.transaction(DB_FILE) as conn:
+        db.ensure_code_current(conn, code_checksum())
+        db.replace_movies(conn, movies)
+        db.set_meta(conn, "snapshot_built_at", int(time.time()))
         # The paths this snapshot was scanned from (same normalized form as the
         # plan stamp): the app's arming gate uses the snapshot as "a Simulate
         # has seen the library" evidence, which only holds for THESE paths.
-        "monitor_dirs": sorted(str(d) for d in (MONITOR_DIRS or [])),
-        "movies": movies,
-    }
-    with _cache_write_lock():
-        data = _cache_base_for_merge()
-        data["library_snapshot"] = payload
-        _replace_cache_file(data)
+        db.set_meta(conn, "snapshot_monitor_dirs",
+                    sorted(str(d) for d in (MONITOR_DIRS or [])))
+        # built_at (set above) is what the app's "full scan within the last day"
+        # check reads — a completed scan refreshes it and lifts that lock on its own.
 
 
 # Near-tie window in retention-score points — the "File size optimization"
@@ -3962,6 +3933,36 @@ def score_candidate(c, now=None):
     score, _breakdown = compute_retention_score(rec, now=now)
     c["retention_score"] = round(score, 4)
     return c
+
+
+def _hard_filter_reason(*, protected, favorite, imdb_rating, imdb_votes,
+                        added_at, play_count, last_played, now=None):
+    """The hard-exclusion ladder — the deletion filters that are a pure function
+    of a movie's stored facts — shared by the full scan (build_candidates) and the
+    config-save reconcile so the two can never disagree on what is eligible.
+
+    Returns the stats-key reason a movie is EXCLUDED ("protected",
+    "jellyfin_favorite", "no_imdb_data", "high_rated", "recently_added",
+    "unplayed"), or None if it survives to scoring. Order matches build_candidates.
+    NOT covered here (each caller handles them, since they need the raw row or the
+    filesystem, not stored facts): the structural path checks and the Plex/Jellyfin
+    identity mismatch — the scan records that as the snapshot's `excluded` flag so
+    the reconcile still honors it."""
+    now = now if now is not None else time.time()
+    if protected:
+        return "protected"
+    if PROTECT_JELLYFIN_FAVORITES and favorite:
+        return "jellyfin_favorite"
+    if imdb_dataset_needed() and (imdb_rating is None or not imdb_votes):
+        return "no_imdb_data"
+    if (MAX_IMDB_RATING is not None and imdb_rating is not None
+            and float(imdb_rating) > float(MAX_IMDB_RATING)):
+        return "high_rated"
+    if GRACE_PERIOD_DAYS and added_at > 0 and (now - added_at) < GRACE_PERIOD_DAYS * 86400:
+        return "recently_added"
+    if SKIP_UNPLAYED_MOVIES and play_count <= 0 and last_played <= 0:
+        return "unplayed"
+    return None
 
 
 def build_candidates():
@@ -4246,6 +4247,7 @@ def build_candidates():
             item.get("last_played"), item.get("added_at"), _snap_size,
             protected=protected, favorite=bool(item.get("_jf_favorite")),
             source_id=rating_key, jf_source_id=item.get("_jf_source_id"),
+            tmdb_id=tmdb_id, section_id=section_id,
             path=_snap_key)
 
         if protected:
@@ -4271,6 +4273,7 @@ def build_candidates():
                 "plex_tmdb":     "—",
                 "jellyfin_tmdb": str(tmdb_id or "") or "—",
             })
+            _snapshot_by_path[_snap_key]["excluded"] = True  # not recomputable — keep the reconcile from re-admitting it
             log(f"SKIP identity_mismatch (unmerged Plex twin) | jellyfin_title={title!r} | "
                 f"plex_title={twin.get('title')!r} | path={file_path}")
             continue
@@ -4310,6 +4313,7 @@ def build_candidates():
                             "jellyfin_tmdb": jf_id.get("tmdb") or "—",
                         }
                         identity_mismatches.append(detail)
+                        _snapshot_by_path[_snap_key]["excluded"] = True  # not recomputable from the snapshot
                         log(f"SKIP identity_mismatch | plex_title={title!r} != jellyfin_title={jf_id.get('title')!r} | "
                             f"plex(imdb={detail['plex_imdb']},tmdb={detail['plex_tmdb']}) != "
                             f"jellyfin(imdb={detail['jellyfin_imdb']},tmdb={detail['jellyfin_tmdb']}) | "
@@ -4324,53 +4328,40 @@ def build_candidates():
                 except Exception:
                     pass
                 if resolved_path in _mismatch_skip_paths or (_resolved2 and _resolved2 in _mismatch_skip_paths):
+                    _snapshot_by_path[_snap_key]["excluded"] = True  # the Jellyfin write above reset it; re-flag
                     log(f"SKIP identity_mismatch (Jellyfin twin) | jellyfin_title={title!r} | path={file_path}")
                     continue
 
-        # Jellyfin favorites — optional HARD protection override, off by default.
-        # Never a scoring signal: favorites are not cleanly shared between
-        # Plex/Tautulli and Jellyfin.
-        if PROTECT_JELLYFIN_FAVORITES and item.get("_jf_favorite"):
-            stats["jellyfin_favorite"] += 1
-            log(f"SKIP jellyfin_favorite | title={title} | path={file_path}")
-            continue
-
-        # IMDB lookup — entry is (rating, votes) tuple or None.
+        # Hard-exclusion ladder (favorite → no-IMDb → rating cutoff → grace →
+        # unplayed) via _hard_filter_reason — the SAME predicate the config-save
+        # reconcile runs over the snapshot, so a full scan and a reconcile can
+        # never disagree on eligibility. The per-reason logs stay here (they carry
+        # scan context the pure predicate has no access to); only the decision is
+        # shared. IMDB lookup entry is a (rating, votes) tuple or None.
         imdb_entry  = imdb_ratings.get(imdb_id) if imdb_id else None
         imdb_rating = imdb_entry[0] if imdb_entry else None
         imdb_votes  = imdb_entry[1] if imdb_entry else None
-
-        # No IMDb rating/votes found (unresolved id, or absent from the
-        # dataset): half the scoring evidence is missing, so the movie is
-        # excluded outright — not enough data to make a deletion decision. Only
-        # applies when IMDb is actually in use; at 100% watch history with no
-        # cutoff, a missing rating is irrelevant and the movie stays eligible.
-        if imdb_dataset_needed() and (imdb_rating is None or not imdb_votes):
-            stats["no_imdb_data"] += 1
-            log(f"SKIP no_imdb_data | title={title} | imdb_id={imdb_id or '(unresolved)'} | path={file_path}")
-            continue
-
-        # Optional rating cutoff (MAX_IMDB_RATING): movies rated ABOVE the
-        # cutoff are protected outright (hard rule, not a score).
-        if MAX_IMDB_RATING is not None and float(imdb_rating) > float(MAX_IMDB_RATING):
-            stats["high_rated"] += 1
-            log(f"SKIP high_rated | title={title} | imdb={imdb_rating} > cutoff {float(MAX_IMDB_RATING):.1f}")
-            continue
-
-        added_at = parse_int(item.get("added_at"), 0)
-
-        # Grace period: movies added within GRACE_PERIOD_DAYS are excluded
-        # outright (hard rule, not a score).
-        if GRACE_PERIOD_DAYS and added_at > 0 and (time.time() - added_at) < GRACE_PERIOD_DAYS * 86400:
-            stats["recently_added"] += 1
-            log(f"SKIP recently_added | title={title} | added={format_epoch(added_at)} | grace={GRACE_PERIOD_DAYS}d")
-            continue
-
-        play_count = parse_int(item.get("play_count"), 0)
+        added_at    = parse_int(item.get("added_at"), 0)
+        play_count  = parse_int(item.get("play_count"), 0)
         last_played = parse_int(item.get("last_played"), 0)
-        if SKIP_UNPLAYED_MOVIES and play_count <= 0 and last_played <= 0:
-            stats["unplayed"] += 1
-            log(f"SKIP unplayed | title={title} | plays={play_count} | last_played=never")
+        # protected and the identity mismatch were handled above; the rest of the
+        # ladder is a pure function of these stored facts.
+        reason = _hard_filter_reason(
+            protected=False, favorite=bool(item.get("_jf_favorite")),
+            imdb_rating=imdb_rating, imdb_votes=imdb_votes,
+            added_at=added_at, play_count=play_count, last_played=last_played)
+        if reason:
+            stats[reason] += 1
+            if reason == "jellyfin_favorite":
+                log(f"SKIP jellyfin_favorite | title={title} | path={file_path}")
+            elif reason == "no_imdb_data":
+                log(f"SKIP no_imdb_data | title={title} | imdb_id={imdb_id or '(unresolved)'} | path={file_path}")
+            elif reason == "high_rated":
+                log(f"SKIP high_rated | title={title} | imdb={imdb_rating} > cutoff {float(MAX_IMDB_RATING):.1f}")
+            elif reason == "recently_added":
+                log(f"SKIP recently_added | title={title} | added={format_epoch(added_at)} | grace={GRACE_PERIOD_DAYS}d")
+            elif reason == "unplayed":
+                log(f"SKIP unplayed | title={title} | plays={play_count} | last_played=never")
             continue
 
         try:
@@ -4469,7 +4460,7 @@ def build_candidates():
     stats["duplicates_merged"] = duplicates_removed
 
     # ── Persist updated metadata cache ───────────────────────────────────────
-    # Write any newly fetched entries back to the JSON cache so the next run
+    # Write any newly fetched entries back to the metadata cache so the next run
     # can skip the API calls for these movies.
     for rk, meta in _metadata_cache.items():
         cached_movies[str(rk)] = {
@@ -4480,7 +4471,7 @@ def build_candidates():
         }
     cache["movies"] = cached_movies
     save_cache(cache)
-    log(f"Cache saved: {len(cached_movies)} movie entries -> {CACHE_FILE}")
+    log(f"Cache saved: {len(cached_movies)} movie entries -> {DB_FILE}")
     # ─────────────────────────────────────────────────────────────────────────
 
     log_stage("ELIGIBLE CANDIDATES")
@@ -4524,6 +4515,8 @@ def build_candidates():
             favorite=bool(_prev.get("favorite")),
             source_id=c.get("rating_key") or _prev.get("source_id"),
             jf_source_id=c.get("_jf_source_id") or _prev.get("jf_source_id"),
+            tmdb_id=c.get("tmdb_id") or _prev.get("tmdb_id"),
+            section_id=c.get("section_id") or _prev.get("section_id"),
             path=_key)
     _write_library_snapshot(list(_snapshot_by_path.values()))
     log(f"Library snapshot written: {len(_snapshot_by_path)} movie(s) for the Filtering & Scoring page.")
@@ -4757,7 +4750,8 @@ def _snapshot_by_store_key(store) -> dict:
     snapshot both record /library paths but may differ by symlink resolution, so
     fall back to the resolved form. Keys the snapshot doesn't cover are omitted
     (the re-verify keeps those on their last-scan verdict)."""
-    snap = (load_cache().get("library_snapshot") or {}).get("movies") or []
+    with db.connect(DB_FILE) as conn:
+        snap = (db.read_snapshot(conn) or {}).get("movies") or []
     by_path = {e["path"]: e for e in snap if isinstance(e, dict) and e.get("path")}
     out = {}
     for key in store:
@@ -4784,6 +4778,193 @@ def _daily_deficit_bytes(used_gb, max_gb, library_gb) -> int:
     return int(max(headroom, cap) * 1_000_000_000)
 
 
+# ── Config-save reconcile: rebuild the queue from the snapshot, no rescan ──────
+# When a filtering / scoring / threshold / protected-collection / favorites change
+# is saved, the marked & eligible queue can be rebuilt in place from the stored
+# library snapshot — re-scoring every movie and re-applying the shared hard-filter
+# ladder under the new config — instead of forcing a full Simulate. Only a
+# protection-source change (collections / favorites) needs a media-server lookup;
+# everything else is pure. The delete-time re-verification stays the safety net.
+
+def _reconcile_disk_stats():
+    """Fresh filesystem capacity for the reconcile's target math — a cheap local
+    syscall, not a server call or a library walk. None if it can't be read."""
+    try:
+        info = get_usage_info()
+        return {"used_gb": bytes_to_gb(info["used"]),
+                "total_gb": bytes_to_gb(info["total"]),
+                "free_gb": bytes_to_gb(info["free"])}
+    except Exception:
+        return None
+
+
+def _refresh_snapshot_protection(rows) -> None:
+    """Re-fetch the live protected + favorited sets and update each snapshot row's
+    `protected` / `favorite` fact in place, then persist them. Called only when a
+    protected-collection or Jellyfin-favorites change triggered the reconcile.
+
+    Matches by resolved /library path — the same authoritative key deletion and the
+    15-minute upkeep use. Fails closed: fetch_protected_paths / _jellyfin_* raise if
+    a needed server is unreachable, so the caller flags the connection rather than
+    reconciling against stale protection."""
+    protected_paths: set = set()
+    if USE_PLEX:
+        p_paths, _k, _i, _t = fetch_protected_paths()
+        protected_paths |= (p_paths or set())
+    if USE_JELLYFIN:
+        _ids, jf_paths, _ji, _jt = _jellyfin_protected_items()
+        protected_paths |= (jf_paths or set())
+    favorite_paths = _jellyfin_favorite_paths()   # {} unless Jellyfin + favorites protection
+
+    for r in rows:
+        p = r.get("path")
+        if not p:
+            continue
+        r["protected"] = p in protected_paths
+        r["favorite"] = p in favorite_paths
+    try:
+        with db.transaction(DB_FILE) as conn:
+            db.ensure_code_current(conn, code_checksum())
+            db.replace_movies(conn, rows)   # persist refreshed facts; built_at untouched
+    except Exception as e:
+        log(f"WARN: could not persist refreshed protection facts ({e}).")
+
+
+def _candidate_from_snapshot_row(row, key_by_resolved=None):
+    """Adapt a stored snapshot row into the candidate dict the scorer, ranker, and
+    queue writer expect. Sizes from the exact stored bytes (size_bytes), falling
+    back to the 2-dp size_gb for a pre-upgrade row. The path is mapped back to the
+    key the existing queue marked the movie under, so write_plan_to_queue keeps its
+    delay clock even when the snapshot stored a resolved path and the queue an
+    unresolved one. resolution/bitrate aren't stored, so near-tied same-movie copies
+    order by size/section/added instead — a rescan restores full ordering."""
+    snap_path = row.get("path") or ""
+    queue_key = (key_by_resolved or {}).get(snap_path, snap_path)
+    size_bytes = parse_int(row.get("size_bytes"), 0)
+    if not size_bytes and row.get("size_gb"):
+        size_bytes = int(round(float(row["size_gb"]) * 1e9))
+    src = str(row.get("source_id") or "")
+    return {
+        "path": Path(queue_key) if queue_key else Path(""),
+        "title": row.get("title") or "",
+        "rating_key": row.get("source_id"),
+        "section_id": row.get("section_id"),
+        "source": "jellyfin" if src.startswith("jf:") else "plex",
+        "tmdb_id": row.get("tmdb_id"),
+        "imdb_id": None,
+        "imdb_rating": row.get("rating"),
+        "imdb_votes": row.get("votes"),
+        "release_year": row.get("year"),
+        "play_count": parse_int(row.get("plays"), 0),
+        "last_played": parse_int(row.get("last_played"), 0),
+        "added_at": parse_int(row.get("added_at"), 0),
+        "distinct_users": parse_int(row.get("users"), 0),
+        "resolution": None,
+        "bitrate": 0,
+        "file_size": size_bytes,
+    }
+
+
+def _reconcile_target_bytes(rows):
+    """(bytes the marked set must cover, redline_only). Sizes the delay-clocked
+    marked set to the headroom + Library Cap deficit — the same daily target the
+    15-minute upkeep uses — from fresh disk and the snapshot's summed sizes (no
+    walk). Redline is an immediate emergency, never a delay-clocked mark, so it
+    doesn't size the marks; redline-only mode marks nothing (the whole eligible
+    list waits for the Redline trigger)."""
+    if _redline_only_mode():
+        return 0, True
+    disk = _reconcile_disk_stats()
+    if not disk:
+        return 0, False   # can't size the target without disk — mark nothing rather than guess
+    library_gb = sum(parse_int(r.get("size_bytes"), 0) for r in rows) / 1e9
+    max_gb = disk["total_gb"] - (HEADROOM_GB or 0)
+    return _daily_deficit_bytes(disk["used_gb"], max_gb, library_gb), False
+
+
+def _reconcile_select(candidates, to_free_bytes):
+    """The Simulate loop's covering-set selection, sized from the stored file bytes
+    instead of stat-ing each file (no filesystem walk). Returns (planned,
+    would_count): planned is the ENTIRE eligible list as [(candidate, size), …] in
+    final deletion order (file-size-optimized near the target); would_count is the
+    marked prefix covering to_free_bytes."""
+    pending = list(candidates)
+    tie_group: list = []
+    planned: list = []
+    would_bytes = would_count = freed = 0
+    min_count = len(candidates)   # plan the whole eligible list, like Simulate
+    while pending or tie_group:
+        if freed >= to_free_bytes and len(planned) >= min_count:
+            break
+        cand = _pop_next_deletion(pending, tie_group, to_free_bytes - freed, quiet=True)
+        size = parse_int(cand.get("file_size"), 0)
+        if would_bytes < to_free_bytes:
+            would_bytes += size
+            would_count += 1
+        freed += size
+        planned.append((cand, size))
+    return planned, would_count
+
+
+def reconcile_from_snapshot(trigger="config change", *, refetch_protection=False):
+    """Rebuild the marked & eligible queue in place from the stored library
+    snapshot after a filtering / scoring / threshold / collections / favorites
+    change — no library walk, and no media-server fetch unless refetch_protection.
+
+    Re-scores every snapshot row under the current config, re-applies the shared
+    hard-filter ladder (_hard_filter_reason) plus the snapshot's `excluded` flag,
+    re-selects the marked prefix to the current space target, and re-stamps the
+    plan (via write_plan_to_queue) so the web app un-ghosts Live without a Simulate.
+    Each surviving mark keeps its delay clock. Reuses the existing snapshot's facts,
+    so it deliberately does NOT refresh the 48-hour full-scan clock — a snapshot
+    older than that still asks for a real Simulate.
+
+    refetch_protection: a protected-collection or favorites change re-fetches the
+    live sets first; raises (fail-closed) if a needed server is unreachable."""
+    with db.transaction(DB_FILE) as conn:
+        db.ensure_code_current(conn, code_checksum())   # a code change wipes a stale snapshot
+    with db.connect(DB_FILE) as conn:
+        rows = (db.read_snapshot(conn) or {}).get("movies") or []
+    if not rows:
+        log(f"Reconcile [{trigger}]: no library snapshot yet — run Simulate first.")
+        return
+
+    if refetch_protection:
+        _refresh_snapshot_protection(rows)   # raises if a needed server is unreachable
+
+    # Map each snapshot row back to the key the existing queue marked it under, so
+    # write_plan_to_queue preserves marked_at across a resolved/unresolved path form.
+    existing = load_pending()
+    key_by_resolved: dict = {}
+    for k in existing:
+        key_by_resolved.setdefault(k, k)
+        try:
+            key_by_resolved.setdefault(str(Path(k).resolve(strict=False)), k)
+        except Exception:
+            pass
+
+    now = time.time()
+    candidates = []
+    for row in rows:
+        if row.get("excluded"):
+            continue
+        if _hard_filter_reason(
+                protected=bool(row.get("protected")), favorite=bool(row.get("favorite")),
+                imdb_rating=row.get("rating"), imdb_votes=row.get("votes"),
+                added_at=parse_int(row.get("added_at"), 0),
+                play_count=parse_int(row.get("plays"), 0),
+                last_played=parse_int(row.get("last_played"), 0), now=now):
+            continue
+        candidates.append(_candidate_from_snapshot_row(row, key_by_resolved))
+
+    score_and_rank_candidates(candidates)   # scores + deletion order (in place)
+    to_free_bytes, redline_only = _reconcile_target_bytes(rows)
+    planned, would_count = _reconcile_select(candidates, to_free_bytes)
+    write_plan_to_queue(planned, trigger, scheduled_count=0 if redline_only else would_count)
+    log(f"Reconcile [{trigger}]: {len(rows)} snapshot movie(s), {len(candidates)} eligible, "
+        f"{0 if redline_only else would_count} marked to the current target — no rescan.")
+
+
 def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
     """The summary's marked-queue maintenance, run three ways with identical cache
     effects: the 15-minute Summary tick, before a manual Cleanup's delete, and a
@@ -4806,6 +4987,7 @@ def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
     if not store:
         return
     changed = False
+    gone_paths: set = set()   # files confirmed physically gone — pruned from the snapshot too
     for key in list(store):
         try:
             missing = not Path(key).exists()
@@ -4815,6 +4997,7 @@ def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
             entry = store[key]
             log(f"Unmarked (file gone): {(entry.get('title') if isinstance(entry, dict) else None) or key}")
             store.pop(key)
+            gone_paths.add(key)
             changed = True
     try:
         plex_paths, _k, _i, _t = fetch_protected_paths()
@@ -4871,9 +5054,11 @@ def _revalidate_pending_marks(daily_deficit_bytes: int = 0) -> None:
             changed = True
 
     if changed:
-        # One atomic write commits the re-sized/re-scored queue AND the snapshot's
-        # refreshed plays together, so they can never drift apart on a half-failure.
-        save_pending(store, snapshot_watch_updates=watch_updates)
+        # One atomic write commits the re-sized/re-scored queue, the snapshot's
+        # refreshed plays, AND the removal of any physically-gone snapshot rows
+        # together, so they can never drift apart on a half-failure.
+        save_pending(store, snapshot_watch_updates=watch_updates,
+                     snapshot_delete_paths=gone_paths)
 
 
 def _plan_stamp_current() -> bool:
@@ -5006,6 +5191,7 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
     # entries, never silently shorting the emergency.
     work = []          # (key, Path, size_bytes, entry)
     dead = []          # marks whose file is already gone — dropped from the queue
+    gone_snapshot: set = set()   # physically-gone files — pruned from the snapshot too
     covered = 0
     spared_watched = 0
     for key, entry in ordered:
@@ -5044,11 +5230,12 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
     if dead:
         for key in dead:
             store.pop(key, None)
+        gone_snapshot.update(dead)
         log(f"Fast path: dropped {len(dead)} marked movie(s) whose file was already "
             f"gone from the queue.")
     if covered < to_free_bytes:
         if dead:
-            save_pending(store)
+            save_pending(store, snapshot_delete_paths=gone_snapshot)
         log(f"Fast path unavailable: after sparing {spared_watched} since-watched/unverifiable "
             f"movie(s) the marked queue covers only {bytes_to_gb(covered):.1f} GB of the "
             f"{bytes_to_gb(to_free_bytes):.1f} GB target — running the full scan.")
@@ -5099,6 +5286,7 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
                 except FileNotFoundError:
                     log(f"WARN: file already gone when attempting deletion (skipping): {p}")
                     store.pop(key, None)   # dead mark — never leave it in the queue
+                    gone_snapshot.add(key)   # and shed its phantom snapshot row
                     continue
                 except OSError as e:
                     log(f"ERROR: could not delete {p}: {e}")
@@ -5129,13 +5317,14 @@ def _redline_fast_path(to_free_bytes, *, trigger="REDLINE", do_radarr=False) -> 
             deleted_count += 1
             bytes_freed += size
     except SystemExit:
-        save_pending(store)
+        save_pending(store, snapshot_delete_paths=gone_snapshot)
         log("Stopped mid-emergency — the trimmed marked queue was saved.")
         raise
 
     # Trim-only save: the surviving marks keep the original plan stamp, exactly
-    # like the full-scan redline path.
-    save_pending(store)
+    # like the full-scan redline path. Any files confirmed gone this run are
+    # dropped from the snapshot in the same write.
+    save_pending(store, snapshot_delete_paths=gone_snapshot)
 
     # Nothing deletable at all (every covering file failed to unlink) must NOT
     # read as "handled" — that would retry the same dead end every tick while
@@ -5284,7 +5473,9 @@ def _debug_cleanup_delete_preview(to_free_bytes, trigger):
             f"the ~{bytes_to_gb(to_free_bytes):.1f} GB target"
             + (f" (spared {spared_watched} watched-since, {spared_protected} protected)"
                if (spared_watched or spared_protected) else "")
-            + " — a real Cleanup would fall back to a full scan for the remainder.")
+            + " — that's every currently-eligible movie in the queue. A real Cleanup would "
+              "fall back to a full scan, but it can free more only if additional movies are "
+              "eligible by then (added since the last scan, or after looser filters).")
     return would_count, would_bytes, covered
 
 
@@ -5323,7 +5514,7 @@ def _debug_cleanup_from_queue(*, to_free_bytes, trigger, breached,
         log("Redline-only mode: the upkeep only keeps the queue honest (drop gone / "
             "newly-protected); the fresh re-score happens at delete time, previewed below.")
     emit_progress(phase="deleting", trigger=trigger, target_bytes=to_free_bytes,
-                  deleted=0, bytes_freed=0, current_title="",
+                  eligible=len(store0), deleted=0, bytes_freed=0, current_title="",
                   message="Debug Cleanup — re-verifying the marked queue…")
     _revalidate_pending_marks(_daily_deficit_bytes(used_gb, max_gb, library_gb))
     log_blank()
@@ -5333,7 +5524,8 @@ def _debug_cleanup_from_queue(*, to_free_bytes, trigger, breached,
     if not breached or to_free_bytes <= 0:
         log("No space limit is breached — a real Cleanup would delete nothing right now. "
             "The marked & eligible queue is the standing preview.")
-        emit_progress(status="done", phase="done", target_bytes=0, deleted=0, bytes_freed=0,
+        emit_progress(status="done", phase="done", target_bytes=0,
+                      eligible=len(store0), deleted=0, bytes_freed=0,
                       message="Debug Cleanup — within limits; nothing would be deleted.")
         return
 
@@ -5344,11 +5536,13 @@ def _debug_cleanup_from_queue(*, to_free_bytes, trigger, breached,
     log(f"Debug Cleanup: the marked queue WOULD free ~{bytes_to_gb(would_bytes):.1f} GB "
         f"by removing {would_count} movie(s) in plan order to satisfy the {trigger} deficit of "
         f"~{bytes_to_gb(to_free_bytes):.1f} GB"
-        + ("." if ok else " (then fall back to a full scan for the remainder).")
+        + ("." if ok else "; that's every eligible movie — a real Cleanup would rescan but "
+                          "free more only if additional movies become eligible.")
         + " No files were deleted; the queue was refreshed (as a Cleanup would), "
           "just not trimmed for deletions.")
     emit_progress(status="done", phase="done", target_bytes=to_free_bytes,
-                  deleted=would_count, bytes_freed=would_bytes, current_title="",
+                  eligible=len(store0), deleted=would_count, bytes_freed=would_bytes,
+                  current_title="",
                   message=(f"Debug Cleanup — would remove {would_count} movie(s), "
                            f"~{bytes_to_gb(would_bytes):.1f} GB from the marked queue (no deletes)."))
 
@@ -5622,11 +5816,11 @@ def main():
         RUN_MODE = _MODE_OVERRIDE
 
     global LOGFILE, _QUIET_PROGRESS
-    if RUN_MODE == "debug_info":
-        # Quiet background storage refresh: no progress events, and the log is
-        # discarded — lastrun.log stays the last real run's log and no scratch
-        # log files accumulate. Failures still surface through the subprocess
-        # exit code and the UI messages.
+    if RUN_MODE in ("debug_info", "reconcile"):
+        # Quiet background jobs (storage refresh / config-save queue reconcile): no
+        # progress events, and the log is discarded — lastrun.log stays the last
+        # real run's log and no scratch log files accumulate. Failures still surface
+        # through the subprocess exit code and the UI messages.
         LOGFILE = Path(_os.devnull)
         _QUIET_PROGRESS = True
 
@@ -5660,6 +5854,20 @@ def main():
                       target_bytes=0, trigger="", current_title="",
                       message="Paused — no scan or cleanup performed.",
                       started_at=time.time())
+        return
+
+    # Config-save reconcile: rebuild the queue from the stored snapshot, no scan.
+    # A pure recompute (scoring / threshold / filter change) needs no server, so it
+    # runs BEFORE the connection check; a collections/favorites change passes
+    # MEDIAREDUCER_RECONCILE_REFETCH=1 and the fetch itself fails closed if a needed
+    # server is unreachable (the app gates and flags that connection).
+    if RUN_MODE == "reconcile":
+        try:
+            reconcile_from_snapshot(
+                trigger=_os.environ.get("MEDIAREDUCER_RECONCILE_TRIGGER", "config change"),
+                refetch_protection=_os.environ.get("MEDIAREDUCER_RECONCILE_REFETCH", "") == "1")
+        except Exception as e:
+            log(f"Reconcile aborted: {e}")
         return
 
     emit_progress(schema=1, status="running", phase="checking", mode=RUN_MODE,
@@ -6368,6 +6576,7 @@ def main():
     mark_store_dirty = False
     kept_marks: dict = {}
     _gone_keys: set = set()   # deleted (or externally vanished) this run
+    _vanished_keys: set = set()   # vanished OUTSIDE MediaReducer — prune from the snapshot too
     now_ts = time.time()
     emit_progress(phase="deleting", trigger=trigger, target_bytes=to_free_bytes,
                   deleted=0, bytes_freed=0, current_title="",
@@ -6465,9 +6674,11 @@ def main():
                 # Gone, but not by us (vanished externally between the scan and
                 # this loop). Drop any mark — the file no longer needs one — but
                 # don't claim the deletion: deleted.log has no record of it, and
-                # this run freed nothing by it.
+                # this run freed nothing by it. Its snapshot row (written at scan
+                # time, when the file still existed) is now a phantom, so prune it.
                 planned_bytes += size_before
                 _gone_keys.add(key)
+                _vanished_keys.add(key)
                 if mark_store.pop(key, None) is not None:
                     mark_store_dirty = True
             elif use_delay:
@@ -6492,7 +6703,7 @@ def main():
                     f"keeping its existing mark (will retry next run).")
     except SystemExit:
         if (use_delay or mark_store_dirty) and not _is_debug_cleanup:
-            save_pending({**mark_store, **kept_marks})
+            save_pending({**mark_store, **kept_marks}, snapshot_delete_paths=_vanished_keys)
             log("Stopped mid-run — marked-queue changes so far were saved.")
         raise
 
@@ -6531,7 +6742,7 @@ def main():
         if unscheduled:
             log(f"Unmarked {unscheduled} movie(s) no longer in the deletion plan "
                 f"(they stay eligible in deletion order).")
-        save_pending(_full_queue(), stamp_thresholds=True)
+        save_pending(_full_queue(), stamp_thresholds=True, snapshot_delete_paths=_vanished_keys)
         if marked_count:
             log_blank()
             log(f"Marked for deletion: {marked_count} movie(s), "
@@ -6541,13 +6752,13 @@ def main():
         # Delay disabled, or a manual Cleanup that pruned to every breached
         # target: everything planned was deleted outright, so nothing stays
         # marked — the surviving candidates remain as the eligible queue.
-        save_pending(_full_queue(), stamp_thresholds=True)
+        save_pending(_full_queue(), stamp_thresholds=True, snapshot_delete_paths=_vanished_keys)
     elif mark_store_dirty:
         # Redline runs never reshape the daily plan — they only drop entries
         # whose files they deleted. Redline-only mode lands here for EVERY live
         # run, including manual: the queue is the standing preview, so runs only
         # ever trim it (the app tops it back up afterwards).
-        save_pending(mark_store)
+        save_pending(mark_store, snapshot_delete_paths=_vanished_keys)
 
     final_info = get_usage_info()
     final_gb = final_info["used_gb"]

@@ -94,7 +94,7 @@ file that covers, else the largest tied file), so one big movie can spare
 several small near-ties even after a since-watched spare shifts the target.
 
 **Marked & eligible queue** — every full plan (Simulate or a daily/manual
-Cleanup) writes the ENTIRE eligible list to cache.json's `pending` key in deletion
+Cleanup) writes the ENTIRE eligible list to the store's `queue` table in deletion
 order. Only the prefix covering the current space targets is *marked*
 (`marked_at` set — the deletion-delay clock); the rest is merely *eligible*
 (`marked_at` null), visible order that starts a fresh clock only if it is ever
@@ -115,6 +115,13 @@ minutes. The pipeline, in order:
 
 1. **Refresh filesystem capacity + library size** and persist them (`emit_stats`).
 2. **Drop dead marks** — files that are gone, or that joined a protected collection.
+   A file confirmed **physically gone** is also pruned from the library snapshot in
+   the same write (`save_pending(..., snapshot_delete_paths=…)`), so a title deleted
+   outside MediaReducer doesn't linger as a phantom `movies` row until the next full
+   scan. The redline fast path and the full-scan cleanup's external-vanish branch
+   prune the snapshot the same way — every no-rescan path that confirms a file is
+   gone sheds its row. (Protected-since marks leave the file on disk, so their
+   snapshot row stays.)
 3. **Re-size the marked set to the CURRENT headroom/cap deficit**
    (`_daily_deficit_bytes`) from the cached queue, no full scan: mark the
    File-size-optimized covering set (the SAME `_pop_next_deletion` a real delete
@@ -155,17 +162,52 @@ Redline fast path's own protection re-fetch), so a stale mark can never delete
 a protected movie. Redline emergencies and manual Cleanups bypass the delay.
 
 **Plan currency** — cleanup (arming automatic mode or pressing the manual
-Cleanup button) is locked whenever the saved config changed in a way that
-affects *what* gets deleted. A completed Simulate stamps the deletion-affecting
-keys (`_PLAN_CONFIG_KEYS`, kept identical in both files) plus the monitored
-paths into that `pending` record; if the current config doesn't match the
-stamp, `simulate_required` is set and cleanup ghosts until a new Simulate.
+Cleanup button) is locked whenever the saved plan can no longer be trusted:
+
+- **Config changed what gets deleted → the queue reconciles in place, no Simulate.**
+  A completed Simulate — or a config-save **reconcile** — stamps the
+  deletion-affecting keys (`_PLAN_CONFIG_KEYS`, kept identical in both files) plus
+  the monitored paths into the `pending` record. Saving a scoring, filter, or
+  threshold change — or a protected-collection or Jellyfin-favorites change — kicks
+  a background reconcile (the engine's quiet `reconcile` mode; `_reconcile_after_save`
+  → `run_reconcile` → `reconcile_from_snapshot`): it re-scores every movie in the
+  stored snapshot, re-applies the shared eligibility ladder (`_hard_filter_reason`,
+  the same predicate `build_candidates` uses), re-marks the covering prefix to the
+  current target (keeping each mark's delay clock), and re-stamps — so cleanup
+  un-ghosts with **no manual Simulate** and no library walk. Pure scoring / filter /
+  threshold changes recompute from the snapshot with no server call; a collections /
+  favorites change re-fetches the live protected / favorite sets first (fail-closed —
+  if that server is unreachable the reconcile is HELD and the Connections check flags
+  it, retried automatically once the connection recovers or the server is disabled,
+  `_retry_held_reconcile`). `simulate_required` (the stamp mismatch) is now the
+  transient state shown until the reconcile lands, or the fallback when there is no
+  snapshot yet. Note the two key sets: `_PLAN_CONFIG_KEYS` (what the stamp tracks)
+  excludes the protected-collection lists and Radarr on/off — those are honored from
+  the standing cache (the 15-min upkeep re-fetches protection and drops newly-protected
+  marks; every deletion re-verifies fresh; the queue carries the Radarr identity) —
+  while `_RECONCILE_*_KEYS` (what triggers a reconcile) *includes* collections and
+  favorites. **Monitored-path changes** still force a manual Simulate: the snapshot
+  reflects only the old paths, so it can't be reconciled (compared via the stamped
+  `monitor_dirs`).
+- **No full scan within the last two days.** A full library scan (a Simulate, or
+  the automatic daily Cleanup, or the paused-mode daily maintenance Simulate — all
+  rebuild the whole snapshot) must have completed within
+  `_FULL_SCAN_MAX_AGE_SECONDS` (48h) — checked live off the snapshot's `built_at`
+  (`_full_scan_overdue()`), no persistent flag. A daily scan normally keeps this
+  fresh with a full day of slack (so moving `DAILY_RUN_TIME` later never trips
+  it); if scans stop for two days (e.g. the APIs are unreachable) the plan ages
+  out and cleanup ghosts until a manual Simulate. A completed scan refreshes
+  `built_at` and lifts the lock on its own. A **paused** schedule still runs a
+  once-a-day maintenance Simulate after `DAILY_RUN_TIME` (`_paused_daily_scan_due`,
+  connections permitting) purely to keep this fresh — the plan stays current
+  without an armed Cleanup.
+
 Arming automatic mode additionally requires proof a Simulate has run at all —
 within satisfied limits the queue can be legitimately empty, so the library
 snapshot (written by every completed scan) serves as that evidence
 (`_simulate_evidence()`). The manual Cleanup button stays ghosted while every
-limit is satisfied regardless. See `_pending_plan_current()` (app) /
-`write_plan_to_queue()` (engine).
+limit is satisfied regardless. See `_pending_plan_current()` /
+`_full_scan_overdue()` (app) / `write_plan_to_queue()` (engine).
 
 **Fail-closed protection** — protected collections (Plex/Jellyfin), identity
 mismatches between servers, and (when IMDb is in use) movies with no rating are
@@ -177,15 +219,17 @@ guessing.
 | File | Written by | Purpose |
 | --- | --- | --- |
 | `config.json` | app | Saved settings (single source of truth for both processes). |
-| `cache.json` | engine + app | Movie metadata cache, schedule state (the app burns/reopens the daily window under a shared flock), storage stats, the library snapshot every completed scan rewrites (the Filtering & Scoring table), and (under `pending`) the marked & eligible queue + plan-currency stamp. Cleared on startup so a restart requires a fresh Simulate. |
+| `mediareducer.db` | engine + app | SQLite store (`db.py`), four tables: `metadata_cache` (per-movie API facts, so a rescan skips the slow per-movie lookups), `movies` (the **library snapshot** every completed scan rewrites — the Filtering & Scoring table), `queue` (the marked & eligible deletion queue + its plan-currency stamp), and `meta` (kv: **schedule state** — the app burns/reopens the daily window here — plus **storage stats** and the code/schema guards). WAL mode + a `busy_timeout` serialize the engine subprocess and Flask request threads; WAL writes `-wal`/`-shm` sidecars beside the `.db`. **Preserved across a restart** (`validate_store_on_startup`): the plan stays usable, and whether it can still be trusted is decided live at the gate (see **Plan currency**) — a plan-affecting config change, a monitored-path change, or a full scan older than two days locks Cleanup + arming until a fresh Simulate; a completed scan lifts it. Two guards keep it honest across upgrades: the engine's `code_checksum` (hash of `engine.py`) flushes the code-derived **rows** on the next write when the engine changes what it caches, and `db.py`'s `_schema_fingerprint` **rebuilds the tables** at connect when the schema changes — both keep `last_cleanup_date`. |
 | `lastrun.log` | engine | Most recent run log (overwritten each run; the app archives the prior one into `logs/` on startup). |
 | `logs/` | engine + app | Archived run logs — the engine keeps any run that deleted; the app also archives the last `lastrun.log` here on startup. |
 | `deleted.log` | engine (app can truncate) | Deletion history (survives startup); the dashboard's Erase button empties it. |
-| `progress.json` | engine (app resets) | Cleanup progress for the dashboard; reset to "no runs yet" on startup alongside the cache. |
+| `progress.json` | engine (app resets) | Cleanup progress for the dashboard; carried across a restart with the preserved store (reset to "no runs yet" only by an explicit Clear-cache / Reset). |
 | `title.ratings.tsv` | engine | IMDb ratings dataset (downloaded when needed). |
 
-Writes are atomic (temp file + `replace()`), so a crash or kill mid-write never
-leaves a torn file.
+The file writes (`config.json`, `progress.json`, the logs) are atomic (temp file
++ `replace()`), so a crash or kill mid-write never leaves a torn file; the
+`mediareducer.db` store gets the same guarantee from SQLite transactions (a
+crash rolls back to the last commit).
 
 ## Development
 
