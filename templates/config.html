@@ -353,8 +353,10 @@
 {% set selected_media_apis_ready = (use_plex or use_jellyfin) and ((not use_plex) or tautulli_connected) and ((not use_jellyfin) or jellyfin_connected) and media_path_compatible and filesystem_ready %}
 {% set media_api_connected = selected_media_apis_ready %}
 {# Thresholds stay editable while automatic mode is armed — saving a threshold
-   change force-pauses Live server-side (like connection/path changes), so
-   there is no armed-state lock; only an active run locks the section. #}
+   change reconciles the deletion plan in place and keeps Automatic Cleanup
+   running, force-pausing to Monitor Only server-side only when the change leaves
+   the library over a limit. So there is no armed-state lock; only an active run
+   locks the section. #}
 {% set space_thresholds_locked = false %}
 {% set manual_override_open = (connection_highlights | select('in', override_highlight_names) | list | length) > 0 %}
 {% set connection_section_open = connection_health.has_visible_issues if connection_health.has_visible_issues is defined else ((connection_errors|length > 0) or (connection_warnings|length > 0)) %}
@@ -740,7 +742,7 @@
           <button type="button" class="btn btn-sm btn-outline-secondary section-reset-btn" id="btn-reset-space" onclick="resetSectionToDefault('space')" {{ 'disabled' if space_thresholds_locked or not thresholds_have_library else '' }}>Reset to Default</button>
         </div>
 
-        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic Cleanup is on — saving a threshold change pauses it until you review the rebuilt plan and re-enable it.</div>
+        <div id="space-threshold-lock-note" class="config-inline-warning mb-3" {{ '' if config.RUN_MODE == 'headroom' else 'hidden' }}>Automatic Cleanup is on — a threshold change rebuilds the deletion plan in place and keeps running; it only pauses to Monitor Only if the change leaves the library over a limit.</div>
         <div id="space-threshold-api-note" class="config-inline-warning mb-3" {{ 'hidden' if selected_media_apis_ready else '' }}>{{ 'Fix the /config read/write problem first.' if not filesystem_ready else ('Connect or uncheck the selected media server first.' if (use_plex or use_jellyfin) else 'Select Plex or Jellyfin under Server software first.') }}</div>
         <div id="space-threshold-paths-note" class="config-inline-warning mb-3" {{ 'hidden' if thresholds_have_library or not selected_media_apis_ready else '' }}>Save a monitored directory first.</div>
 
@@ -1784,8 +1786,9 @@ function _applySpaceThresholdLock() {
       note.textContent = _sectionLockReason('space') || 'A run is active. Try again when it finishes.';
       note.hidden = false;
     } else if (_savedLiveModeLocked()) {
-      // Not a lock — a heads-up that a threshold save pauses automatic mode.
-      note.textContent = 'Automatic Cleanup is on — saving a threshold change pauses it until you review the rebuilt plan and re-enable it.';
+      // Not a lock — a heads-up that a threshold save reconciles the plan in place and
+      // keeps automatic mode running, pausing only if the change leaves it over a limit.
+      note.textContent = 'Automatic Cleanup is on — a threshold change rebuilds the deletion plan in place and keeps running; it only pauses to Monitor Only if the change leaves the library over a limit.';
       note.hidden = false;
     } else {
       note.hidden = true;
