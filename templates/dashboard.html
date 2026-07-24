@@ -58,6 +58,9 @@
      marked half of "X · Y" and the word "Marked" in the label turning red
      when anything is actually marked. */
   .dashboard-marked-btn .marked-hot { color: var(--text-danger); }
+  /* The "MOVIES" unit sets its own muted color, so it won't inherit the red
+     from a hot half on its own — force it to follow the hot half. */
+  .dashboard-marked-btn .marked-hot .unit { color: inherit; }
   /* These labels ("Lifetime pruned & space regained") may exceed their column —
      wrap at word boundaries, never mid-word (mini-labels nowrap by default). */
   .dashboard-history-segment .dashboard-mini-label {
@@ -546,8 +549,7 @@
                   title="Review the movies marked for deletion and the eligible order behind them">
             <span class="dashboard-history-segment">
               <span class="dashboard-mini-value">
-                <span id="pruned-marked-count"><span id="pruned-marked-hot" class="{{ 'marked-hot' if marked_imminent else '' }}">{{ marked_imminent|commafy(0) }}</span> <span class="unit" aria-hidden="true">·</span> {{ marked_count|commafy(0) }}</span>
-                <span class="unit">MOVIES</span>
+                <span id="pruned-marked-count"><span id="pruned-marked-hot" class="{{ 'marked-hot' if marked_imminent else '' }}">{{ marked_imminent|commafy(0) }} <span class="unit">MOVIES</span></span> <span class="unit" aria-hidden="true">·</span> {{ marked_count|commafy(0) }} <span class="unit">MOVIES</span></span>
               </span>
               <span class="dashboard-mini-label"><span id="marked-label-word" class="{{ 'marked-hot' if marked_imminent else '' }}">Marked</span> &amp; Eligible Deletions</span>
             </span>
@@ -1780,8 +1782,8 @@ function _updateDeletedCounter(count, reclaimedBytes = 0, reclaimedLabel = '', m
     // the word "Marked" in the label go red the moment anything is marked.
     if (countEl) {
       countEl.innerHTML =
-        `<span id="pruned-marked-hot" class="${imm > 0 ? 'marked-hot' : ''}">${prCommaNum(imm, 0)}</span> ` +
-        `<span class="unit" aria-hidden="true">·</span> ${prCommaNum(m, 0)}`;
+        `<span id="pruned-marked-hot" class="${imm > 0 ? 'marked-hot' : ''}">${prCommaNum(imm, 0)} <span class="unit">MOVIES</span></span> ` +
+        `<span class="unit" aria-hidden="true">·</span> ${prCommaNum(m, 0)} <span class="unit">MOVIES</span>`;
     }
     document.getElementById('marked-label-word')?.classList.toggle('marked-hot', imm > 0);
   }
