@@ -419,8 +419,11 @@ MediaReducer is intentionally conservative:
 - Plex/Jellyfin identity mismatches are skipped, never deleted.
 - Protected collections and filtered movies are hard exclusions, not score
   penalties.
-- Editing connection, monitoring, or threshold settings while Automatic Cleanup
-  is on drops it back to Monitor Only — review the rebuilt plan, then re-enable.
+- Editing connection or monitoring settings while Automatic Cleanup is on drops it
+  back to Monitor Only — those change what the scheduler relied on, so re-enable once
+  it's settled. A **threshold** change keeps it running: the plan just rebuilds in
+  place from the last scan. It drops to Monitor Only only when the change leaves the
+  library over a limit (a run would delete) — review the rebuilt plan, then re-enable.
   Settings are locked only while a run is actually active.
 - Every run does a fresh safety pre-check before acting. Stop is always safe:
   deletions already made are permanent and always recorded in `deleted.log`,

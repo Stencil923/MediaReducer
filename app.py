@@ -6141,11 +6141,23 @@ def api_save_config():
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_monitor_change = True
             cfg["_RUN_MODE_AUTOPAUSE_REASON"] = "monitored paths changed — run Simulate under the new paths, then re-enable Automatic Cleanup."
-        if threshold_change_while_cleanup and _is_cleanup_mode(cfg.get("RUN_MODE")):
+        # A threshold change drops Automatic Cleanup to Monitor Only ONLY when the new
+        # thresholds leave the library actually OVER a limit — a run WOULD delete, so
+        # pause and let the user review the rebuilt plan first. Within all limits a run
+        # would delete nothing, so the reconcile just rebuilds the plan in place and
+        # Automatic Cleanup keeps running. Covers both "the change pushes it over a
+        # threshold" and "it was already over" — either way the new thresholds are
+        # breached against the current disk/library. _deletion_limits_exceeded is
+        # fail-safe (pauses when a value can't be read cleanly).
+        _disk = disk_stats()
+        _library_gb = library_stats().get("library_gb")
+        if (threshold_change_while_cleanup and _is_cleanup_mode(cfg.get("RUN_MODE"))
+                and _deletion_limits_exceeded(cfg, _disk, _library_gb)):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_threshold_change = True
-            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed — review the rebuilt "
-                                                 "deletion plan, then re-enable Automatic Cleanup.")
+            cfg["_RUN_MODE_AUTOPAUSE_REASON"] = ("space thresholds changed and the library is over a "
+                                                 "limit — review the rebuilt deletion plan, then "
+                                                 "re-enable Automatic Cleanup.")
         if _is_cleanup_mode(cfg.get("RUN_MODE")) and not save_health.get("critical_ok", True):
             cfg["RUN_MODE"] = "paused"
             forced_pause_for_tautulli = True
@@ -6157,16 +6169,15 @@ def api_save_config():
             # BEING SAVED, not the old file it replaces — otherwise one save
             # could change thresholds AND arm automatic mode against a stamp
             # only the old thresholds match.
-            thresholds = _space_threshold_state(cfg, disk_stats(), candidate_cfg=True)
+            thresholds = _space_threshold_state(cfg, _disk, candidate_cfg=True)
             if not thresholds.get("ok_for_cleanup"):
-                # Only reachable with UNCHANGED thresholds (a threshold change
-                # while armed force-pauses above): point at the fix.
-                _hint = ("" if not _is_cleanup_mode(saved_cfg.get("RUN_MODE"))
-                         else " Adjust the thresholds — saving a threshold change "
-                              "pauses Scheduler Mode so you can review with Simulate.")
+                # A threshold change that leaves the library over a limit force-paused
+                # above; a within-limits change stays armed. So this is the unsafe /
+                # no-target case (invalid values, or nothing driving cleanup) — point at
+                # the fix rather than saving an armed config that can't run.
                 return jsonify({
                     "ok": False,
-                    "error": (thresholds.get("cleanup_tooltip") or "Fix Space Thresholds first.") + _hint,
+                    "error": thresholds.get("cleanup_tooltip") or "Fix Space Thresholds first.",
                 }), 400
             # Arming automatic mode always requires that a Simulate has seen the
             # library: over breached limits that means a deletion plan stamped
@@ -6387,7 +6398,7 @@ def api_save_config():
                 if forced_pause_for_api_change else
                 "monitored paths changed — run Simulate under the new paths, then re-enable Automatic Cleanup."
                 if forced_pause_for_monitor_change else
-                "space thresholds changed — review the rebuilt deletion plan, then re-enable Automatic Cleanup."
+                "space thresholds changed and the library is over a limit — review the rebuilt deletion plan, then re-enable Automatic Cleanup."
                 if forced_pause_for_threshold_change else
                 (save_health.get("required_tooltip") if save_health else "")
                 or "the media server connection is not healthy."
