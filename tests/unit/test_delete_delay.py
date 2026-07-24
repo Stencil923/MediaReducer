@@ -327,20 +327,34 @@ with tempfile.TemporaryDirectory() as td:
     assert r.status_code == 200 and _state["cfg"].get("RUN_MODE") == "headroom", "arming setup failed"
     _state["cfg"]["OUTPUT_DIR"] = td
 
+    # Within all limits: a threshold change reconciles the plan in place and KEEPS
+    # Automatic Cleanup running (a run would delete nothing, so no pause).
+    A._deletion_limits_exceeded = lambda *a, **k: False
     r = client.post("/api/config", json=dict(p0, HEADROOM_GB=400), headers={"X-MediaReducer": "1"})
     body = r.get_json()
-    check("threshold change while armed saves and force-pauses",
+    check("within-limits threshold change while armed keeps Live armed",
+          r.status_code == 200 and _state["cfg"].get("RUN_MODE") == "headroom"
+          and not body.get("automatic_run_mode_paused"))
+
+    # Over a limit (the change leaves the library breached): drop to Monitor Only.
+    _state["cfg"] = dict(_state["cfg"], RUN_MODE="headroom", HEADROOM_GB=500, OUTPUT_DIR=td)
+    A._deletion_limits_exceeded = lambda *a, **k: True
+    r = client.post("/api/config", json=dict(p0, HEADROOM_GB=400), headers={"X-MediaReducer": "1"})
+    body = r.get_json()
+    check("over-limit threshold change while armed force-pauses",
           r.status_code == 200 and _state["cfg"].get("RUN_MODE") == "paused"
           and body.get("automatic_run_mode_paused") is True
-          and "thresholds changed" in (body.get("automatic_run_mode_paused_reason") or ""))
+          and "over a limit" in (body.get("automatic_run_mode_paused_reason") or ""))
 
-    # Re-arm, then an unrelated save while armed must NOT pause anything.
+    # Re-arm, then an unrelated (non-threshold) save while armed must NOT pause —
+    # even while over a limit, since only a threshold change is gated on the breach.
     _state["cfg"] = dict(_state["cfg"], RUN_MODE="headroom", HEADROOM_GB=500, OUTPUT_DIR=td)
     r = client.post("/api/config", json=dict(p0, LOG_RETENTION_DAYS=14), headers={"X-MediaReducer": "1"})
     body = r.get_json()
     check("unrelated save while armed keeps Live armed",
           r.status_code == 200 and _state["cfg"].get("RUN_MODE") == "headroom"
           and not body.get("automatic_run_mode_paused"))
+    A._deletion_limits_exceeded = lambda *a, **k: False   # restore for later cases
 
 # ── Startup burn of the daily window ─────────────────────────────────────────
 with tempfile.TemporaryDirectory() as td:
